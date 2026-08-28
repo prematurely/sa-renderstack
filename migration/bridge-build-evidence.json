@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "reference": {
+    "label": "audited-bridge-baseline",
+    "sha256": "B0BBE0C98B132EA0B8E6BA0FA2C978D82C48063A50C2324BE3A8F7141FE7E9FF",
+    "machine": "I386",
+    "exportCount": 11,
+    "exportSetSha256": "93B2438F39A97F664BE6B3F2791C36981358B18647FE463BEEC94E0F66DA76B0"
+  },
+  "candidate": {
+    "label": "monorepo-bridge-candidate",
+    "sha256": "AE0DF56EA5467FBE2A623A3FBF6AD86F30A11C18456D63C5DE45FD4F1F029593",
+    "machine": "I386",
+    "exportCount": 11,
+    "exportSetSha256": "93B2438F39A97F664BE6B3F2791C36981358B18647FE463BEEC94E0F66DA76B0"
+  },
+  "exportsEqual": true,
+  "msbuildVersion": "18.8.2.30814",
+  "toolsetVersion": "14.51.36231",
+  "compilerVersion": "19.51.36252.0",
+  "binaryHashExpectedToDiffer": true
+}
