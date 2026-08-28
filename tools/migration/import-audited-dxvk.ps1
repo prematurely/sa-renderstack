@@ -32,7 +32,7 @@ foreach ($relative in $allowlist) {
     $canonicalRelative = $relative.Replace('\', '/')
     if ([IO.Path]::IsPathRooted($relative) -or
         @($canonicalRelative.Split('/')) -contains '..' -or
-        $canonicalRelative -match '(^|/)build(/|$)|\.bak$|\.log$|\.exe$|\.dll$|\.pdb$') {
+        $canonicalRelative -match '(^|/)build(/|$)|(^|/)\.wraplock$|\.bak$|\.log$|\.exe$|\.dll$|\.pdb$|\.obj$|\.o$') {
         throw "Forbidden overlay entry: $relative"
     }
 
