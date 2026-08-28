@@ -41,6 +41,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="BridgeD3D9.cpp" />
+    <ClCompile Include="EffectInspector.cpp" />
     <ClCompile Include="ProperShadersStateJournal.cpp" />
     <ClCompile Include="PerformanceAdapters.cpp" />
     <ClCompile Include="PerformanceAdapterConfig.cpp" />

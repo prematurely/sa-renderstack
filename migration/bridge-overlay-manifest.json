@@ -38,13 +38,18 @@
     {
       "path": "BridgeD3D9BackendTrace.vcxproj",
       "sourceSha256": "52607DA120CDA77D8D1DAB0A7BE3B0E242D15B710635BFC35259F61D6BF3976F",
-      "sha256": "5B709F41BF50F492FF28E9F4700A090D5743A10C67F51873A8E284CDF17EE0AF",
+      "sha256": "C1A92AB6276E336AA2F196FE2E695A4A4BEDDAF23BCBE48F7C5B679CCDE6728A",
       "normalization": "utf8-bomless-crlf",
       "transformations": [
         {
           "kind": "build-include-relocation",
           "from": "$(ProjectDir)..\\dxvk\\dxvk-3.0.1-bridge\\include\\vulkan\\include",
           "to": "$(ProjectDir)..\\..\\..\\backend\\dxvk\\include\\vulkan\\include;$(D3DX9IncludeDir)"
+        },
+        {
+          "kind": "build-source-inclusion",
+          "from": "<ClCompile Include=\"BridgeD3D9.cpp\" />",
+          "to": "<ClCompile Include=\"BridgeD3D9.cpp\" />\n    <ClCompile Include=\"EffectInspector.cpp\" />"
         }
       ]
     },
@@ -162,9 +167,15 @@
     {
       "path": "ProperShadersStateJournal.h",
       "sourceSha256": "3498FFE54CA8C8FADB3333F3B1513A052392E5113E95CFE2ADE5477985B62449",
-      "sha256": "3498FFE54CA8C8FADB3333F3B1513A052392E5113E95CFE2ADE5477985B62449",
+      "sha256": "41CF87B0F3A6676A99EF194B008E56C33C5D443C5B8502FBBC811B2665D2E0B1",
       "normalization": "utf8-bomless-lf",
-      "transformations": []
+      "transformations": [
+        {
+          "kind": "dxsdk-header-relocation",
+          "from": "#include \"../plugin-sdk/shared/dxsdk/d3dx9effect.h\"",
+          "to": "#include <d3dx9effect.h>"
+        }
+      ]
     },
     {
       "path": "tests/BridgeD3D9.test.ini",

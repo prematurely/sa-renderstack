@@ -103,41 +103,68 @@ if (@($canonicalAllowlist | ForEach-Object { $_.ToLowerInvariant() } |
 }
 
 $transforms = @{
-    'BridgeD3D9.vcxproj' = [ordered]@{
-        kind = 'build-include-relocation'
-        from = '$(ProjectDir)..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
-        to = '$(ProjectDir)..\..\..\backend\dxvk\include\vulkan\include;$(D3DX9IncludeDir)'
-    }
-    'BridgeD3D9BackendTrace.vcxproj' = [ordered]@{
-        kind = 'build-include-relocation'
-        from = '$(ProjectDir)..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
-        to = '$(ProjectDir)..\..\..\backend\dxvk\include\vulkan\include;$(D3DX9IncludeDir)'
-    }
-    'EffectInspector.h' = [ordered]@{
-        kind = 'dxsdk-header-relocation'
-        from = '#include "../plugin-sdk/shared/dxsdk/d3dx9effect.h"'
-        to = '#include <d3dx9effect.h>'
-    }
-    'tests/BridgeLegacyPluginProbe.vcxproj' = [ordered]@{
-        kind = 'build-include-relocation'
-        from = '$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
-        to = '$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include'
-    }
-    'tests/BridgeVulkanPassProbe.vcxproj' = [ordered]@{
-        kind = 'build-include-relocation'
-        from = '$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
-        to = '$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include'
-    }
-    'tests/GtaSaCompatApi3Smoke.vcxproj' = [ordered]@{
-        kind = 'build-include-relocation'
-        from = '$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
-        to = '$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include'
-    }
-    'tests/ProperShadersStateJournalTests.vcxproj' = [ordered]@{
-        kind = 'build-include-relocation'
-        from = '$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
-        to = '$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include'
-    }
+    'BridgeD3D9.vcxproj' = @(
+        [ordered]@{
+            kind = 'build-include-relocation'
+            from = '$(ProjectDir)..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
+            to = '$(ProjectDir)..\..\..\backend\dxvk\include\vulkan\include;$(D3DX9IncludeDir)'
+        }
+    )
+    'BridgeD3D9BackendTrace.vcxproj' = @(
+        [ordered]@{
+            kind = 'build-include-relocation'
+            from = '$(ProjectDir)..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
+            to = '$(ProjectDir)..\..\..\backend\dxvk\include\vulkan\include;$(D3DX9IncludeDir)'
+        }
+        [ordered]@{
+            kind = 'build-source-inclusion'
+            from = '<ClCompile Include="BridgeD3D9.cpp" />'
+            to = '<ClCompile Include="BridgeD3D9.cpp" />' + "`n" +
+                '    <ClCompile Include="EffectInspector.cpp" />'
+        }
+    )
+    'EffectInspector.h' = @(
+        [ordered]@{
+            kind = 'dxsdk-header-relocation'
+            from = '#include "../plugin-sdk/shared/dxsdk/d3dx9effect.h"'
+            to = '#include <d3dx9effect.h>'
+        }
+    )
+    'ProperShadersStateJournal.h' = @(
+        [ordered]@{
+            kind = 'dxsdk-header-relocation'
+            from = '#include "../plugin-sdk/shared/dxsdk/d3dx9effect.h"'
+            to = '#include <d3dx9effect.h>'
+        }
+    )
+    'tests/BridgeLegacyPluginProbe.vcxproj' = @(
+        [ordered]@{
+            kind = 'build-include-relocation'
+            from = '$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
+            to = '$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include'
+        }
+    )
+    'tests/BridgeVulkanPassProbe.vcxproj' = @(
+        [ordered]@{
+            kind = 'build-include-relocation'
+            from = '$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
+            to = '$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include'
+        }
+    )
+    'tests/GtaSaCompatApi3Smoke.vcxproj' = @(
+        [ordered]@{
+            kind = 'build-include-relocation'
+            from = '$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
+            to = '$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include'
+        }
+    )
+    'tests/ProperShadersStateJournalTests.vcxproj' = @(
+        [ordered]@{
+            kind = 'build-include-relocation'
+            from = '$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
+            to = '$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include'
+        }
+    )
 }
 
 $manifest = [ordered]@{
@@ -154,8 +181,12 @@ foreach ($canonicalRelative in $canonicalAllowlist) {
 
     $sourceBytes = [IO.File]::ReadAllBytes($from)
     $text = Get-NormalizedUtf8Text -Bytes $sourceBytes
-    $transformation = $transforms[$canonicalRelative]
-    if ($null -ne $transformation) {
+    $transformations = if ($transforms.ContainsKey($canonicalRelative)) {
+        @($transforms[$canonicalRelative])
+    } else {
+        @()
+    }
+    foreach ($transformation in $transformations) {
         $occurrenceCount = Get-OrdinalOccurrenceCount -Text $text -Value $transformation.from
         if ($occurrenceCount -ne 1) {
             throw "Expected one '$($transformation.from)' occurrence in $canonicalRelative, found $occurrenceCount"
@@ -180,7 +211,7 @@ foreach ($canonicalRelative in $canonicalAllowlist) {
     New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null
     [IO.File]::WriteAllBytes($to, $destinationBytes)
     $transformationRows = [System.Collections.Generic.List[object]]::new()
-    if ($null -ne $transformation) {
+    foreach ($transformation in $transformations) {
         [void]$transformationRows.Add($transformation)
     }
     $manifest.files += [ordered]@{

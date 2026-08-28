@@ -56,8 +56,11 @@ try {
 
     $sourceText = @{
         'BridgeD3D9.vcxproj' = '$(ProjectDir)..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
-        'BridgeD3D9BackendTrace.vcxproj' = '$(ProjectDir)..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
+        'BridgeD3D9BackendTrace.vcxproj' =
+            '$(ProjectDir)..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include' + "`n" +
+            '<ClCompile Include="BridgeD3D9.cpp" />'
         'EffectInspector.h' = '#include "../plugin-sdk/shared/dxsdk/d3dx9effect.h"'
+        'ProperShadersStateJournal.h' = '#include "../plugin-sdk/shared/dxsdk/d3dx9effect.h"'
         'tests/BridgeLegacyPluginProbe.vcxproj' = '$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
         'tests/BridgeVulkanPassProbe.vcxproj' = '$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
         'tests/GtaSaCompatApi3Smoke.vcxproj' = '$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'

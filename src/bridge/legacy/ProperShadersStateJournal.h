@@ -2,7 +2,7 @@
 
 #include <windows.h>
 #include <d3d9.h>
-#include "../plugin-sdk/shared/dxsdk/d3dx9effect.h"
+#include <d3dx9effect.h>
 #include "d3d9_gta_sa_api.h"
 
 #include <atomic>

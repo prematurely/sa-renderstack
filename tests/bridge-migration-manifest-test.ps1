@@ -43,7 +43,7 @@ BridgeD3D9.cpp|AAF27275CFAFAACEC0A41F5175E2CC9F917027FF04ECB27530ECC71F4E27508E|
 BridgeD3D9.def|25B8D467061CB6259D12459463C96374416C165E052843BEEFB692F01B5768E0|25B8D467061CB6259D12459463C96374416C165E052843BEEFB692F01B5768E0
 BridgeD3D9.ini|231D338C08E21206244E7CCFF78BAABF71CDDEB507A8191E576BD43BDB801A99|231D338C08E21206244E7CCFF78BAABF71CDDEB507A8191E576BD43BDB801A99
 BridgeD3D9.vcxproj|2B60ACBA7070A93A561A32D55360EA643408582FCD7A5C57D14F5DCF910D7F8A|30514555A38C3C404B5715ED44D8EA8C2F761242B32404CB70F22AF48F6162D6
-BridgeD3D9BackendTrace.vcxproj|52607DA120CDA77D8D1DAB0A7BE3B0E242D15B710635BFC35259F61D6BF3976F|5B709F41BF50F492FF28E9F4700A090D5743A10C67F51873A8E284CDF17EE0AF
+BridgeD3D9BackendTrace.vcxproj|52607DA120CDA77D8D1DAB0A7BE3B0E242D15B710635BFC35259F61D6BF3976F|C1A92AB6276E336AA2F196FE2E695A4A4BEDDAF23BCBE48F7C5B679CCDE6728A
 BridgeD3D9Plugin.h|99A2CEAC01AD6303DA30F11072D06C5D6B5C11A019B7113985D7955EE20A7724|99A2CEAC01AD6303DA30F11072D06C5D6B5C11A019B7113985D7955EE20A7724
 BridgePerformanceProviderV1.h|E48B18037F5C2C8E5F213B2EFA4139BB725F0C2C300B51625FE42FD8DC8528DF|E48B18037F5C2C8E5F213B2EFA4139BB725F0C2C300B51625FE42FD8DC8528DF
 d3d9_gta_sa_api.h|6EBB0798EE196401395243EA0F6C211B57AD8DFCA18A272E897FA2447D7DB5A9|6EBB0798EE196401395243EA0F6C211B57AD8DFCA18A272E897FA2447D7DB5A9
@@ -59,7 +59,7 @@ ProperShadersBatchPolicy.h|5F4CEE210333C6391BF9EB3E6D4C3131FE9E59F00631DCDE857BD
 ProperShadersEffectBindingCache.h|E2D1B93284693FBA3F6017661E123A434E7724C973835D20006A6920AFC9F85E|E2D1B93284693FBA3F6017661E123A434E7724C973835D20006A6920AFC9F85E
 ProperShadersPatchValidation.h|DBB17167CBC5D1C973E64D81C31719CE5D1E92B1631735FF09E6E1E46C51E97C|DBB17167CBC5D1C973E64D81C31719CE5D1E92B1631735FF09E6E1E46C51E97C
 ProperShadersStateJournal.cpp|8F4A79F9EA89DAD3D8DD0AA083EBC446112617F33518747612C62CCB5519F39C|8F4A79F9EA89DAD3D8DD0AA083EBC446112617F33518747612C62CCB5519F39C
-ProperShadersStateJournal.h|3498FFE54CA8C8FADB3333F3B1513A052392E5113E95CFE2ADE5477985B62449|3498FFE54CA8C8FADB3333F3B1513A052392E5113E95CFE2ADE5477985B62449
+ProperShadersStateJournal.h|3498FFE54CA8C8FADB3333F3B1513A052392E5113E95CFE2ADE5477985B62449|41CF87B0F3A6676A99EF194B008E56C33C5D443C5B8502FBBC811B2665D2E0B1
 tests/BridgeD3D9.test.ini|47D59540E27E2874ECD12B1DBE6ADA31108B618682AB642F8BDA125B6E201EBA|47D59540E27E2874ECD12B1DBE6ADA31108B618682AB642F8BDA125B6E201EBA
 tests/BridgeLegacyPluginProbe.cpp|722C9355B88D9B78CC10A1F5935D78B142DE2BD71EE87B1159ABE37610BD93F5|722C9355B88D9B78CC10A1F5935D78B142DE2BD71EE87B1159ABE37610BD93F5
 tests/BridgeLegacyPluginProbe.def|38FFBFB8B43F2408C21EEFFA5B79650F2D4F9F6A1CE4F68B17973BFE98768ACF|38FFBFB8B43F2408C21EEFFA5B79650F2D4F9F6A1CE4F68B17973BFE98768ACF
@@ -87,6 +87,8 @@ tests/BridgeLegacyPluginProbe.vcxproj|build-include-relocation|$(ProjectDir)..\.
 tests/BridgeVulkanPassProbe.vcxproj|build-include-relocation|$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include|$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include
 tests/GtaSaCompatApi3Smoke.vcxproj|build-include-relocation|$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include|$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include
 tests/ProperShadersStateJournalTests.vcxproj|build-include-relocation|$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include|$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include
+BridgeD3D9BackendTrace.vcxproj|build-source-inclusion|<ClCompile Include="BridgeD3D9.cpp" />|<ClCompile Include="BridgeD3D9.cpp" />\n    <ClCompile Include="EffectInspector.cpp" />
+ProperShadersStateJournal.h|dxsdk-header-relocation|#include "../plugin-sdk/shared/dxsdk/d3dx9effect.h"|#include <d3dx9effect.h>
 '@
 
 $expectedRows = @(
@@ -112,11 +114,11 @@ $expectedTransformations = @(
             path = $fields[0]
             kind = $fields[1]
             from = $fields[2]
-            to = $fields[3]
+            to = $fields[3].Replace('\n', "`n")
         }
     }
 )
-if ($expectedRows.Count -ne 38 -or $expectedTransformations.Count -ne 7) {
+if ($expectedRows.Count -ne 38 -or $expectedTransformations.Count -ne 9) {
     throw 'Invalid literal Bridge anchor counts'
 }
 
@@ -370,14 +372,18 @@ foreach ($entry in $manifestFiles) {
     if ($actualTransformations.Count -ne $expectedTransformation.Count) {
         throw "Unexpected transformation count for $relativePath"
     }
-    if ($expectedTransformation.Count -eq 1) {
-        Assert-PropertySet -Object $actualTransformations[0] -Expected @(
+    for ($transformationIndex = 0;
+        $transformationIndex -lt $expectedTransformation.Count;
+        $transformationIndex++) {
+        $actualTransformation = $actualTransformations[$transformationIndex]
+        $expectedTransformationRow = $expectedTransformation[$transformationIndex]
+        Assert-PropertySet -Object $actualTransformation -Expected @(
             'kind', 'from', 'to'
-        ) -Label "Transformation '$relativePath'"
-        if ($actualTransformations[0].kind -cne $expectedTransformation[0].kind -or
-            $actualTransformations[0].from -cne $expectedTransformation[0].from -or
-            $actualTransformations[0].to -cne $expectedTransformation[0].to) {
-            throw "Transformation tuple differs for $relativePath"
+        ) -Label "Transformation '$relativePath' index $transformationIndex"
+        if ($actualTransformation.kind -cne $expectedTransformationRow.kind -or
+            $actualTransformation.from -cne $expectedTransformationRow.from -or
+            $actualTransformation.to -cne $expectedTransformationRow.to) {
+            throw "Transformation tuple differs for $relativePath at index $transformationIndex"
         }
     }
 
@@ -416,13 +422,13 @@ foreach ($entry in $manifestFiles) {
             throw "Audited Bridge source hash differs: $relativePath"
         }
         $derivedText = Get-NormalizedUtf8Text -Bytes $sourceBytes
-        if ($expectedTransformation.Count -eq 1) {
-            $oldText = $expectedTransformation[0].from
+        foreach ($expectedTransformationRow in $expectedTransformation) {
+            $oldText = $expectedTransformationRow.from
             $matchCount = ([regex]::Matches($derivedText, [regex]::Escape($oldText))).Count
             if ($matchCount -ne 1) {
                 throw "Audited Bridge transformation source count differs for $relativePath"
             }
-            $derivedText = $derivedText.Replace($oldText, $expectedTransformation[0].to)
+            $derivedText = $derivedText.Replace($oldText, $expectedTransformationRow.to)
         }
         if ($expectedNormalization -eq 'utf8-bomless-crlf') {
             $derivedText = $derivedText.Replace("`n", "`r`n")
