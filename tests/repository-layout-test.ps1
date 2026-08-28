@@ -12,10 +12,17 @@ $required = @(
     'docs',
     'packaging',
     'sdk',
+    'sdk/include/sa_renderstack',
     'src',
     'tests',
     'toolchains',
-    'tools'
+    'tools',
+    'tools/migration'
+)
+
+$required += @(
+    'sdk/include/sa_renderstack/.gitkeep',
+    'tools/migration/.gitkeep'
 )
 
 $missing = @($required | Where-Object {

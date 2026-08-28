@@ -5,7 +5,8 @@ $forbidden = Get-ChildItem -LiteralPath $root -Recurse -Force -File |
     Where-Object {
         $relative = [IO.Path]::GetRelativePath($root, $_.FullName).Replace('\', '/')
         $relative -notmatch '^(\.git|\.superpowers|out)/' -and
-        ($_.Extension -in @('.bak', '.log', '.exe', '.dll', '.pdb', '.obj', '.o') -or
+        ($relative -match '(^|/)build(/|$)' -or
+         $_.Extension -in @('.bak', '.log', '.exe', '.dll', '.pdb', '.obj', '.o') -or
          $_.Name -eq '.wraplock')
     }
 
