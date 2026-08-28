@@ -1,0 +1,28 @@
+{
+  "sourceLabel": "active-game-profile-audited-20260829",
+  "files": [
+    {
+      "path": "config/SA.RenderStack.ini",
+      "sourceSha256": "B16D6C68DB6A7BF71AD4AA5504B38AA11FB886AD4A0BF85689F667A1844CD748",
+      "normalizedSourceSha256": "71257E027B801814BBCAB45137A0A16FDFCC1B9EAD20B73C96B305805ECD21F1",
+      "sha256": "1B7547E4709950B61C123E19ACD9DAF3F430A5744BAFD5BBFF5E354C855863D5",
+      "normalization": "utf8-bomless-lf",
+      "transformations": [
+        {
+          "section": "Backend",
+          "key": "DxvkBackendDir",
+          "from": "dxvk-3.0.1-merged",
+          "to": "backend\\dxvk-gta"
+        }
+      ]
+    },
+    {
+      "path": "config/dxvk.conf",
+      "sourceSha256": "6D516372A9B71B786AB6CE886FB4CB8147BD1FE225B206150BA78603A66EEA9C",
+      "normalizedSourceSha256": "6D516372A9B71B786AB6CE886FB4CB8147BD1FE225B206150BA78603A66EEA9C",
+      "sha256": "6D516372A9B71B786AB6CE886FB4CB8147BD1FE225B206150BA78603A66EEA9C",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    }
+  ]
+}
