@@ -57,6 +57,50 @@ if ($missingCommitError -notmatch [regex]::Escape($missingCommit) -or
     throw "Nonexistent commit error is unclear: $missingCommitError"
 }
 
+$stagedBackup = @($backups | Where-Object {
+        $_.RelativePath -ceq $mutationPaths[0]
+    })[0]
+$stagedMutationError = $null
+try {
+    $stream = [IO.MemoryStream]::new()
+    try {
+        $stream.Write($stagedBackup.Bytes, 0, $stagedBackup.Bytes.Length)
+        $stream.Write($mutationSuffix, 0, $mutationSuffix.Length)
+        [IO.File]::WriteAllBytes($stagedBackup.FullPath, $stream.ToArray())
+    } finally {
+        $stream.Dispose()
+    }
+
+    $null = Invoke-GitBaselineText `
+        -Arguments @('add', '--', $stagedBackup.RelativePath) `
+        -Operation "staging historical regression path $($stagedBackup.RelativePath)"
+    $null = Invoke-GitBaselineText `
+        -Arguments @('diff', '--quiet', '--', $stagedBackup.RelativePath) `
+        -Operation 'proving the staged regression has no unstaged diff'
+    try {
+        Assert-GitTrackedPathsClean -Paths @($stagedBackup.RelativePath)
+    } catch {
+        $stagedMutationError = $_.Exception.Message
+    }
+    if ($null -eq $stagedMutationError) {
+        throw 'Staged tracked baseline mutation was accepted'
+    }
+    if ($stagedMutationError -notmatch 'Staged tracked baseline paths are dirty') {
+        throw "Staged mutation error is unclear: $stagedMutationError"
+    }
+} finally {
+    [IO.File]::WriteAllBytes($stagedBackup.FullPath, $stagedBackup.Bytes)
+    $null = Invoke-GitBaselineText `
+        -Arguments @('restore', '--staged', '--', $stagedBackup.RelativePath) `
+        -Operation "unstaging historical regression path $($stagedBackup.RelativePath)"
+}
+
+$stagedRestoredBytes = [IO.File]::ReadAllBytes($stagedBackup.FullPath)
+if (-not (Test-ByteSequenceEqual -Left $stagedRestoredBytes -Right $stagedBackup.Bytes)) {
+    throw "Staged historical regression did not restore bytes: $($stagedBackup.RelativePath)"
+}
+Assert-GitTrackedPathsClean -Paths @($stagedBackup.RelativePath)
+
 try {
     foreach ($backup in $backups) {
         $stream = [IO.MemoryStream]::new()

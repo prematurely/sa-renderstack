@@ -128,6 +128,13 @@ function Assert-GitTrackedPathsClean {
             -Arguments (@('diff', '--quiet', '--') + $Paths) `
             -Operation 'checking tracked baseline paths for changes'
     } catch {
-        throw "Tracked baseline paths are dirty: $($Paths -join ', '). $($_.Exception.Message)"
+        throw "Unstaged tracked baseline paths are dirty: $($Paths -join ', '). $($_.Exception.Message)"
+    }
+    try {
+        $null = Invoke-GitBaselineText `
+            -Arguments (@('diff', '--cached', '--quiet', '--') + $Paths) `
+            -Operation 'checking staged baseline paths for changes'
+    } catch {
+        throw "Staged tracked baseline paths are dirty: $($Paths -join ', '). $($_.Exception.Message)"
     }
 }
