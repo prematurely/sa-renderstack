@@ -1,0 +1,4 @@
+url = "https://github.com/doitsujin/dxvk.git"
+tag = "v3.0.1"
+commit = "c850747f1df24180ce97b7a9094603f39da1251d"
+import = "git-subtree-squash"
