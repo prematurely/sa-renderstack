@@ -162,7 +162,7 @@ $transforms = @{
         [ordered]@{
             kind = 'build-include-relocation'
             from = '$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include'
-            to = '$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include'
+            to = '$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include;$(D3DX9IncludeDir)'
         }
     )
 }

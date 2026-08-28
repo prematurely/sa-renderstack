@@ -76,7 +76,7 @@ tests/PerformanceAdaptersTests.vcxproj|113A977BB13884E6AF1B395790A00BEA4E5F2F08F
 tests/ProperShadersBatchPolicyTests.cpp|0843AC9C3DF2584E32DDC5FCF9393A8D5580813E613D410E46BCA49DDC6D3983|0843AC9C3DF2584E32DDC5FCF9393A8D5580813E613D410E46BCA49DDC6D3983
 tests/ProperShadersBatchPolicyTests.vcxproj|2F4D0D38FD74EAF05CBAE03EE40FFB68BD3BEE2BC0E1888FB787EC4E06F6A693|BCC1FA6185F8F14618C070AA9FE09F130D8CF69113ADDB198708C35D370A70D6
 tests/ProperShadersStateJournalTests.cpp|B3C521012579E3837B18750C43ACF3F4C7EB8B5EE8BE761831D2FB4DE89512D1|B3C521012579E3837B18750C43ACF3F4C7EB8B5EE8BE761831D2FB4DE89512D1
-tests/ProperShadersStateJournalTests.vcxproj|9E406EF79C26E51541A9767635000638FFC752F2CCA3DDA51D734693182811EF|FB9B98377D0772ECCBA97E72B3527C19262482A99859755CD670E7EFE0D8A71D
+tests/ProperShadersStateJournalTests.vcxproj|9E406EF79C26E51541A9767635000638FFC752F2CCA3DDA51D734693182811EF|8565E0F0F16CBA12E1D23FB9BB0B1BFEC408806ADBA97B30D6C04E0044791096
 '@
 
 $expectedTransformationsText = @'
@@ -86,7 +86,7 @@ EffectInspector.h|dxsdk-header-relocation|#include "../plugin-sdk/shared/dxsdk/d
 tests/BridgeLegacyPluginProbe.vcxproj|build-include-relocation|$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include|$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include
 tests/BridgeVulkanPassProbe.vcxproj|build-include-relocation|$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include|$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include
 tests/GtaSaCompatApi3Smoke.vcxproj|build-include-relocation|$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include|$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include
-tests/ProperShadersStateJournalTests.vcxproj|build-include-relocation|$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include|$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include
+tests/ProperShadersStateJournalTests.vcxproj|build-include-relocation|$(ProjectDir)..\..\dxvk\dxvk-3.0.1-bridge\include\vulkan\include|$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include;$(D3DX9IncludeDir)
 BridgeD3D9BackendTrace.vcxproj|build-source-inclusion|<ClCompile Include="BridgeD3D9.cpp" />|<ClCompile Include="BridgeD3D9.cpp" />\n    <ClCompile Include="EffectInspector.cpp" />
 ProperShadersStateJournal.h|dxsdk-header-relocation|#include "../plugin-sdk/shared/dxsdk/d3dx9effect.h"|#include <d3dx9effect.h>
 '@

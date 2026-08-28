@@ -21,6 +21,28 @@ if ($effectInspectorItems.Count -ne 1) {
     throw "Expected exactly one EffectInspector.cpp compile item in BridgeD3D9BackendTrace.vcxproj, found $($effectInspectorItems.Count)"
 }
 
+$journalTestProjectPath = Join-Path $legacyRoot 'tests/ProperShadersStateJournalTests.vcxproj'
+$journalTestProject = [xml](Read-StrictUtf8Text -Path $journalTestProjectPath)
+$journalIncludeDirectories = @(
+    $journalTestProject.SelectNodes(
+        "//*[local-name()='AdditionalIncludeDirectories']"
+    ) |
+        ForEach-Object { @([string]$_.InnerText -split ';') }
+)
+$d3dxIncludeCount = @(
+    $journalIncludeDirectories | Where-Object { $_ -ceq '$(D3DX9IncludeDir)' }
+).Count
+if ($d3dxIncludeCount -ne 1) {
+    throw "Expected exactly one D3DX9IncludeDir in ProperShadersStateJournalTests.vcxproj, found $d3dxIncludeCount"
+}
+$canonicalVulkanInclude = '$(ProjectDir)..\..\..\..\backend\dxvk\include\vulkan\include'
+$canonicalVulkanIncludeCount = @(
+    $journalIncludeDirectories | Where-Object { $_ -ceq $canonicalVulkanInclude }
+).Count
+if ($canonicalVulkanIncludeCount -ne 1) {
+    throw "Expected exactly one canonical Vulkan include in ProperShadersStateJournalTests.vcxproj, found $canonicalVulkanIncludeCount"
+}
+
 foreach ($header in @('EffectInspector.h', 'ProperShadersStateJournal.h')) {
     $headerText = Read-StrictUtf8Text -Path (Join-Path $legacyRoot $header)
     if (-not $headerText.Contains('#include <d3dx9effect.h>', [StringComparison]::Ordinal)) {

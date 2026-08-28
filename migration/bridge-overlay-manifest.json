@@ -310,13 +310,13 @@
     {
       "path": "tests/ProperShadersStateJournalTests.vcxproj",
       "sourceSha256": "9E406EF79C26E51541A9767635000638FFC752F2CCA3DDA51D734693182811EF",
-      "sha256": "FB9B98377D0772ECCBA97E72B3527C19262482A99859755CD670E7EFE0D8A71D",
+      "sha256": "8565E0F0F16CBA12E1D23FB9BB0B1BFEC408806ADBA97B30D6C04E0044791096",
       "normalization": "utf8-bomless-crlf",
       "transformations": [
         {
           "kind": "build-include-relocation",
           "from": "$(ProjectDir)..\\..\\dxvk\\dxvk-3.0.1-bridge\\include\\vulkan\\include",
-          "to": "$(ProjectDir)..\\..\\..\\..\\backend\\dxvk\\include\\vulkan\\include"
+          "to": "$(ProjectDir)..\\..\\..\\..\\backend\\dxvk\\include\\vulkan\\include;$(D3DX9IncludeDir)"
         }
       ]
     }
