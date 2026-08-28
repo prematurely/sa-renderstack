@@ -24,7 +24,7 @@ $expectedHeaderSha256 = '72D6665D54C425B8A99FE0716518B2711F7CECE6A3B2F8E7C6FC307
 
 $downloadTemp = $null
 $extractTemp = $null
-$replacementBackup = $null
+$cache = $null
 $failureMessage = $null
 
 function Get-FullPath {
@@ -51,6 +51,89 @@ function Assert-PathUnder {
     return $fullPath
 }
 
+function Get-PathState {
+    param([Parameter(Mandatory)] [string]$Path)
+
+    try {
+        return [pscustomobject]@{
+            Exists = $true
+            Attributes = [IO.File]::GetAttributes($Path)
+        }
+    } catch [IO.FileNotFoundException] {
+        return [pscustomobject]@{ Exists = $false; Attributes = $null }
+    } catch [IO.DirectoryNotFoundException] {
+        return [pscustomobject]@{ Exists = $false; Attributes = $null }
+    }
+}
+
+function Assert-NoReparsePath {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string]$Anchor,
+        [Parameter(Mandatory)] [string]$Description
+    )
+
+    $fullPath = Assert-PathUnder -Path $Path -Base $Anchor -Description $Description
+    $fullAnchor = Get-FullPath -Path $Anchor
+    $relative = [IO.Path]::GetRelativePath($fullAnchor, $fullPath)
+    $components = [Collections.Generic.List[string]]::new()
+    [void]$components.Add($fullAnchor)
+    if ($relative -ne '.') {
+        $current = $fullAnchor
+        foreach ($segment in $relative.Split(
+                [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar),
+                [StringSplitOptions]::RemoveEmptyEntries)) {
+            $current = Join-Path $current $segment
+            [void]$components.Add($current)
+        }
+    }
+
+    foreach ($component in $components) {
+        $state = Get-PathState -Path $component
+        if (-not $state.Exists) {
+            break
+        }
+        if (($state.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Description contains a reparse point: $component"
+        }
+    }
+
+    return $fullPath
+}
+
+function Assert-NoReparseTree {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string]$Anchor,
+        [Parameter(Mandatory)] [string]$Description
+    )
+
+    $rootPath = Assert-NoReparsePath -Path $Path -Anchor $Anchor -Description $Description
+    $rootState = Get-PathState -Path $rootPath
+    if (-not $rootState.Exists) {
+        throw "$Description does not exist: $rootPath"
+    }
+    if (($rootState.Attributes -band [IO.FileAttributes]::Directory) -eq 0) {
+        return
+    }
+
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $pending.Push($rootPath)
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($directory)) {
+            $entryPath = Assert-PathUnder -Path $entry -Base $rootPath -Description $Description
+            $attributes = [IO.File]::GetAttributes($entryPath)
+            if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "$Description contains a reparse point: $entryPath"
+            }
+            if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+                $pending.Push($entryPath)
+            }
+        }
+    }
+}
+
 function Get-UniqueSiblingPath {
     param(
         [Parameter(Mandatory)] [string]$Base,
@@ -61,8 +144,8 @@ function Get-UniqueSiblingPath {
     for ($attempt = 0; $attempt -lt 100; $attempt++) {
         $name = "$Prefix$([Guid]::NewGuid().ToString('N'))$Extension"
         $candidate = Join-Path $Base $name
-        $candidate = Assert-PathUnder -Path $candidate -Base $Base -Description 'Temporary path'
-        if (-not (Test-Path -LiteralPath $candidate)) {
+        $candidate = Assert-NoReparsePath -Path $candidate -Anchor $Base -Description 'Temporary path'
+        if (-not (Get-PathState -Path $candidate).Exists) {
             return $candidate
         }
     }
@@ -108,8 +191,13 @@ function Remove-GuardedPath {
         [Parameter(Mandatory)] [string]$Cache
     )
 
-    $safePath = Assert-PathUnder -Path $Path -Base $Cache -Description 'Cleanup path'
-    if (Test-Path -LiteralPath $safePath) {
+    $safePath = Assert-NoReparsePath -Path $Path -Anchor $Cache -Description 'Cleanup path'
+    $state = Get-PathState -Path $safePath
+    if ($state.Exists) {
+        if (($state.Attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+            Assert-NoReparseTree -Path $safePath -Anchor $Cache -Description 'Cleanup tree'
+        }
+        Assert-NoReparsePath -Path $safePath -Anchor $Cache -Description 'Cleanup path' | Out-Null
         Remove-Item -LiteralPath $safePath -Recurse -Force -ErrorAction Stop
     }
 }
@@ -117,9 +205,11 @@ function Remove-GuardedPath {
 function Copy-DownloadedPackage {
     param(
         [Parameter(Mandatory)] [string]$Url,
-        [Parameter(Mandatory)] [string]$Destination
+        [Parameter(Mandatory)] [string]$Destination,
+        [Parameter(Mandatory)] [string]$Cache
     )
 
+    Assert-NoReparsePath -Path $Destination -Anchor $Cache -Description 'Download destination' | Out-Null
     if (Test-Path -LiteralPath $Url -PathType Leaf) {
         [IO.File]::Copy((Get-FullPath -Path $Url), $Destination, $false)
         return
@@ -145,11 +235,13 @@ function Extract-ValidatedArchive {
     param(
         [Parameter(Mandatory)] [string]$ArchivePath,
         [Parameter(Mandatory)] [string]$Destination,
-        [Parameter(Mandatory)] [string]$RequiredEntry
+        [Parameter(Mandatory)] [string]$RequiredEntry,
+        [Parameter(Mandatory)] [string]$Cache
     )
 
     $archive = $null
     try {
+        Assert-NoReparsePath -Path $ArchivePath -Anchor $Cache -Description 'Package archive' | Out-Null
         $archive = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
         $entryNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         $entries = [Collections.Generic.List[object]]::new()
@@ -177,24 +269,30 @@ function Extract-ValidatedArchive {
             throw "ZIP archive is missing required file entry: $RequiredEntry"
         }
 
-        $safeDestination = Assert-PathUnder -Path $Destination -Base $Destination -Description 'Extraction path'
+        $safeDestination = Assert-NoReparsePath -Path $Destination -Anchor $Cache -Description 'Extraction path'
+        Assert-NoReparsePath -Path $safeDestination -Anchor $Cache -Description 'Extraction path' | Out-Null
         New-Item -ItemType Directory -Force -Path $safeDestination | Out-Null
+        Assert-NoReparsePath -Path $safeDestination -Anchor $Cache -Description 'Extraction path' | Out-Null
         foreach ($row in $entries) {
             $relativePath = $row.Path.Replace('/', [IO.Path]::DirectorySeparatorChar)
             $targetPath = Join-Path $safeDestination $relativePath
-            $targetPath = Assert-PathUnder -Path $targetPath -Base $safeDestination -Description 'ZIP extraction target'
+            $targetPath = Assert-NoReparsePath -Path $targetPath -Anchor $safeDestination -Description 'ZIP extraction target'
             if ($row.IsDirectory) {
+                Assert-NoReparsePath -Path $targetPath -Anchor $safeDestination -Description 'ZIP extraction directory' | Out-Null
                 New-Item -ItemType Directory -Force -Path $targetPath | Out-Null
+                Assert-NoReparsePath -Path $targetPath -Anchor $safeDestination -Description 'ZIP extraction directory' | Out-Null
                 continue
             }
 
             $parent = Split-Path -Parent $targetPath
-            Assert-PathUnder -Path $parent -Base $safeDestination -Description 'ZIP extraction parent' | Out-Null
+            Assert-NoReparsePath -Path $parent -Anchor $safeDestination -Description 'ZIP extraction parent' | Out-Null
             New-Item -ItemType Directory -Force -Path $parent | Out-Null
+            Assert-NoReparsePath -Path $parent -Anchor $safeDestination -Description 'ZIP extraction parent' | Out-Null
             $inputStream = $null
             $outputStream = $null
             try {
                 $inputStream = $row.Entry.Open()
+                Assert-NoReparsePath -Path $targetPath -Anchor $safeDestination -Description 'ZIP extraction file' | Out-Null
                 $outputStream = [IO.File]::Open($targetPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
                 $inputStream.CopyTo($outputStream)
             } finally {
@@ -206,6 +304,7 @@ function Extract-ValidatedArchive {
                 }
             }
         }
+        Assert-NoReparseTree -Path $safeDestination -Anchor $Cache -Description 'Extracted package tree'
     } catch {
         throw "ZIP validation or extraction failed: $($_.Exception.Message)"
     } finally {
@@ -215,12 +314,46 @@ function Extract-ValidatedArchive {
     }
 }
 
+function Test-PublishedPackage {
+    param(
+        [Parameter(Mandatory)] [string]$PackageDirectory,
+        [Parameter(Mandatory)] [string]$Cache,
+        [Parameter(Mandatory)] [string]$RequiredHeader,
+        [Parameter(Mandatory)] [string]$ExpectedHeaderSha256
+    )
+
+    $safePackageDirectory = Assert-NoReparsePath -Path $PackageDirectory -Anchor $Cache `
+        -Description 'Published package path'
+    $packageState = Get-PathState -Path $safePackageDirectory
+    if (-not $packageState.Exists) {
+        return $false
+    }
+    if (($packageState.Attributes -band [IO.FileAttributes]::Directory) -eq 0) {
+        throw "Published package is invalid: final path is not a directory: $safePackageDirectory"
+    }
+
+    Assert-NoReparseTree -Path $safePackageDirectory -Anchor $Cache -Description 'Published package tree'
+    $headerPath = Join-Path $safePackageDirectory ($RequiredHeader.Replace('/', [IO.Path]::DirectorySeparatorChar))
+    $headerPath = Assert-NoReparsePath -Path $headerPath -Anchor $safePackageDirectory `
+        -Description 'Published package header'
+    $headerState = Get-PathState -Path $headerPath
+    if (-not $headerState.Exists -or ($headerState.Attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+        throw "Published package is invalid: required header is missing: $headerPath"
+    }
+    $headerHash = Get-FileSha256 -Path $headerPath
+    if ($headerHash -cne $ExpectedHeaderSha256) {
+        throw "Published package is invalid: header SHA-256 mismatch: expected $ExpectedHeaderSha256, got $headerHash"
+    }
+
+    return $true
+}
+
 try {
-    $root = Assert-PathUnder -Path (Get-FullPath -Path (Join-Path $PSScriptRoot '..')) `
-        -Base (Get-FullPath -Path (Join-Path $PSScriptRoot '..')) -Description 'Repository root'
+    $root = Get-FullPath -Path (Join-Path $PSScriptRoot '..')
     if (-not (Test-Path -LiteralPath $root -PathType Container)) {
         throw "Repository root does not exist: $root"
     }
+    Assert-NoReparsePath -Path $root -Anchor $root -Description 'Repository root' | Out-Null
 
     $cache = Get-FullPath -Path (Join-Path $root "out/deps/$packageId/$packageVersion")
     Assert-PathUnder -Path $cache -Base $root -Description 'D3DX cache directory' | Out-Null
@@ -229,84 +362,107 @@ try {
     $packageDirectory = Assert-PathUnder -Path (Join-Path $cache 'package') `
         -Base $cache -Description 'Package directory'
 
-    Assert-PathUnder -Path $cache -Base $cache -Description 'Cache directory' | Out-Null
-    New-Item -ItemType Directory -Force -Path $cache | Out-Null
-    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
-
-    $cachedPackageValid = $false
-    if (Test-Path -LiteralPath $packageArchive) {
-        if (-not (Test-Path -LiteralPath $packageArchive -PathType Leaf)) {
-            throw "Cached package path is not a file: $packageArchive"
+    Assert-NoReparsePath -Path $cache -Anchor $root -Description 'D3DX cache directory' | Out-Null
+    $cacheState = Get-PathState -Path $cache
+    if ($cacheState.Exists) {
+        if (($cacheState.Attributes -band [IO.FileAttributes]::Directory) -eq 0) {
+            throw "D3DX cache path is not a directory: $cache"
         }
-        $cachedHash = Get-FileSha256 -Path $packageArchive
-        if ($cachedHash -ceq $expectedPackageSha256) {
-            $cachedPackageValid = $true
-            Write-Output "Using verified cached package: $packageArchive"
-        } else {
-            Write-Output "Cached package hash mismatch; downloading a verified replacement"
-        }
+    } else {
+        Assert-NoReparsePath -Path $cache -Anchor $root -Description 'D3DX cache directory' | Out-Null
+        New-Item -ItemType Directory -Path $cache -Force | Out-Null
+        Assert-NoReparsePath -Path $cache -Anchor $root -Description 'D3DX cache directory' | Out-Null
     }
 
-    if (-not $cachedPackageValid) {
-        $downloadTemp = Get-UniqueSiblingPath -Base $cache -Prefix 'package-download-' -Extension '.tmp'
-        Copy-DownloadedPackage -Url $PackageUrl -Destination $downloadTemp
-        $downloadHash = Get-FileSha256 -Path $downloadTemp
-        if ($downloadHash -cne $expectedPackageSha256) {
-            throw "Downloaded package SHA-256 mismatch: expected $expectedPackageSha256, got $downloadHash"
-        }
-
-        Assert-PathUnder -Path $downloadTemp -Base $cache -Description 'Downloaded package path' | Out-Null
-        Assert-PathUnder -Path $packageArchive -Base $cache -Description 'Cached package replacement path' | Out-Null
-        [IO.File]::Move($downloadTemp, $packageArchive, $true)
-        $downloadTemp = $null
-        Write-Output "Cached verified package: $packageArchive"
-    }
-
-    $extractTemp = Get-UniqueSiblingPath -Base $cache -Prefix 'package-extract-' -Extension ''
-    Assert-PathUnder -Path $extractTemp -Base $cache -Description 'Extraction directory' | Out-Null
-    Extract-ValidatedArchive -ArchivePath $packageArchive -Destination $extractTemp -RequiredEntry $requiredHeader
-    $headerPath = Assert-PathUnder -Path (Join-Path $extractTemp ($requiredHeader.Replace('/', [IO.Path]::DirectorySeparatorChar))) `
-        -Base $extractTemp -Description 'Required header path'
-    $headerHash = Get-FileSha256 -Path $headerPath
-    if ($headerHash -cne $expectedHeaderSha256) {
-        throw "Extracted header SHA-256 mismatch: expected $expectedHeaderSha256, got $headerHash"
-    }
-
-    if (Test-Path -LiteralPath $packageDirectory) {
-        if (-not (Test-Path -LiteralPath $packageDirectory -PathType Container)) {
-            throw "Final package path is not a directory: $packageDirectory"
-        }
-        $replacementBackup = Get-UniqueSiblingPath -Base $cache -Prefix 'package-old-' -Extension ''
-        Assert-PathUnder -Path $packageDirectory -Base $cache -Description 'Existing package path' | Out-Null
-        Assert-PathUnder -Path $replacementBackup -Base $cache -Description 'Package backup path' | Out-Null
-        [IO.Directory]::Move($packageDirectory, $replacementBackup)
-    }
-
-    Assert-PathUnder -Path $extractTemp -Base $cache -Description 'Package publication source' | Out-Null
-    Assert-PathUnder -Path $packageDirectory -Base $cache -Description 'Package publication target' | Out-Null
-    try {
-        [IO.Directory]::Move($extractTemp, $packageDirectory)
-        $extractTemp = $null
-    } catch {
-        if ($null -ne $replacementBackup -and (Test-Path -LiteralPath $replacementBackup) -and
-            -not (Test-Path -LiteralPath $packageDirectory)) {
-            try {
-                Assert-PathUnder -Path $replacementBackup -Base $cache -Description 'Package rollback source' | Out-Null
-                Assert-PathUnder -Path $packageDirectory -Base $cache -Description 'Package rollback target' | Out-Null
-                [IO.Directory]::Move($replacementBackup, $packageDirectory)
-                $replacementBackup = $null
-            } catch {
-                throw "Package publication failed and rollback failed: $($_.Exception.Message)"
+    $publishedPackageValid = Test-PublishedPackage -PackageDirectory $packageDirectory -Cache $cache `
+        -RequiredHeader $requiredHeader -ExpectedHeaderSha256 $expectedHeaderSha256
+    if ($publishedPackageValid) {
+        Write-Output "Using verified published package: $packageDirectory"
+    } else {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+        Assert-NoReparsePath -Path $packageArchive -Anchor $cache -Description 'Cached package archive' | Out-Null
+        $archiveState = Get-PathState -Path $packageArchive
+        $cachedPackageValid = $false
+        if ($archiveState.Exists) {
+            if (($archiveState.Attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+                throw "Cached package path is not a file: $packageArchive"
+            }
+            $cachedHash = Get-FileSha256 -Path $packageArchive
+            if ($cachedHash -ceq $expectedPackageSha256) {
+                $cachedPackageValid = $true
+                Write-Output "Using verified cached package: $packageArchive"
+            } else {
+                Write-Output 'Cached package hash mismatch; downloading a verified replacement'
             }
         }
-        throw "Package publication failed: $($_.Exception.Message)"
+
+        if (-not $cachedPackageValid) {
+            $downloadTemp = Get-UniqueSiblingPath -Base $cache -Prefix 'package-download-' -Extension '.tmp'
+            Copy-DownloadedPackage -Url $PackageUrl -Destination $downloadTemp -Cache $cache
+            Assert-NoReparsePath -Path $downloadTemp -Anchor $cache -Description 'Downloaded package path' | Out-Null
+            $downloadHash = Get-FileSha256 -Path $downloadTemp
+            if ($downloadHash -cne $expectedPackageSha256) {
+                throw "Downloaded package SHA-256 mismatch: expected $expectedPackageSha256, got $downloadHash"
+            }
+
+            Assert-NoReparsePath -Path $downloadTemp -Anchor $cache -Description 'Downloaded package path' | Out-Null
+            Assert-NoReparsePath -Path $packageArchive -Anchor $cache -Description 'Cached package replacement path' | Out-Null
+            [IO.File]::Move($downloadTemp, $packageArchive, $true)
+            $downloadTemp = $null
+            Assert-NoReparsePath -Path $packageArchive -Anchor $cache -Description 'Cached package archive' | Out-Null
+            if ((Get-FileSha256 -Path $packageArchive) -cne $expectedPackageSha256) {
+                throw "Cached package SHA-256 changed during publication: $packageArchive"
+            }
+            Write-Output "Cached verified package: $packageArchive"
+        }
+
+        $extractTemp = Get-UniqueSiblingPath -Base $cache -Prefix 'package-extract-' -Extension ''
+        Assert-NoReparsePath -Path $extractTemp -Anchor $cache -Description 'Extraction directory' | Out-Null
+        Extract-ValidatedArchive -ArchivePath $packageArchive -Destination $extractTemp `
+            -RequiredEntry $requiredHeader -Cache $cache
+        $headerRelativePath = $requiredHeader.Replace('/', [IO.Path]::DirectorySeparatorChar)
+        $headerCandidate = Join-Path $extractTemp $headerRelativePath
+        $headerPath = Assert-NoReparsePath -Path $headerCandidate -Anchor $extractTemp `
+            -Description 'Required header path'
+        $headerHash = Get-FileSha256 -Path $headerPath
+        if ($headerHash -cne $expectedHeaderSha256) {
+            throw "Extracted header SHA-256 mismatch: expected $expectedHeaderSha256, got $headerHash"
+        }
+        Assert-NoReparseTree -Path $extractTemp -Anchor $cache -Description 'Extracted package tree'
+
+        $concurrentPackageValid = Test-PublishedPackage -PackageDirectory $packageDirectory -Cache $cache `
+            -RequiredHeader $requiredHeader -ExpectedHeaderSha256 $expectedHeaderSha256
+        if ($concurrentPackageValid) {
+            Write-Output "Using concurrently published package: $packageDirectory"
+        } else {
+            Assert-NoReparseTree -Path $extractTemp -Anchor $cache -Description 'Package publication source'
+            Assert-NoReparsePath -Path $extractTemp -Anchor $cache -Description 'Package publication source' | Out-Null
+            Assert-NoReparsePath -Path $packageDirectory -Anchor $cache -Description 'Package publication target' | Out-Null
+            try {
+                [IO.Directory]::Move($extractTemp, $packageDirectory)
+                $extractTemp = $null
+                if (-not (Test-PublishedPackage -PackageDirectory $packageDirectory -Cache $cache `
+                        -RequiredHeader $requiredHeader -ExpectedHeaderSha256 $expectedHeaderSha256)) {
+                    throw "Published package disappeared after directory rename: $packageDirectory"
+                }
+                Write-Output "Published verified package: $packageDirectory"
+            } catch {
+                $publicationError = $_.Exception.Message
+                $winnerValid = Test-PublishedPackage -PackageDirectory $packageDirectory -Cache $cache `
+                    -RequiredHeader $requiredHeader -ExpectedHeaderSha256 $expectedHeaderSha256
+                if (-not $winnerValid) {
+                    throw "Package publication failed: $publicationError"
+                }
+                Write-Output "Using concurrently published package: $packageDirectory"
+            }
+        }
     }
 } catch {
     $failureMessage = $_.Exception.Message
 } finally {
     $cleanupErrors = [Collections.Generic.List[string]]::new()
-    foreach ($temporaryPath in @($downloadTemp, $extractTemp, $replacementBackup)) {
-        if ($null -eq $temporaryPath) {
+    foreach ($temporaryPath in @($downloadTemp, $extractTemp)) {
+        if ($null -eq $temporaryPath -or $null -eq $cache) {
             continue
         }
         try {

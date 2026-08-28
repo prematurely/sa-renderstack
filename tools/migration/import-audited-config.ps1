@@ -88,9 +88,8 @@ function Get-BackendTargetLineIndex {
                     throw 'Bridge config contains multiple [Backend] sections'
                 }
                 $backendStart = $index + 1
-            } elseif ($null -ne $backendStart) {
+            } elseif ($null -ne $backendStart -and $backendEnd -eq $lines.Count) {
                 $backendEnd = $index
-                break
             }
         }
     }
