@@ -33,16 +33,42 @@ function Get-OrdinalOccurrenceCount {
 }
 
 function Assert-SafeRelativePath {
-    param([Parameter(Mandatory)] [string]$Path)
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string]$Path)
+
+    if ([string]::IsNullOrEmpty($Path)) {
+        throw "Unsafe Bridge overlay path '$Path': empty path or segment"
+    }
+    if ([IO.Path]::IsPathRooted($Path) -or $Path -match '^(\\|//)') {
+        throw "Unsafe Bridge overlay path '$Path': rooted/UNC path"
+    }
+    if ($Path.Contains(':')) {
+        throw "Unsafe Bridge overlay path '$Path': colon or ADS"
+    }
+    if ($Path.Contains('\')) {
+        throw "Unsafe Bridge overlay path '$Path': non-canonical separator"
+    }
 
     $canonical = $Path.Replace('\', '/')
-    if ($Path -cne $canonical -or
-        [IO.Path]::IsPathRooted($Path) -or
-        @($canonical.Split('/')) -contains '..' -or
-        [string]::IsNullOrWhiteSpace($canonical) -or
-        $canonical -match $forbiddenPathPattern) {
-        throw "Forbidden Bridge allowlist entry: $Path"
+    foreach ($segment in $canonical.Split('/')) {
+        if ([string]::IsNullOrEmpty($segment)) {
+            throw "Unsafe Bridge overlay path '$Path': empty path segment"
+        }
+        if ($segment -eq '.' -or $segment -eq '..') {
+            throw "Unsafe Bridge overlay path '$Path': dot path segment"
+        }
+        if ($segment.Equals('.wraplock', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Unsafe Bridge overlay path '$Path': wraplock path component"
+        }
+        if ($segment.EndsWith('.') -or $segment.EndsWith(' ')) {
+            throw "Unsafe Bridge overlay path '$Path': trailing dot or space segment"
+        }
     }
+
+    if ($canonical -match '(^|/)build(/|$)|\.bak$|\.log$|\.exe$|\.dll$|\.pdb$|\.map$|\.obj$|\.o$|\.tlog$') {
+        throw "Unsafe Bridge overlay path '$Path': forbidden artifact path"
+    }
+
+    return $canonical
 }
 
 function Get-NormalizedUtf8Text {
@@ -67,9 +93,13 @@ $allowlist = @(
 if ($allowlist.Count -ne 38) {
     throw "Unexpected Bridge overlay count: $($allowlist.Count)"
 }
-if (@($allowlist | ForEach-Object { $_.ToLowerInvariant() } |
+
+$canonicalAllowlist = @($allowlist | ForEach-Object {
+    Assert-SafeRelativePath -Path $_
+})
+if (@($canonicalAllowlist | ForEach-Object { $_.ToLowerInvariant() } |
         Group-Object | Where-Object Count -gt 1).Count) {
-    throw 'Bridge overlay allowlist contains case-insensitive duplicates'
+    throw 'Bridge overlay allowlist contains case-insensitive duplicate canonical path'
 }
 
 $transforms = @{
@@ -115,13 +145,11 @@ $manifest = [ordered]@{
     files = @()
 }
 
-foreach ($relative in $allowlist) {
-    Assert-SafeRelativePath -Path $relative
-    $canonicalRelative = $relative.Replace('\', '/')
-    $from = Join-Path $Source $relative
+foreach ($canonicalRelative in $canonicalAllowlist) {
+    $from = Join-Path $Source $canonicalRelative
     $to = Join-Path $destination ($canonicalRelative.Replace('/', '\'))
     if (-not (Test-Path -LiteralPath $from -PathType Leaf)) {
-        throw "Missing audited source file: $from"
+        throw "Missing audited source file: $canonicalRelative"
     }
 
     $sourceBytes = [IO.File]::ReadAllBytes($from)
@@ -130,7 +158,7 @@ foreach ($relative in $allowlist) {
     if ($null -ne $transformation) {
         $occurrenceCount = Get-OrdinalOccurrenceCount -Text $text -Value $transformation.from
         if ($occurrenceCount -ne 1) {
-            throw "Expected one '$($transformation.from)' occurrence in $relative, found $occurrenceCount"
+            throw "Expected one '$($transformation.from)' occurrence in $canonicalRelative, found $occurrenceCount"
         }
         $text = $text.Replace($transformation.from, $transformation.to)
     }
@@ -145,7 +173,7 @@ foreach ($relative in $allowlist) {
         $destinationBytes[0] -eq 0xEF -and
         $destinationBytes[1] -eq 0xBB -and
         $destinationBytes[2] -eq 0xBF) {
-        throw "Destination contains a UTF-8 BOM: $relative"
+        throw "Destination contains a UTF-8 BOM: $canonicalRelative"
     }
 
     $destinationDirectory = Split-Path -Parent $to
