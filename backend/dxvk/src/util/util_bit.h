@@ -492,8 +492,8 @@ namespace dxvk::bit {
     void set(uint32_t idx, bool value) {
       ensureSize(idx + 1);
 
-      uint32_t dword = 0;
-      uint32_t bit   = idx;
+      uint32_t dword = idx / 32;
+      uint32_t bit   = idx % 32;
 
       if (value)
         m_dwords[dword] |= 1u << bit;

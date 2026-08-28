@@ -167,6 +167,55 @@ namespace dxvk {
 
     /// Add an extra front buffer to make GetFrontBufferData() work correctly when the swapchain only has a single buffer
     bool extraFrontbuffer;
+
+    /// Enables the GTA San Andreas compatibility runtime and its native
+    /// Vulkan capability interface.
+    bool gtaSaCompat;
+
+    /// Logs GTA San Andreas device lifecycle and Vulkan backend details.
+    bool gtaSaCompatDiagnostics;
+
+    /// Skips state-block setter calls when the saved value already exactly
+    /// matches the logical D3D9 device state.
+    bool gtaSaStateBlockPrefilter;
+
+    /// Skips a repeated state-block Apply when neither the device logical
+    /// state nor the state block contents changed since its previous Apply.
+    bool gtaSaStateBlockFastSkip;
+
+    /// Defers backend vertex and pixel shader binds until the next draw so
+    /// transient state-block restore/reapply cycles collapse to one decision.
+    bool gtaSaDeferShaderBinding;
+
+    /// Defers scalar blend-factor and stencil-reference backend updates until
+    /// the next draw so transient state-block cycles collapse to one command.
+    bool gtaSaDeferScalarStateBindings;
+
+    /// Avoids emitting an identical D3D9 input-layout command when the
+    /// declaration, vertex shader, and instance stream configuration are
+    /// unchanged.
+    bool gtaSaInputLayoutCache;
+
+    /// Coalesces all dirty fixed-function push-data updates for one draw into
+    /// a single command-stream callback while preserving their update order.
+    bool gtaSaCoalescePushData;
+
+    /// Coalesces specialization constants and push-data updates when both are
+    /// dirty for the same draw. Specialization is still written first.
+    bool gtaSaCoalesceSpecAndPushData;
+
+    /// Coalesces dirty sampler bindings for one draw into a single
+    /// command-stream callback while preserving ascending sampler order.
+    bool gtaSaCoalesceSamplerBindings;
+
+    /// Coalesces dirty texture image-view bindings for one draw into a single
+    /// command-stream callback while preserving ascending sampler order.
+    bool gtaSaCoalesceTextureBindings;
+
+    /// Avoids queuing a producer-side sampler or image-view callback when the
+    /// effective binding is already the last binding queued for that slot.
+    /// The cache is invalidated on device reset and never changes D3D9 state.
+    bool gtaSaResourceBindingCache;
   };
 
 }

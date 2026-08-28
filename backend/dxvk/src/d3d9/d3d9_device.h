@@ -21,6 +21,8 @@
 #include "d3d9_swvp_emu.h"
 
 #include "d3d9_interop.h"
+#include "d3d9_gta_sa_compat.h"
+#include "d3d9_gta_sa_deferred_binding.h"
 #include "d3d9_on_12.h"
 
 #include <cstdint>
@@ -60,7 +62,9 @@ namespace dxvk {
     Framebuffer,
     ClipPlanes,
     DepthStencilState,
+    StencilReference,
     BlendState,
+    BlendFactor,
     RasterizerState,
     DepthBias,
     AlphaTestState,
@@ -1007,9 +1011,27 @@ namespace dxvk {
 
     void BindSampler(DWORD Sampler);
 
+    void BindSamplerBatch(uint32_t mask);
+
     void BindTexture(DWORD SamplerSampler);
 
+    void BindTextureBatch(uint32_t mask);
+
     void UnbindTextures(uint32_t mask);
+
+    bool PrepareGtaSaSamplerBinding(
+      DWORD                                      Sampler,
+      const std::array<DWORD, SamplerStateCount>& State,
+      bool                                       IsCube,
+      bool                                       IsMultiMip,
+      bool                                       IsDepth,
+      const Rc<DxvkImageView>&                   BorderView);
+
+    bool PrepareGtaSaTextureBinding(
+      DWORD                    Sampler,
+      const Rc<DxvkImageView>& View);
+
+    void InvalidateGtaSaResourceBindingCache();
 
     void UndirtySamplers(uint32_t mask);
 
@@ -1041,6 +1063,20 @@ namespace dxvk {
     template <D3D9ShaderType ShaderStage>
     void BindFFUbershader();
 
+    template <D3D9ShaderType ShaderStage>
+    void BindShaderModule(Rc<DxvkShader> shader);
+
+    template <D3D9ShaderType ShaderStage>
+    void MarkGtaSaDeferredShaderBinding();
+
+    template <D3D9ShaderType ShaderStage>
+    void InvalidateGtaSaDeferredShaderBinding();
+
+    template <D3D9ShaderType ShaderStage>
+    void FlushGtaSaDeferredShaderBinding();
+
+    void FlushGtaSaDeferredShaderBindings();
+
     void BindInputLayout();
 
     void BindVertexBuffer(
@@ -1066,8 +1102,69 @@ namespace dxvk {
       return &m_d3d9Options;
     }
 
+    uint64_t GetGtaSaSamplerBindingCacheHits() const {
+      return m_gtaSaSamplerBindingCacheHits;
+    }
+
+    uint64_t GetGtaSaTextureBindingCacheHits() const {
+      return m_gtaSaTextureBindingCacheHits;
+    }
+
+    uint64_t GetGtaSaResourceBindingCacheInvalidations() const {
+      return m_gtaSaResourceBindingCacheInvalidations;
+    }
+
+    void NotifyGtaSaPresent() {
+      if (m_d3d9BatchSize != 0u) {
+        m_gtaSaCompat.RecordD3D9BatchComplete(
+          m_d3d9BatchSize, D3D9GtaSaBatchBreakReason::Present);
+        m_d3d9BatchSize = 0u;
+      }
+      m_gtaSaCompat.OnPresent();
+    }
+
+    D3D9GtaSaCompatDevice* GetGtaSaCompat() {
+      return &m_gtaSaCompat;
+    }
+
+    HRESULT SubmitGtaSaStateBatch(
+      const D3D9GtaSaStateBatch* pBatch);
+
+    HRESULT ApplyGtaSaStateBatch(
+      const D3D9GtaSaStateBatch* pBatch);
+
+    HRESULT SubmitGtaSaEffectStateBatch(
+      const D3D9GtaSaEffectStateBatch* pBatch);
+
+    HRESULT SubmitGtaSaStateDrawBatch(
+      const D3D9GtaSaStateDrawBatch* pBatch);
+
+    HRESULT BeginGtaSaStateJournal(bool selective = false);
+
+    HRESULT SetGtaSaStateJournalCaptureEnabled(BOOL Enable);
+
+    HRESULT RestoreGtaSaStateJournal();
+
+    void DiscardGtaSaStateJournal();
+
+    bool ShouldCaptureGtaSaStateJournal() const {
+      return m_gtaSaStateJournal != nullptr
+          && (!m_gtaSaStateJournalSelective || m_gtaSaStateJournalCaptureEnabled);
+    }
+
+    void RestoreGtaSaUndefinedLight(DWORD Index);
+
     Direct3DState9* GetRawState() {
       return &m_state;
+    }
+
+    uint64_t GetGtaSaStateSerial() const {
+      return m_gtaSaStateSerial;
+    }
+
+    void NotifyGtaSaStateChanged() {
+      if (m_d3d9Options.gtaSaStateBlockFastSkip)
+        m_gtaSaStateSerial++;
     }
 
     void Begin(D3D9Query* pQuery);
@@ -1226,9 +1323,19 @@ namespace dxvk {
 
   private:
 
+    void CloseD3D9DrawBatch(
+      D3D9GtaSaBatchBreakReason reason) {
+      if (m_d3d9BatchSize == 0u)
+        return;
+
+      m_gtaSaCompat.RecordD3D9BatchComplete(m_d3d9BatchSize, reason);
+      m_d3d9BatchSize = 0u;
+    }
+
     template<bool AllowFlush = true, typename Cmd>
     void EmitCs(Cmd&& command) {
       if (unlikely(m_csDataType != D3D9CmdType::None)) {
+        CloseD3D9DrawBatch(D3D9GtaSaBatchBreakReason::Command);
         m_csData = nullptr;
         m_csDataType = D3D9CmdType::None;
       }
@@ -1246,6 +1353,12 @@ namespace dxvk {
 
     template<typename M, bool AllowFlush = true, typename Cmd>
     DxvkCsDataBlock* EmitCsCmd(D3D9CmdType type, size_t count, Cmd&& command) {
+      if (m_csDataType != D3D9CmdType::None && m_csDataType != type) {
+        CloseD3D9DrawBatch(type == D3D9CmdType::None
+          ? D3D9GtaSaBatchBreakReason::Command
+          : D3D9GtaSaBatchBreakReason::DrawType);
+      }
+
       m_csDataType = type;
       m_csData = m_csChunk->pushCmd<M, Cmd>(command, count);
 
@@ -1264,11 +1377,13 @@ namespace dxvk {
       return m_csData;
     }
 
-    void EmitCsChunk(DxvkCsChunkRef&& chunk);
+    void EmitCsChunk(
+      DxvkCsChunkRef&&           chunk,
+      D3D9GtaSaBatchBreakReason reason = D3D9GtaSaBatchBreakReason::ChunkFull);
 
     void FlushCsChunk() {
       if (likely(!m_csChunk->empty())) {
-        EmitCsChunk(std::move(m_csChunk));
+        EmitCsChunk(std::move(m_csChunk), D3D9GtaSaBatchBreakReason::Flush);
         m_csChunk = AllocCsChunk();
       }
     }
@@ -1451,6 +1566,8 @@ namespace dxvk {
 
     void BindSpecConstants();
 
+    void BindSpecConstantsAndPushData();
+
     void TrackBufferMappingBufferSequenceNumber(
       D3D9CommonBuffer* pResource);
 
@@ -1584,7 +1701,16 @@ namespace dxvk {
     D3D9FFShaderModuleSet           m_ffModules;
     D3D9SWVPEmulator                m_swvpEmulator;
 
+    std::array<D3D9GtaSaDeferredBindingTracker<const DxvkShader*>,
+      uint32_t(D3D9ShaderType::PixelShader) + 1u> m_gtaSaDeferredShaderBindings;
+    std::array<Rc<DxvkShader>,
+      uint32_t(D3D9ShaderType::PixelShader) + 1u> m_gtaSaBoundShaderModules;
+
     Com<D3D9StateBlock, false>      m_recorder;
+    Com<D3D9StateBlock, false>      m_gtaSaStateJournal;
+    Com<D3D9StateBlock, false>      m_gtaSaStateJournalCache;
+    bool                            m_gtaSaStateJournalSelective = false;
+    bool                            m_gtaSaStateJournalCaptureEnabled = false;
 
     Rc<D3D9ShaderModuleSet>         m_shaderModules;
 
@@ -1618,9 +1744,37 @@ namespace dxvk {
     D3D9Multithread                 m_multithread;
     D3D9InputAssemblyState          m_iaState;
 
+    // Producer-side key for the last input-layout command. The COM holders
+    // prevent pointer reuse from making two different immutable objects look
+    // identical to the cache.
+    Com<D3D9VertexDecl,  false>       m_gtaSaInputLayoutDecl;
+    Com<D3D9VertexShader, false>      m_gtaSaInputLayoutShader;
+    std::array<UINT, caps::MaxStreams> m_gtaSaInputLayoutStreamFreq = {};
+    uint32_t                          m_gtaSaInputLayoutInstanced = 0u;
+    bool                              m_gtaSaInputLayoutValid = false;
+
     D3D9DeviceDirtyFlags            m_dirty;
 
     D3D9TextureSlotTracking         m_textureSlotTracking;
+
+    struct GtaSaSamplerBindingCacheEntry {
+      D3D9SamplerInfo                     state = D3D9SamplerInfo(
+        std::array<DWORD, SamplerStateCount> { });
+      bool                                  isCube = false;
+      bool                                  isMultiMip = false;
+      bool                                  isDepth = false;
+      Rc<DxvkImageView>                     borderView;
+    };
+
+    std::array<Rc<DxvkImageView>, SamplerCount>
+      m_gtaSaTextureBindingCache = {};
+    std::array<GtaSaSamplerBindingCacheEntry, SamplerCount>
+      m_gtaSaSamplerBindingCache = {};
+    uint32_t m_gtaSaTextureBindingCacheValid = 0u;
+    uint32_t m_gtaSaSamplerBindingCacheValid = 0u;
+    uint64_t m_gtaSaSamplerBindingCacheHits = 0u;
+    uint64_t m_gtaSaTextureBindingCacheHits = 0u;
+    uint64_t m_gtaSaResourceBindingCacheInvalidations = 0u;
 
     D3D9RTSlotTracking              m_rtSlotTracking;
 
@@ -1664,6 +1818,7 @@ namespace dxvk {
 
     D3D9CmdType                     m_csDataType = D3D9CmdType::None;
     DxvkCsDataBlock*                m_csData = nullptr;
+    uint32_t                        m_d3d9BatchSize = 0u;
 
     Rc<sync::Fence>                 m_submissionFence;
     uint64_t                        m_submissionId = 0ull;
@@ -1690,11 +1845,13 @@ namespace dxvk {
 
     // m_state should be declared last (i.e. freed first), because it
     // references objects that can call back into the device when freed.
+    uint64_t                        m_gtaSaStateSerial = 1u;
     Direct3DState9                  m_state;
     D3D9PushData                    m_pushData = {};
     D3D9SpecData                    m_specData = {};
 
     D3D9VkInteropDevice             m_d3d9Interop;
+    D3D9GtaSaCompatDevice           m_gtaSaCompat;
     D3D9ON12_ARGS                   m_d3d9On12Args = { };
     D3D9On12                        m_d3d9On12;
     DxvkD3D8Bridge                  m_d3d8Bridge;

@@ -551,6 +551,17 @@ namespace dxvk {
             uint32_t                count,
             VkCommandBuffer*        commandBuffers);
 
+    /**
+     * \brief Retrieves the active command buffer for an external pass
+     *
+     * The caller may only record commands. Ending, resetting, or submitting
+     * this command buffer is owned by DXVK.
+     */
+    VkCommandBuffer getExternalCommandBuffer() {
+      m_cmd.execCommands = true;
+      return getCmdBuffer();
+    }
+
 
     void updateDescriptorSets(
             uint32_t                      descriptorWriteCount,

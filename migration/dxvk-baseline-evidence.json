@@ -1,0 +1,48 @@
+{
+  "sourceReportSha256": "BD99955F9FB6BB51196B857CF13720F9F6B6EB83384B89DC5290F8ED9B3FA100",
+  "auditedBackendSha256": "69454C02480981686731B7975EDEA5452E64F02425624BEA410C3A432933FF5F",
+  "priorProbeResults": [
+    {
+      "name": "d3d9_batch_audit_test",
+      "exitCode": 0
+    },
+    {
+      "name": "d3d9_deferred_shader_binding_test",
+      "exitCode": 0
+    },
+    {
+      "name": "dxvk_state_dedup_test",
+      "exitCode": 0
+    },
+    {
+      "name": "stateblock_prefilter_probe",
+      "exitCode": 0
+    },
+    {
+      "name": "gta_sa_compat_probe",
+      "exitCode": 0
+    }
+  ],
+  "probeSourceSha256": [
+    {
+      "path": "tools/d3d9_batch_audit_test.cpp",
+      "sourceSha256": "A6B07F80A0EBF18642A65F804B14FF78A5B8435F0670556CD36C79B8E44AE587"
+    },
+    {
+      "path": "tools/d3d9_deferred_shader_binding_test.cpp",
+      "sourceSha256": "8E37D884BEBC54EDBF3E2FF158A545F659A36F9ABDE23E0931819FECDCCF08A2"
+    },
+    {
+      "path": "tools/dxvk_state_dedup_test.cpp",
+      "sourceSha256": "BDA34449CB39D901A9BA99033519833F347ECF52AC6AA18E00CB21E16A51490D"
+    },
+    {
+      "path": "tools/gta_sa_compat_probe.cpp",
+      "sourceSha256": "3B18BFB2E1B512B18C747615441F7EAD6A108AFF66E5351D9CAFFA87005FC5F8"
+    },
+    {
+      "path": "tools/stateblock_prefilter_probe.cpp",
+      "sourceSha256": "1EB7F9FA66E678426A709CF30F8DE93D433BB642C1F7BD55520E257CE65793CC"
+    }
+  ]
+}

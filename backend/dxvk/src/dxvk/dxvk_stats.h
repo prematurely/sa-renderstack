@@ -13,6 +13,10 @@ namespace dxvk {
   enum class DxvkStatCounter : uint32_t {
     CmdDrawCalls,             ///< Number of draw calls
     CmdDrawsMerged,           ///< Number of unique draws, minus draw calls
+    CmdDrawMultiCalls,        ///< Number of Vulkan multi-draw calls
+    CmdDrawMultiDraws,        ///< Number of logical draws in Vulkan multi-draw calls
+    CmdDrawMultiBarrierBatches, ///< Number of multi-draw batches split by hazards
+    CmdDrawMultiBarrierDraws, ///< Number of logical draws split by hazards
     CmdDispatchCalls,         ///< Number of compute calls
     CmdRenderPassCount,       ///< Number of render passes
     CmdBarrierCount,          ///< Number of pipeline barriers

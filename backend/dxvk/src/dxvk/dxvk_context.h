@@ -12,6 +12,8 @@
 #include "dxvk_queue.h"
 #include "dxvk_util.h"
 
+#include <cstring>
+
 namespace dxvk {
 
   /**
@@ -961,6 +963,15 @@ namespace dxvk {
             uint32_t                  size,
       const void*                     data) {
       uint32_t baseOffset = DxvkPushDataBlock::computeBlockOffsetForStage(stages);
+
+      // Re-uploading identical bytes only dirties the push-data state and
+      // causes another Vulkan push operation. Pipeline and command-buffer
+      // transitions set DirtyPushData independently when a re-upload is
+      // required, so identical setter values can be ignored here.
+      if (size != 0u
+       && std::memcmp(&m_state.pc.constantData[baseOffset + offset], data, size) == 0)
+        return;
+
       std::memcpy(&m_state.pc.constantData[baseOffset + offset], data, size);
 
       m_flags.set(DxvkContextFlag::DirtyPushData);

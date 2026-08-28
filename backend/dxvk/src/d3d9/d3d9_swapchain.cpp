@@ -111,6 +111,8 @@ namespace dxvk {
           DWORD    dwFlags) {
     D3D9DeviceLock lock = m_parent->LockDevice();
 
+    m_parent->NotifyGtaSaPresent();
+
     m_parent->SetMostRecentlyUsedSwapchain(this);
 
     if (unlikely(m_parent->IsDeviceLost()))
@@ -888,7 +890,8 @@ namespace dxvk {
         cDstRect        = dstRect,
         cSync           = sync,
         cFrameId        = m_wctx->frameId,
-        cLatency        = m_latencyTracker
+        cLatency        = m_latencyTracker,
+        cGtaSaCompat    = m_parent->GetGtaSaCompat()
       ] (DxvkContext* ctx) {
         // Update back buffer color space as necessary
         if (cSrcView->image()->info().colorSpace != cColorSpace) {
@@ -903,6 +906,29 @@ namespace dxvk {
 
         cBlitter->present(contextObjects,
           cDstView, cDstRect, cSrcView, cSrcRect);
+
+        if (cGtaSaCompat->HasVulkanPasses()) {
+          VkExtent3D srcExtent = cSrcView->mipLevelExtent(0u);
+          VkExtent3D dstExtent = cDstView->mipLevelExtent(0u);
+
+          cGtaSaCompat->RunVulkanPasses(
+            cFrameId,
+            contextObjects->getExternalCommandBuffer(),
+            cSrcView->image()->handle(),
+            cSrcView->handle(),
+            cSrcView->getLayout(),
+            cSrcView->info().format,
+            VkExtent2D { srcExtent.width, srcExtent.height },
+            cSrcView->imageSubresources(),
+            cSrcView->image()->info().usage,
+            cDstView->image()->handle(),
+            cDstView->handle(),
+            cDstView->image()->info().layout,
+            cDstView->info().format,
+            VkExtent2D { dstExtent.width, dstExtent.height },
+            cDstView->imageSubresources(),
+            cDstView->image()->info().usage);
+        }
 
         // Submit command list and present
         ctx->synchronizeWsi(cSync);

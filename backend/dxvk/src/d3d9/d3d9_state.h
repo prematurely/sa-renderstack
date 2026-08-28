@@ -543,6 +543,27 @@ namespace dxvk {
     float mipLodBias;
     DWORD maxMipLevel;
     DWORD maxAnisotropy;
+
+    bool usesBorderColor() const {
+      return addressU == D3DTADDRESS_BORDER
+          || addressV == D3DTADDRESS_BORDER
+          || addressW == D3DTADDRESS_BORDER;
+    }
+
+    bool eq(const D3D9SamplerInfo& other) const {
+      return addressU == other.addressU
+          && addressV == other.addressV
+          && addressW == other.addressW
+          && ((!usesBorderColor() && !other.usesBorderColor())
+            || borderColor == other.borderColor)
+          && magFilter == other.magFilter
+          && minFilter == other.minFilter
+          && mipFilter == other.mipFilter
+          && bit::cast<uint32_t>(mipLodBias)
+            == bit::cast<uint32_t>(other.mipLodBias)
+          && maxMipLevel == other.maxMipLevel
+          && maxAnisotropy == other.maxAnisotropy;
+    }
   };
 
   template <template <typename T> typename ItemType>
@@ -627,6 +648,9 @@ namespace dxvk {
           dstData[arrayIdx] |= bit;
       }
 
+      // Keep upstream DXVK's unconditional bool-constant upload semantics.
+      // D3D9 effect and state-block transitions may require re-emitting an
+      // unchanged CPU-side bitfield after the active shader path changes.
       return true;
     } else {
       static_assert(sizeof(T) == 4u);

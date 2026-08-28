@@ -1,0 +1,186 @@
+{
+  "sourceLabel": "dxvk-3.0.1-bridge-audited-20260828",
+  "upstreamCommit": "c850747f1df24180ce97b7a9094603f39da1251d",
+  "files": [
+    {
+      "path": "meson_options.txt",
+      "sourceSha256": "75DD24BAF0C080D013AFDE82ABBFC913FBD1E818E88FABEF48604E4C1EA1E054",
+      "sha256": "E08A0E9E84F058955C8B67F0D74AE4D3D0AE221F1635D6BD9FFACF2E2F5835A4",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_device.cpp",
+      "sourceSha256": "A856C83A18EBDB32D877A25F10060EE611B3E07B2AEEA76096058293EC4851F7",
+      "sha256": "E20BA109B5F60C83579A11C1C5D26F552ACBF2A80518C646C8A61952C6CC48C8",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_device.h",
+      "sourceSha256": "F27A8565261801A1F97D880BA613DDEBF59574BCD6E7D5D14FE87969D54519D0",
+      "sha256": "EFD9B9F2569AD59FE0D2F033F8C17A39F1B3A8E4E725F4025DC213550D17D70B",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_interfaces.h",
+      "sourceSha256": "25FAEA033D35A5F6B9156BB6E43817D91C1B56374F228B301A42DFD425433263",
+      "sha256": "822A2E89FA50A420B1D82C888B336CAD21EB165405D5872C471541610295B991",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_options.cpp",
+      "sourceSha256": "F2FF365ABB5F695D4CB72C589957C529C7052BA97A08657C7F019164DE01D780",
+      "sha256": "809CF861A5BDA1001692C596F4D30AF881E6B52E901DE15636B7284501C8A096",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_options.h",
+      "sourceSha256": "B4EC4BAE5C31FFC4D186B244A8C255CEFA9799D1B3B7AD351524744AD5820CED",
+      "sha256": "E4844976F6B618C6A7FD2A5098E3385DFC48475800DEF422DB273D47B09E0FD8",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_state.h",
+      "sourceSha256": "1F205E8EF4FC54F9C5AE34344E74E439E99B6C0F377A9DFCB58BCB1F1C6A2D61",
+      "sha256": "28A72190BC26798AB8B8103F3DE8E70F90B126498946BEE52961A57C5D81D0CE",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_stateblock.cpp",
+      "sourceSha256": "984530F71967D18D73A0433806B8C897FDE9C11B5D5EB1D9F01BC827680ABBB4",
+      "sha256": "41CC126D2FEDB6082779E193EEDF7B9F4AC4D79879C60FD5BBD0EE32F454FD53",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_stateblock.h",
+      "sourceSha256": "29EC73C113BA7C22A4D5EBC91125D893CE5A8880611337B3310441BC089B6EF5",
+      "sha256": "2DDAFAFCF701BB4DFAD58D2F3E3727B6773102DDC546E2C112B5B6318514476A",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_swapchain.cpp",
+      "sourceSha256": "0C1CCAAA9674B727732819FE960E98FD8F8428178A1D56F066E1758A6FFD9315",
+      "sha256": "6FB561DB533D095050F4F0F38FD84D75F9D2BF269904BC80707F83C3BB6A5341",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/meson.build",
+      "sourceSha256": "A0B160FBBE030FED37C2F21AD23B42B395D33C9A0D2AA998B90969CE67BC6CD7",
+      "sha256": "ABF141F3FFD540EC0233E88713BF2E91F88C3E71EB69FE70F3E65F9F21702AD1",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/dxgi/dxgi_main.cpp",
+      "sourceSha256": "5ABEE0C31191D0BBA63D594DEC8213AF4FE9D9D15CFF0D85912C446C14CB2E6F",
+      "sha256": "FB2B91A5A3082D4121FC91DBD6352E1FE6681A1A98DDD3BE54BFCCCE4F7D957A",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/dxvk/dxvk_cmdlist.h",
+      "sourceSha256": "B279143A752F79539266B18DAEE02FAADEEB6B25D486632C46A3C7C7559436FF",
+      "sha256": "A84530DDF189AF468B9FB52503183E5C0BD8436E94141EEABBC50C7E3BD649E5",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/dxvk/dxvk_context.cpp",
+      "sourceSha256": "0BAC13C3459B1C220090C10647A24B230C25299FFDF13DE283A4D96CB5636DA2",
+      "sha256": "F14E16DFCAB3FA782AF35411CC309FFFC15D12A11EC7EB3B6B9CF02B5EE4F5B5",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/dxvk/dxvk_context.h",
+      "sourceSha256": "5D6E9CAA395437E527E3416543EAC1568170A85A667B6A0653A6C42E895E1493",
+      "sha256": "E6E6861ECADE23ACF807495A4B9AFE1F17E1A37B8C3137EFBB629C022DE314AB",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/dxvk/dxvk_graphics_state.h",
+      "sourceSha256": "1E1A0CCC0FE2CE22CB0871A4218DB42C139311B15EA02DB7C3D00F415EB6DFEC",
+      "sha256": "F7D6A5AE34595D22D9F3AA4AB1FEC1FBA0780D604486BC6277D5DC50C00874FE",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/dxvk/dxvk_stats.h",
+      "sourceSha256": "B9B3E7FE9636D68D26371401E676BE0B29441253560553C03A8BF24B7B77AF14",
+      "sha256": "EB906BEA4D2AF79B245486387FDEC19AB2BC8CE6EEAEBC799B97A5B35F6C34FC",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/util/config/config.cpp",
+      "sourceSha256": "1F3F511DE07BA6E647DCA7FBE950D496F02E52819C243A3977B0FD90FBC62A4F",
+      "sha256": "67902680E24E85FA83FFC13906C34116AEDD55BE09C9EA1E09486E31EA828E1A",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/util/util_bit.h",
+      "sourceSha256": "6020BBF3A2ADDA4501A70A3B44F169BE1269DAB071F072AF762C37667976B099",
+      "sha256": "63B2A8D906D7182BF139193F683568AA7B6D822842F79154D3A0DDBD9107BA74",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "include/d3d9_gta_sa_api.h",
+      "sourceSha256": "98A18E993376E911FD7297772C2BDE6E95DA6D8AB6091E9608DDCE3694AE3F79",
+      "sha256": "98A18E993376E911FD7297772C2BDE6E95DA6D8AB6091E9608DDCE3694AE3F79",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_gta_sa_compat.cpp",
+      "sourceSha256": "CB0E222E485C3DEFFA86A7CC42748A87E22D41CDD6D1EAE807412089748E958D",
+      "sha256": "CB0E222E485C3DEFFA86A7CC42748A87E22D41CDD6D1EAE807412089748E958D",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_gta_sa_compat.h",
+      "sourceSha256": "A2D3C732DFE761761F603B83F389B653A383CB91BE91BEFB1EDBB240DFD918DD",
+      "sha256": "A2D3C732DFE761761F603B83F389B653A383CB91BE91BEFB1EDBB240DFD918DD",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_gta_sa_deferred_binding.h",
+      "sourceSha256": "1989BD84694DB3FAADAB418ED2AA940152831B35170628CAC2676D60B70814ED",
+      "sha256": "1989BD84694DB3FAADAB418ED2AA940152831B35170628CAC2676D60B70814ED",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "src/d3d9/d3d9_merged.def",
+      "sourceSha256": "398C0531C1C5865C6D6FEEB01F1C5447AB25355BAFF1635A5A126879A16B5343",
+      "sha256": "398C0531C1C5865C6D6FEEB01F1C5447AB25355BAFF1635A5A126879A16B5343",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "GTA_SA_COMPAT.md",
+      "sourceSha256": "766E996FBB27437F579D4F180C6B4EEAE245B601CAC7D007F3B8714783DC6902",
+      "sha256": "766E996FBB27437F579D4F180C6B4EEAE245B601CAC7D007F3B8714783DC6902",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "tools/gta_sa_compat_probe.cpp",
+      "sourceSha256": "3B18BFB2E1B512B18C747615441F7EAD6A108AFF66E5351D9CAFFA87005FC5F8",
+      "sha256": "3B18BFB2E1B512B18C747615441F7EAD6A108AFF66E5351D9CAFFA87005FC5F8",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "tools/stateblock_prefilter_probe.cpp",
+      "sourceSha256": "1EB7F9FA66E678426A709CF30F8DE93D433BB642C1F7BD55520E257CE65793CC",
+      "sha256": "1EB7F9FA66E678426A709CF30F8DE93D433BB642C1F7BD55520E257CE65793CC",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "tools/d3d9_batch_audit_test.cpp",
+      "sourceSha256": "A6B07F80A0EBF18642A65F804B14FF78A5B8435F0670556CD36C79B8E44AE587",
+      "sha256": "A6B07F80A0EBF18642A65F804B14FF78A5B8435F0670556CD36C79B8E44AE587",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "tools/d3d9_deferred_shader_binding_test.cpp",
+      "sourceSha256": "8E37D884BEBC54EDBF3E2FF158A545F659A36F9ABDE23E0931819FECDCCF08A2",
+      "sha256": "8E37D884BEBC54EDBF3E2FF158A545F659A36F9ABDE23E0931819FECDCCF08A2",
+      "normalization": "utf8-bomless-lf"
+    },
+    {
+      "path": "tools/dxvk_state_dedup_test.cpp",
+      "sourceSha256": "BDA34449CB39D901A9BA99033519833F347ECF52AC6AA18E00CB21E16A51490D",
+      "sha256": "BDA34449CB39D901A9BA99033519833F347ECF52AC6AA18E00CB21E16A51490D",
+      "normalization": "utf8-bomless-lf"
+    }
+  ]
+}

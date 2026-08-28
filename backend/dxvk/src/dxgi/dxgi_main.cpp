@@ -2,8 +2,9 @@
 #include "dxgi_include.h"
 
 namespace dxvk {
-  
+#ifndef DXVK_MERGED_D3D9_DXGI
   Logger Logger::s_instance("dxgi.log");
+#endif
   
   HRESULT createDxgiFactory(UINT Flags, REFIID riid, void **ppFactory) {
     try {

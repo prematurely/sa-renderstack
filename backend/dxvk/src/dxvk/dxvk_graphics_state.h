@@ -45,6 +45,12 @@ namespace dxvk {
       return m_patchVertexCount;
     }
 
+    bool eq(const DxvkIaInfo& other) const {
+      return primitiveTopology() == other.primitiveTopology()
+          && primitiveRestart() == other.primitiveRestart()
+          && patchVertexCount() == other.patchVertexCount();
+    }
+
   private:
 
     uint16_t m_primitiveTopology      : 4;
@@ -314,6 +320,12 @@ namespace dxvk {
       m_sampleCount = uint16_t(sampleCount);
     }
 
+    bool eq(const DxvkMsInfo& other) const {
+      return sampleCount() == other.sampleCount()
+          && sampleMask() == other.sampleMask()
+          && enableAlphaToCoverage() == other.enableAlphaToCoverage();
+    }
+
   private:
 
     uint16_t m_sampleCount            : 5;
@@ -548,6 +560,17 @@ namespace dxvk {
       result.alphaBlendOp        = VkBlendOp(m_alphaBlendOp);
       result.colorWriteMask      = VkColorComponentFlags(m_colorWriteMask);
       return result;
+    }
+
+    bool eq(const DxvkOmAttachmentBlend& other) const {
+      return blendEnable() == other.blendEnable()
+          && srcColorBlendFactor() == other.srcColorBlendFactor()
+          && dstColorBlendFactor() == other.dstColorBlendFactor()
+          && colorBlendOp() == other.colorBlendOp()
+          && srcAlphaBlendFactor() == other.srcAlphaBlendFactor()
+          && dstAlphaBlendFactor() == other.dstAlphaBlendFactor()
+          && alphaBlendOp() == other.alphaBlendOp()
+          && colorWriteMask() == other.colorWriteMask();
     }
 
   private:

@@ -253,6 +253,8 @@ ID3D9VkInteropDevice : public IUnknown {
           IDirect3DResource9**      ppResult) = 0;
 };
 
+#include <d3d9_gta_sa_api.h>
+
 /**
  * \brief D3D9 current output metadata
  */

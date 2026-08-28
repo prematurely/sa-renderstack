@@ -11,15 +11,78 @@
 
 namespace dxvk {
 
-  D3D9StateBlock::D3D9StateBlock(D3D9DeviceEx* pDevice, D3D9StateBlockType Type)
-    : D3D9StateBlockBase(pDevice)
-    , m_deviceState     (pDevice->GetRawState()) {
+  D3D9StateBlock::D3D9StateBlock(
+          D3D9DeviceEx*      pDevice,
+          D3D9StateBlockType Type,
+          bool               forcePrefilter,
+          bool               countLosableResource,
+          bool               journal)
+    : D3D9StateBlockBase      (pDevice)
+    , m_deviceState           (pDevice->GetRawState())
+    , m_prefilter             (forcePrefilter || pDevice->GetOptions()->gtaSaStateBlockPrefilter)
+    , m_fastSkip              (pDevice->GetOptions()->gtaSaStateBlockFastSkip)
+    , m_countLosableResource  (countLosableResource)
+    , m_journal               (journal) {
     CaptureType(Type);
   }
 
   D3D9StateBlock::~D3D9StateBlock() {
-    if (!m_parent->IsD3D8Compatible())
+    if (m_countLosableResource && !m_parent->IsD3D8Compatible())
       m_parent->DecrementLosableCounter();
+  }
+
+
+  void D3D9StateBlock::ResetJournal() {
+    m_hasApplied = false;
+
+    m_state.vertexDecl = nullptr;
+    m_state.indices = nullptr;
+    m_state.vertexShader = nullptr;
+    m_state.pixelShader = nullptr;
+
+    if (m_state.vertexBuffers) {
+      for (auto& stream : m_state.vertexBuffers.get()) {
+        stream.vertexBuffer = nullptr;
+        stream.offset = 0u;
+        stream.length = 0u;
+        stream.stride = 0u;
+      }
+    }
+
+    if (m_state.textures) {
+      for (auto& texture : m_state.textures.get())
+        TextureChangePrivate(texture, nullptr);
+    }
+
+    m_state.lights.clear();
+
+    m_captures.flags = D3D9CapturedStateFlags();
+    m_captures.renderStates.clearAll();
+    m_captures.samplers.clearAll();
+    for (auto& states : m_captures.samplerStates)
+      states.clearAll();
+    m_captures.vertexBuffers.clearAll();
+    m_captures.textures.clearAll();
+    m_captures.clipPlanes.clearAll();
+    m_captures.streamFreq.clearAll();
+    m_captures.transforms.clearAll();
+    m_captures.textureStages.clearAll();
+    for (auto& states : m_captures.textureStageStates)
+      states.clearAll();
+    m_captures.vsConsts.fConsts.clearAll();
+    m_captures.vsConsts.iConsts.clearAll();
+    m_captures.vsConsts.bConsts.clearAll();
+    m_captures.vsConsts.fDwordCount = 0u;
+    m_captures.vsConsts.iDwordCount = 0u;
+    m_captures.vsConsts.bDwordCount = 0u;
+    m_captures.psConsts.fConsts.clearAll();
+    m_captures.psConsts.iConsts.clearAll();
+    m_captures.psConsts.bConsts.clearAll();
+    m_captures.psConsts.fDwordCount = 0u;
+    m_captures.psConsts.iDwordCount = 0u;
+    m_captures.psConsts.bDwordCount = 0u;
+    m_captures.lightChanges.clearAll();
+    m_captures.lightEnabledChanges.clearAll();
   }
 
   HRESULT STDMETHODCALLTYPE D3D9StateBlock::QueryInterface(
@@ -52,10 +115,17 @@ namespace dxvk {
     if (unlikely(m_parent->ShouldRecord()))
       return D3DERR_INVALIDCALL;
 
+    const uint64_t auditBegin = m_parent->GetGtaSaCompat()->BeginStateAuditTiming();
+
     if (m_captures.flags.test(D3D9CapturedStateFlag::VertexDecl))
       SetVertexDeclaration(m_deviceState->vertexDecl.ptr());
 
     ApplyOrCapture<D3D9StateFunction::Capture, true>();
+
+    m_hasApplied = false;
+
+    m_parent->GetGtaSaCompat()->RecordStateAuditTiming(
+      D3D9GtaSaStateAuditKind::StateBlockCapture, auditBegin);
 
     return D3D_OK;
   }
@@ -68,10 +138,27 @@ namespace dxvk {
     if (unlikely(m_parent->ShouldRecord()))
       return D3DERR_INVALIDCALL;
 
-    if (m_captures.flags.test(D3D9CapturedStateFlag::VertexDecl) && m_state.vertexDecl != nullptr)
+    const uint64_t auditBegin = m_parent->GetGtaSaCompat()->BeginStateAuditTiming();
+
+    if (m_fastSkip && m_prefilter && !m_journal && m_hasApplied
+     && m_lastAppliedStateSerial == m_parent->GetGtaSaStateSerial()) {
+      m_parent->GetGtaSaCompat()->RecordStateBlockFastSkip();
+      m_parent->GetGtaSaCompat()->RecordStateAuditTiming(
+        D3D9GtaSaStateAuditKind::StateBlockApply, auditBegin);
+      return D3D_OK;
+    }
+
+    if (m_captures.flags.test(D3D9CapturedStateFlag::VertexDecl)
+     && (m_state.vertexDecl != nullptr || m_journal))
       m_parent->SetVertexDeclaration(m_state.vertexDecl.ptr());
 
     ApplyOrCapture<D3D9StateFunction::Apply, false>();
+
+    m_lastAppliedStateSerial = m_parent->GetGtaSaStateSerial();
+    m_hasApplied = true;
+
+    m_parent->GetGtaSaCompat()->RecordStateAuditTiming(
+      D3D9GtaSaStateAuditKind::StateBlockApply, auditBegin);
 
     return D3D_OK;
   }
@@ -195,6 +282,7 @@ namespace dxvk {
     light.isValid = true;
     light.light = *pLight;
 
+    m_captures.lightChanges.set(Index, true);
     m_captures.flags.set(D3D9CapturedStateFlag::Lights);
     return D3D_OK;
   }
@@ -347,6 +435,274 @@ namespace dxvk {
   }
 
 
+  HRESULT D3D9StateBlock::SetNPatchMode(float nSegments) {
+    m_state.nPatchSegments = nSegments;
+    m_captures.flags.set(D3D9CapturedStateFlag::NPatchMode);
+    return D3D_OK;
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentVertexDeclaration() {
+    if (!m_captures.flags.test(D3D9CapturedStateFlag::VertexDecl))
+      SetVertexDeclaration(m_deviceState->vertexDecl.ptr());
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentIndices() {
+    if (!m_captures.flags.test(D3D9CapturedStateFlag::Indices))
+      SetIndices(m_deviceState->indices.ptr());
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentRenderState(D3DRENDERSTATETYPE State) {
+    if (!m_captures.renderStates.get(State))
+      SetRenderState(State, m_deviceState->renderStates[State]);
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentStateSamplerState(
+          DWORD               StateSampler,
+          D3DSAMPLERSTATETYPE Type) {
+    if (!m_captures.samplerStates[StateSampler].get(Type)) {
+      SetStateSamplerState(
+        StateSampler, Type, m_deviceState->samplerStates[StateSampler][Type]);
+    }
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentStreamSource(UINT StreamNumber) {
+    if (m_captures.vertexBuffers.get(StreamNumber))
+      return;
+
+    const auto& stream = m_deviceState->vertexBuffers[StreamNumber];
+    SetStreamSource(
+      StreamNumber, stream.vertexBuffer.ptr(), stream.offset, stream.stride);
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentStreamSourceFreq(UINT StreamNumber) {
+    if (!m_captures.streamFreq.get(StreamNumber))
+      SetStreamSourceFreq(StreamNumber, m_deviceState->streamFreq[StreamNumber]);
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentStateTexture(DWORD StateSampler) {
+    if (!m_captures.textures.get(StateSampler))
+      SetStateTexture(StateSampler, m_deviceState->textures[StateSampler]);
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentVertexShader() {
+    if (!m_captures.flags.test(D3D9CapturedStateFlag::VertexShader))
+      SetVertexShader(m_deviceState->vertexShader.ptr());
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentPixelShader() {
+    if (!m_captures.flags.test(D3D9CapturedStateFlag::PixelShader))
+      SetPixelShader(m_deviceState->pixelShader.ptr());
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentMaterial() {
+    if (!m_captures.flags.test(D3D9CapturedStateFlag::Material))
+      SetMaterial(&m_deviceState->material.get());
+  }
+
+
+  HRESULT D3D9StateBlock::CaptureCurrentLight(DWORD Index) {
+    if (Index < m_captures.lightChanges.bitCount()
+     && m_captures.lightChanges.get(Index))
+      return D3D_OK;
+
+    if (Index >= m_state.lights.size())
+      m_state.lights.resize(Index + 1);
+
+    if (Index < m_deviceState->lights.size())
+      m_state.lights[Index] = m_deviceState->lights[Index];
+
+    m_captures.lightChanges.set(Index, true);
+    m_captures.flags.set(D3D9CapturedStateFlag::Lights);
+    return D3D_OK;
+  }
+
+
+  HRESULT D3D9StateBlock::CaptureCurrentLightEnable(DWORD Index) {
+    if (Index < m_captures.lightEnabledChanges.bitCount()
+     && m_captures.lightEnabledChanges.get(Index))
+      return D3D_OK;
+
+    const HRESULT lightResult = CaptureCurrentLight(Index);
+    if (FAILED(lightResult))
+      return lightResult;
+
+    const bool wasEnabled = Index < m_deviceState->lights.size()
+      && m_deviceState->lights[Index].isValid
+      && m_deviceState->lights[Index].isEnabled;
+    return LightEnable(Index, BOOL(wasEnabled));
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentStateTransform(uint32_t idx) {
+    if (!m_captures.transforms.get(idx)) {
+      SetStateTransform(
+        idx, reinterpret_cast<const D3DMATRIX*>(&m_deviceState->transforms[idx]));
+    }
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentStateTextureStageState(
+          DWORD                      Stage,
+          D3D9TextureStageStateTypes Type) {
+    if (!m_captures.textureStageStates[Stage].get(Type)) {
+      SetStateTextureStageState(
+        Stage, Type, m_deviceState->textureStages[Stage][Type]);
+    }
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentViewport() {
+    if (!m_captures.flags.test(D3D9CapturedStateFlag::Viewport))
+      SetViewport(&m_deviceState->viewport);
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentScissorRect() {
+    if (!m_captures.flags.test(D3D9CapturedStateFlag::ScissorRect))
+      SetScissorRect(&m_deviceState->scissorRect);
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentClipPlane(DWORD Index) {
+    if (!m_captures.clipPlanes.get(Index))
+      SetClipPlane(Index, m_deviceState->clipPlanes[Index].coeff);
+  }
+
+
+  template <
+    D3D9ShaderType   ShaderType,
+    D3D9ConstantType ConstantType>
+  void D3D9StateBlock::CaptureCurrentShaderConstants(
+          UINT StartRegister,
+          UINT Count) {
+    auto capture = [this, StartRegister, Count] (auto& captures, auto& current, auto& saved) {
+      const UINT endRegister = StartRegister + Count;
+
+      if constexpr (ConstantType == D3D9ConstantType::Bool) {
+        m_captures.flags.set(ShaderType == D3D9ShaderType::VertexShader
+          ? D3D9CapturedStateFlag::VsConstants
+          : D3D9CapturedStateFlag::PsConstants);
+
+        for (UINT reg = StartRegister; reg < endRegister; reg++) {
+          if (captures.bConsts.get(reg))
+            continue;
+
+          const uint32_t dword = reg / 32u;
+          const uint32_t mask = 1u << (reg % 32u);
+          captures.bConsts.set(reg, true);
+          captures.bDwordCount = std::max(captures.bDwordCount, dword + 1u);
+          saved.bConsts[dword] &= ~mask;
+          saved.bConsts[dword] |= current.bConsts[dword] & mask;
+        }
+      } else {
+        auto captureRanges = [&] (auto& captured, auto&& captureRange) {
+          UINT reg = StartRegister;
+          while (reg < endRegister) {
+            while (reg < endRegister && captured.get(reg))
+              reg++;
+            const UINT rangeStart = reg;
+            while (reg < endRegister && !captured.get(reg))
+              reg++;
+            const UINT rangeCount = reg - rangeStart;
+            if (rangeCount)
+              captureRange(rangeStart, rangeCount);
+          }
+        };
+
+        if constexpr (ConstantType == D3D9ConstantType::Float) {
+          captureRanges(captures.fConsts, [&] (UINT rangeStart, UINT rangeCount) {
+            const float* data = reinterpret_cast<const float*>(
+              &current.fConsts[rangeStart]);
+            if constexpr (ShaderType == D3D9ShaderType::VertexShader)
+              SetVertexShaderConstantF(rangeStart, data, rangeCount);
+            else
+              SetPixelShaderConstantF(rangeStart, data, rangeCount);
+          });
+        } else {
+          captureRanges(captures.iConsts, [&] (UINT rangeStart, UINT rangeCount) {
+            const int* data = reinterpret_cast<const int*>(
+              &current.iConsts[rangeStart]);
+            if constexpr (ShaderType == D3D9ShaderType::VertexShader)
+              SetVertexShaderConstantI(rangeStart, data, rangeCount);
+            else
+              SetPixelShaderConstantI(rangeStart, data, rangeCount);
+          });
+        }
+      }
+    };
+
+    if constexpr (ShaderType == D3D9ShaderType::VertexShader) {
+      capture(
+        m_captures.vsConsts,
+        m_deviceState->vsConsts.get(),
+        m_state.vsConsts.get());
+    } else {
+      capture(
+        m_captures.psConsts,
+        m_deviceState->psConsts.get(),
+        m_state.psConsts.get());
+    }
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentVertexShaderConstantF(UINT StartRegister, UINT Count) {
+    CaptureCurrentShaderConstants<
+      D3D9ShaderType::VertexShader,
+      D3D9ConstantType::Float>(StartRegister, Count);
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentVertexShaderConstantI(UINT StartRegister, UINT Count) {
+    CaptureCurrentShaderConstants<
+      D3D9ShaderType::VertexShader,
+      D3D9ConstantType::Int>(StartRegister, Count);
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentVertexShaderConstantB(UINT StartRegister, UINT Count) {
+    CaptureCurrentShaderConstants<
+      D3D9ShaderType::VertexShader,
+      D3D9ConstantType::Bool>(StartRegister, Count);
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentPixelShaderConstantF(UINT StartRegister, UINT Count) {
+    CaptureCurrentShaderConstants<
+      D3D9ShaderType::PixelShader,
+      D3D9ConstantType::Float>(StartRegister, Count);
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentPixelShaderConstantI(UINT StartRegister, UINT Count) {
+    CaptureCurrentShaderConstants<
+      D3D9ShaderType::PixelShader,
+      D3D9ConstantType::Int>(StartRegister, Count);
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentPixelShaderConstantB(UINT StartRegister, UINT Count) {
+    CaptureCurrentShaderConstants<
+      D3D9ShaderType::PixelShader,
+      D3D9ConstantType::Bool>(StartRegister, Count);
+  }
+
+
+  void D3D9StateBlock::CaptureCurrentNPatchMode() {
+    if (!m_captures.flags.test(D3D9CapturedStateFlag::NPatchMode))
+      SetNPatchMode(m_deviceState->nPatchSegments);
+  }
+
+
   HRESULT D3D9StateBlock::SetVertexBoolBitfield(uint32_t idx, uint32_t mask, uint32_t bits) {
     m_state.vsConsts->bConsts[idx] &= ~mask;
     m_state.vsConsts->bConsts[idx] |= bits & mask;
@@ -457,6 +813,9 @@ namespace dxvk {
     m_captures.psConsts.fConsts.setAll();
     m_captures.psConsts.iConsts.setAll();
     m_captures.psConsts.bConsts.setAll();
+    m_captures.psConsts.fDwordCount = m_captures.psConsts.fConsts.dwordCount();
+    m_captures.psConsts.iDwordCount = m_captures.psConsts.iConsts.dwordCount();
+    m_captures.psConsts.bDwordCount = m_captures.psConsts.bConsts.dwordCount();
   }
 
 
@@ -525,9 +884,13 @@ namespace dxvk {
     m_captures.flags.set(D3D9CapturedStateFlag::VertexShader);
     m_captures.flags.set(D3D9CapturedStateFlag::VsConstants);
 
-    m_captures.vsConsts.fConsts.setN(m_parent->GetVertexConstantLayout().floatCount);
-    m_captures.vsConsts.iConsts.setN(m_parent->GetVertexConstantLayout().intCount);
-    m_captures.vsConsts.bConsts.setN(m_parent->GetVertexConstantLayout().boolCount);
+    const auto& layout = m_parent->GetVertexConstantLayout();
+    m_captures.vsConsts.fConsts.setN(layout.floatCount);
+    m_captures.vsConsts.iConsts.setN(layout.intCount);
+    m_captures.vsConsts.bConsts.setN(layout.boolCount);
+    m_captures.vsConsts.fDwordCount = (layout.floatCount + 31) / 32;
+    m_captures.vsConsts.iDwordCount = (layout.intCount + 31) / 32;
+    m_captures.vsConsts.bDwordCount = (layout.boolCount + 31) / 32;
   }
 
 
@@ -551,6 +914,7 @@ namespace dxvk {
       m_captures.flags.set(D3D9CapturedStateFlag::VertexDecl);
       m_captures.flags.set(D3D9CapturedStateFlag::StreamFreq);
       m_captures.flags.set(D3D9CapturedStateFlag::Lights);
+      m_captures.lightChanges.setN(m_deviceState->lights.size());
       m_captures.lightEnabledChanges.setN(m_deviceState->lights.size());
 
       for (uint32_t i = 0; i < caps::MaxStreams; i++)

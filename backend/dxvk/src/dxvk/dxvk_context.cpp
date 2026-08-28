@@ -1592,6 +1592,9 @@ namespace dxvk {
       } else if (unlikely(needsDrawBarriers())) {
         // If the current pipeline has storage resource hazards,
         // unroll draws and insert a barrier after each one.
+        m_cmd->addStatCtr(DxvkStatCounter::CmdDrawMultiBarrierBatches, 1u);
+        m_cmd->addStatCtr(DxvkStatCounter::CmdDrawMultiBarrierDraws, count);
+
         for (uint32_t i = 0; i < count; i++) {
           if (i)
             this->commitGraphicsState<Indexed, false>();
@@ -1647,6 +1650,9 @@ namespace dxvk {
 
           if (emitDraw) {
             if (m_features.test(DxvkContextFeature::DirectMultiDraw)) {
+              m_cmd->addStatCtr(DxvkStatCounter::CmdDrawMultiCalls, 1u);
+              m_cmd->addStatCtr(DxvkStatCounter::CmdDrawMultiDraws, batchSize);
+
               if constexpr (Indexed) {
                 m_cmd->cmdDrawMultiIndexed(batchSize, batch.data(),
                   instanceCount, instanceIndex);
@@ -2742,11 +2748,16 @@ namespace dxvk {
   
   
   void DxvkContext::setInputAssemblyState(const DxvkInputAssemblyState& ia) {
-    m_state.gp.state.ia = DxvkIaInfo(
+    DxvkIaInfo state = DxvkIaInfo(
       ia.primitiveTopology(),
       ia.primitiveRestart(),
       ia.patchVertexCount());
-    
+
+    if (m_state.gp.state.ia.eq(state))
+      return;
+
+    m_state.gp.state.ia = state;
+
     m_flags.set(DxvkContextFlag::GpDirtyPipelineState);
   }
   
@@ -2856,10 +2867,15 @@ namespace dxvk {
   
   
   void DxvkContext::setMultisampleState(const DxvkMultisampleState& ms) {
-    m_state.gp.state.ms = DxvkMsInfo(
+    DxvkMsInfo state = DxvkMsInfo(
       m_state.gp.state.ms.sampleCount(),
       ms.sampleMask(),
       ms.alphaToCoverage());
+
+    if (m_state.gp.state.ms.eq(state))
+      return;
+
+    m_state.gp.state.ms = state;
 
     m_flags.set(
       DxvkContextFlag::GpDirtyPipelineState,
@@ -2895,7 +2911,7 @@ namespace dxvk {
   void DxvkContext::setBlendMode(
           uint32_t            attachment,
     const DxvkBlendMode&      blendMode) {
-    m_state.gp.state.omBlend[attachment] = DxvkOmAttachmentBlend(
+    DxvkOmAttachmentBlend state = DxvkOmAttachmentBlend(
       blendMode.blendEnable(),
       blendMode.colorSrcFactor(),
       blendMode.colorDstFactor(),
@@ -2904,6 +2920,11 @@ namespace dxvk {
       blendMode.alphaDstFactor(),
       blendMode.alphaBlendOp(),
       blendMode.writeMask());
+
+    if (m_state.gp.state.omBlend[attachment].eq(state))
+      return;
+
+    m_state.gp.state.omBlend[attachment] = state;
 
     m_flags.set(DxvkContextFlag::GpDirtyPipelineState);
   }

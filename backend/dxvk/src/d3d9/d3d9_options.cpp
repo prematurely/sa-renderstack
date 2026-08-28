@@ -76,6 +76,18 @@ namespace dxvk {
     this->countLosableResources         = config.getOption<bool>        ("d3d9.countLosableResources",         true);
     this->reproducibleCommandStream     = config.getOption<bool>        ("d3d9.reproducibleCommandStream",     false);
     this->extraFrontbuffer              = config.getOption<bool>        ("d3d9.extraFrontbuffer",              false);
+    this->gtaSaCompat                   = config.getOption<bool>        ("d3d9.gtaSaCompat",                   false);
+    this->gtaSaCompatDiagnostics        = config.getOption<bool>        ("d3d9.gtaSaCompatDiagnostics",        false);
+    this->gtaSaStateBlockPrefilter      = config.getOption<bool>        ("d3d9.gtaSaStateBlockPrefilter",      false);
+    this->gtaSaStateBlockFastSkip       = config.getOption<bool>        ("d3d9.gtaSaStateBlockFastSkip",       false);
+    this->gtaSaDeferShaderBinding       = config.getOption<bool>        ("d3d9.gtaSaDeferShaderBinding",       false);
+    this->gtaSaDeferScalarStateBindings = config.getOption<bool>        ("d3d9.gtaSaDeferScalarStateBindings", false);
+    this->gtaSaInputLayoutCache         = config.getOption<bool>        ("d3d9.gtaSaInputLayoutCache",         false);
+    this->gtaSaCoalescePushData         = config.getOption<bool>        ("d3d9.gtaSaCoalescePushData",         false);
+    this->gtaSaCoalesceSpecAndPushData  = config.getOption<bool>        ("d3d9.gtaSaCoalesceSpecAndPushData",  false);
+    this->gtaSaCoalesceSamplerBindings  = config.getOption<bool>        ("d3d9.gtaSaCoalesceSamplerBindings",  false);
+    this->gtaSaCoalesceTextureBindings  = config.getOption<bool>        ("d3d9.gtaSaCoalesceTextureBindings",  false);
+    this->gtaSaResourceBindingCache     = config.getOption<bool>        ("d3d9.gtaSaResourceBindingCache",     false);
 
     // D3D8 options
     this->drefScaling = config.getOption<int32_t>("d3d8.scaleDref", 0);

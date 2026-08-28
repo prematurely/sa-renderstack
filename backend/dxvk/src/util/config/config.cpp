@@ -507,6 +507,16 @@ namespace dxvk {
     /* D3D9 GAMES                                 */
     /**********************************************/
 
+    /* Grand Theft Auto: San Andreas              *
+     * Enables the native GTA compatibility       *
+     * runtime without changing visual settings.  */
+    { R"(\\gta_sa\.exe$)", {{
+      { "d3d9.gtaSaCompat",                "True" },
+      { "d3d9.gtaSaCompatDiagnostics",     "True" },
+      { "d3d9.gtaSaStateBlockPrefilter",   "False" },
+      { "d3d9.gtaSaStateBlockFastSkip",    "False" },
+      { "d3d9.gtaSaDeferShaderBinding",    "False" },
+    }} },
     /* A Hat in Time                              */
     { R"(\\HatinTimeGame\.exe$)", {{
       { "d3d9.lenientClear",                "True" },

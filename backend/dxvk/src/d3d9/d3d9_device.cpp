@@ -26,11 +26,162 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cstring>
 #ifdef MSC_VER
 #pragma fenv_access (on)
 #endif
 
 namespace dxvk {
+
+  namespace {
+
+    HRESULT ValidateGtaSaStateBatch(
+      const D3D9GtaSaStateBatch* pBatch) {
+      constexpr UINT MaxRanges = 16u;
+
+      if (pBatch == nullptr)
+        return E_POINTER;
+
+      if (pBatch->StructSize < sizeof(D3D9GtaSaStateBatch)
+       || pBatch->ApiVersion < 3u
+       || pBatch->ApiVersion > D3D9_GTA_SA_COMPAT_API_VERSION
+       || pBatch->VertexFloatRangeCount > MaxRanges
+       || pBatch->VertexBoolRangeCount > MaxRanges
+       || pBatch->PixelFloatRangeCount > MaxRanges
+       || pBatch->PixelBoolRangeCount > MaxRanges
+       || pBatch->TextureBindingCount > MaxRanges)
+        return D3DERR_INVALIDCALL;
+
+      if ((pBatch->VertexFloatRangeCount && !pBatch->VertexFloatRanges)
+       || (pBatch->VertexBoolRangeCount && !pBatch->VertexBoolRanges)
+       || (pBatch->PixelFloatRangeCount && !pBatch->PixelFloatRanges)
+       || (pBatch->PixelBoolRangeCount && !pBatch->PixelBoolRanges)
+       || (pBatch->TextureBindingCount && !pBatch->TextureBindings))
+        return D3DERR_INVALIDCALL;
+
+      auto validateFloatRanges = [] (
+        const D3D9GtaSaFloatConstantRange* ranges,
+              UINT                         count,
+              UINT                         capacity) {
+        for (UINT i = 0u; i < count; i++) {
+          const auto& range = ranges[i];
+          if (range.StartRegister > capacity
+           || range.RegisterCount > capacity - range.StartRegister
+           || (range.RegisterCount && !range.Data))
+            return false;
+        }
+        return true;
+      };
+
+      auto validateBoolRanges = [] (
+        const D3D9GtaSaBoolConstantRange* ranges,
+              UINT                        count,
+              UINT                        capacity) {
+        for (UINT i = 0u; i < count; i++) {
+          const auto& range = ranges[i];
+          if (range.StartRegister > capacity
+           || range.RegisterCount > capacity - range.StartRegister
+           || (range.RegisterCount && !range.Data))
+            return false;
+        }
+        return true;
+      };
+
+      if (!validateFloatRanges(pBatch->VertexFloatRanges,
+            pBatch->VertexFloatRangeCount, caps::MaxFloatConstantsVS)
+       || !validateBoolRanges(pBatch->VertexBoolRanges,
+            pBatch->VertexBoolRangeCount, caps::MaxOtherConstants)
+       || !validateFloatRanges(pBatch->PixelFloatRanges,
+            pBatch->PixelFloatRangeCount, caps::MaxSM3FloatConstantsPS)
+       || !validateBoolRanges(pBatch->PixelBoolRanges,
+            pBatch->PixelBoolRangeCount, caps::MaxOtherConstants))
+        return D3DERR_INVALIDCALL;
+
+      return D3D_OK;
+    }
+
+
+    bool ValidateGtaSaPrimitiveCount(
+            D3DPRIMITIVETYPE primitiveType,
+            UINT             primitiveCount,
+            UINT*            vertexCount) {
+      constexpr UINT MaxUint = ~UINT(0u);
+      UINT count = 0u;
+
+      switch (primitiveType) {
+        case D3DPT_POINTLIST:
+          count = primitiveCount;
+          break;
+        case D3DPT_LINELIST:
+          if (primitiveCount > MaxUint / 2u) return false;
+          count = primitiveCount * 2u;
+          break;
+        case D3DPT_LINESTRIP:
+          if (primitiveCount > MaxUint - 1u) return false;
+          count = primitiveCount + 1u;
+          break;
+        case D3DPT_TRIANGLELIST:
+          if (primitiveCount > MaxUint / 3u) return false;
+          count = primitiveCount * 3u;
+          break;
+        case D3DPT_TRIANGLESTRIP:
+        case D3DPT_TRIANGLEFAN:
+          if (primitiveCount > MaxUint - 2u) return false;
+          count = primitiveCount + 2u;
+          break;
+        default:
+          return false;
+      }
+
+      if (vertexCount != nullptr)
+        *vertexCount = count;
+      return true;
+    }
+
+
+    HRESULT ValidateGtaSaStateDrawBatch(
+      const D3D9GtaSaStateDrawBatch* pBatch) {
+      if (pBatch == nullptr)
+        return E_POINTER;
+
+      if (pBatch->StructSize < sizeof(D3D9GtaSaStateDrawBatch)
+       || pBatch->ApiVersion < 6u
+       || pBatch->ApiVersion > D3D9_GTA_SA_COMPAT_API_VERSION
+       || pBatch->StateBatch == nullptr
+       || pBatch->Draw.StructSize < sizeof(D3D9GtaSaDrawDesc)
+       || pBatch->Draw.Reserved != 0u)
+        return D3DERR_INVALIDCALL;
+
+      const HRESULT stateResult = ValidateGtaSaStateBatch(pBatch->StateBatch);
+      if (FAILED(stateResult))
+        return stateResult;
+
+      UINT vertexCount = 0u;
+      if (!ValidateGtaSaPrimitiveCount(
+            pBatch->Draw.PrimitiveType,
+            pBatch->Draw.PrimitiveCount,
+            &vertexCount))
+        return D3DERR_INVALIDCALL;
+
+      constexpr UINT MaxUint = ~UINT(0u);
+      if (pBatch->Draw.Kind == D3D9_GTA_SA_DRAW_PRIMITIVE) {
+        if (pBatch->Draw.BaseVertexIndex != 0
+         || pBatch->Draw.MinVertexIndex != 0u
+         || pBatch->Draw.NumVertices != 0u
+         || pBatch->Draw.StartIndexOrVertex > MaxUint - vertexCount)
+          return D3DERR_INVALIDCALL;
+      } else if (pBatch->Draw.Kind == D3D9_GTA_SA_DRAW_INDEXED_PRIMITIVE) {
+        if (pBatch->Draw.MinVertexIndex > MaxUint - pBatch->Draw.NumVertices
+         || pBatch->Draw.StartIndexOrVertex > MaxUint - vertexCount)
+          return D3DERR_INVALIDCALL;
+      } else {
+        return D3DERR_INVALIDCALL;
+      }
+
+      return D3D_OK;
+    }
+
+  }
 
   D3D9DeviceEx::D3D9DeviceEx(
           D3D9InterfaceEx*       pParent,
@@ -60,6 +211,7 @@ namespace dxvk {
     , m_submissionFence    ( new sync::Fence() )
     , m_flushTracker       ( GetMaxFlushType() )
     , m_d3d9Interop        ( this )
+    , m_gtaSaCompat        ( this, m_d3d9Options.gtaSaCompat, m_d3d9Options.gtaSaCompatDiagnostics )
     , m_d3d9On12Args       ( pAdapter->Get9On12Args() )
     , m_d3d9On12           ( this )
     , m_d3d8Bridge         ( this ) {
@@ -128,7 +280,9 @@ namespace dxvk {
     m_dirty.set(D3D9DeviceDirtyFlag::Framebuffer,
                 D3D9DeviceDirtyFlag::ClipPlanes,
                 D3D9DeviceDirtyFlag::DepthStencilState,
+                D3D9DeviceDirtyFlag::StencilReference,
                 D3D9DeviceDirtyFlag::BlendState,
+                D3D9DeviceDirtyFlag::BlendFactor,
                 D3D9DeviceDirtyFlag::RasterizerState,
                 D3D9DeviceDirtyFlag::DepthBias,
                 D3D9DeviceDirtyFlag::AlphaTestState,
@@ -159,6 +313,8 @@ namespace dxvk {
     // in DxvkDevice::~DxvkDevice.
     if (this_thread::isInModuleDetachment())
       return;
+
+    m_gtaSaCompat.OnDeviceDestroy();
 
     ExecuteFlush(true);
     SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
@@ -196,6 +352,18 @@ namespace dxvk {
 
     if (riid == __uuidof(ID3D9VkInteropDevice)) {
       *ppvObject = ref(&m_d3d9Interop);
+      return S_OK;
+    }
+
+    if ((riid == __uuidof(ID3D9GtaSaCompatDevice)
+      || riid == __uuidof(ID3D9GtaSaCompatDevice1)
+      || riid == __uuidof(ID3D9GtaSaCompatDevice2)
+      || riid == __uuidof(ID3D9GtaSaCompatDevice3)
+      || riid == __uuidof(ID3D9GtaSaCompatDevice4)
+      || riid == __uuidof(ID3D9GtaSaCompatDevice5)
+      || riid == __uuidof(ID3D9GtaSaCompatDevice6))
+     && m_gtaSaCompat.IsEnabled()) {
+      *ppvObject = ref(&m_gtaSaCompat);
       return S_OK;
     }
 
@@ -450,6 +618,16 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::Reset(D3DPRESENT_PARAMETERS* pPresentationParameters) {
     D3D9DeviceLock lock = LockDevice();
 
+    if (m_d3d9Options.gtaSaDeferShaderBinding) {
+      InvalidateGtaSaDeferredShaderBinding<D3D9ShaderType::VertexShader>();
+      InvalidateGtaSaDeferredShaderBinding<D3D9ShaderType::PixelShader>();
+    }
+    m_gtaSaCompat.OnResetBegin();
+    auto finishReset = [this, pPresentationParameters] (HRESULT result) {
+      m_gtaSaCompat.OnResetEnd(result, pPresentationParameters);
+      return result;
+    };
+
     Logger::info("Device reset");
     m_deviceLostState = D3D9DeviceLostState::Ok;
 
@@ -460,7 +638,7 @@ namespace dxvk {
       hr = m_parent->ValidatePresentationParameters(pPresentationParameters);
 
       if (unlikely(FAILED(hr)))
-        return hr;
+        return finishReset(hr);
     }
 
     if (!IsExtended()) {
@@ -514,7 +692,7 @@ namespace dxvk {
       Logger::warn(str::format("Device reset failed because device still has alive losable resources: Device not reset. Remaining resources: ", m_losableResourceCounter.load()));
       m_deviceLostState = D3D9DeviceLostState::NotReset;
       // D3D8 returns D3DERR_DEVICELOST here, whereas D3D9 returns D3DERR_INVALIDCALL.
-      return m_isD3D8Compatible ? D3DERR_DEVICELOST : D3DERR_INVALIDCALL;
+      return finishReset(m_isD3D8Compatible ? D3DERR_DEVICELOST : D3DERR_INVALIDCALL);
     }
 
     hr = ResetSwapChain(pPresentationParameters, nullptr);
@@ -523,7 +701,7 @@ namespace dxvk {
         Logger::warn("Device reset failed: Device not reset");
         m_deviceLostState = D3D9DeviceLostState::NotReset;
       }
-      return hr;
+      return finishReset(hr);
     }
 
     ExecuteFlush(true);
@@ -532,7 +710,7 @@ namespace dxvk {
     if (m_d3d9Options.deferSurfaceCreation)
       m_resetCtr++;
 
-    return D3D_OK;
+    return finishReset(D3D_OK);
   }
 
 
@@ -1651,6 +1829,8 @@ namespace dxvk {
     if (unlikely(rt != nullptr && !(texInfo->Desc()->Usage & D3DUSAGE_RENDERTARGET)))
       return D3DERR_INVALIDCALL;
 
+    bool gtaSaStateChanged = false;
+
     if (RenderTargetIndex == 0) {
       // Setting Render target 0 changes viewport & scissor
       // even if it gets changed to the one that's already bound.
@@ -1682,21 +1862,29 @@ namespace dxvk {
         m_dirty.set(D3D9DeviceDirtyFlag::PointScale);
         m_dirty.set(D3D9DeviceDirtyFlag::ViewportScissor);
         m_state.viewport = viewport;
+        gtaSaStateChanged = true;
       }
 
       if (m_state.scissorRect != scissorRect) {
         m_dirty.set(D3D9DeviceDirtyFlag::ViewportScissor);
         m_state.scissorRect = scissorRect;
+        gtaSaStateChanged = true;
       }
 
-      if (m_specData.setAlphaPrecision(GetAlphaTestPrecision(rt)))
+      if (m_specData.setAlphaPrecision(GetAlphaTestPrecision(rt))) {
         m_dirty.set(D3D9DeviceDirtyFlag::SpecializationEntries);
+        gtaSaStateChanged = true;
+      }
     }
 
-    if (m_state.renderTargets[RenderTargetIndex] == rt)
+    if (m_state.renderTargets[RenderTargetIndex] == rt) {
+      if (gtaSaStateChanged)
+        NotifyGtaSaStateChanged();
       return D3D_OK;
+    }
 
     m_state.renderTargets[RenderTargetIndex] = rt;
+    gtaSaStateChanged = true;
 
     // Do a strong flush if the first render target is changed.
     ConsiderFlush(RenderTargetIndex == 0
@@ -1757,6 +1945,9 @@ namespace dxvk {
       // FFPS may optimize out color ops if unused
       m_dirty.set(D3D9DeviceDirtyFlag::FFPixelShader);
     }
+
+    if (gtaSaStateChanged)
+      NotifyGtaSaStateChanged();
 
     return D3D_OK;
   }
@@ -2080,7 +2271,11 @@ namespace dxvk {
 
     const uint32_t idx = GetTransformIndex(TransformState);
 
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentStateTransform(idx);
+
     m_state.transforms[idx] = m_state.transforms[idx] * ConvertMatrix(pMatrix);
+    NotifyGtaSaStateChanged();
 
     m_dirty.set(D3D9DeviceDirtyFlag::FFVertexData);
 
@@ -2105,12 +2300,16 @@ namespace dxvk {
     if (m_state.viewport == *pViewport)
       return D3D_OK;
 
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentViewport();
+
     m_state.viewport.X = pViewport->X;
     m_state.viewport.Y = pViewport->Y;
     m_state.viewport.Width = pViewport->Width;
     m_state.viewport.Height = pViewport->Height;
     m_state.viewport.MinZ = pViewport->MinZ;
     m_state.viewport.MaxZ = pViewport->MinZ < pViewport->MaxZ ? pViewport->MaxZ : pViewport->MinZ + 0.001f;
+    NotifyGtaSaStateChanged();
 
     m_dirty.set(D3D9DeviceDirtyFlag::ViewportScissor);
     m_dirty.set(D3D9DeviceDirtyFlag::FFViewport);
@@ -2140,7 +2339,16 @@ namespace dxvk {
     if (unlikely(ShouldRecord()))
       return m_recorder->SetMaterial(pMaterial);
 
+    // State blocks restore the material frequently. Avoid journaling or
+    // propagating a fixed-function dirty flag when the value is identical.
+    if (std::memcmp(&m_state.material, pMaterial, sizeof(D3DMATERIAL9)) == 0)
+      return D3D_OK;
+
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentMaterial();
+
     m_state.material = *pMaterial;
+    NotifyGtaSaStateChanged();
     m_dirty.set(D3D9DeviceDirtyFlag::FFVertexData);
 
     return D3D_OK;
@@ -2170,12 +2378,26 @@ namespace dxvk {
       return D3D_OK;
     }
 
+    if (Index < m_state.lights.size()) {
+      const auto& current = m_state.lights[Index];
+      if (current.isValid
+       && std::memcmp(&current.light, pLight, sizeof(D3DLIGHT9)) == 0)
+        return D3D_OK;
+    }
+
+    if (unlikely(ShouldCaptureGtaSaStateJournal())) {
+      const HRESULT captureResult = m_gtaSaStateJournal->CaptureCurrentLight(Index);
+      if (FAILED(captureResult))
+        return captureResult;
+    }
+
     if (Index >= m_state.lights.size())
       m_state.lights.resize(Index + 1);
 
     auto& light = m_state.lights[Index];
     light.isValid = true;
     light.light = *pLight;
+    NotifyGtaSaStateChanged();
 
     if (light.isEnabled)
       m_dirty.set(D3D9DeviceDirtyFlag::FFVertexData);
@@ -2211,16 +2433,27 @@ namespace dxvk {
       return D3D_OK;
     }
 
-    if (unlikely(Index >= m_state.lights.size()))
+    const bool resized = Index >= m_state.lights.size();
+    if (resized)
       m_state.lights.resize(Index + 1);
 
     auto& light = m_state.lights[Index];
 
-    if (light.isEnabled == bool(Enable))
+    if (light.isEnabled == bool(Enable)) {
+      if (resized)
+        NotifyGtaSaStateChanged();
       return D3D_OK;
+    }
+
+    if (unlikely(ShouldCaptureGtaSaStateJournal())) {
+      const HRESULT captureResult = m_gtaSaStateJournal->CaptureCurrentLightEnable(Index);
+      if (FAILED(captureResult))
+        return captureResult;
+    }
 
     light.isValid = true;
     light.isEnabled = bool(Enable);
+    NotifyGtaSaStateChanged();
 
     m_dirty.set(D3D9DeviceDirtyFlag::FFVertexData);
     return D3D_OK;
@@ -2259,12 +2492,27 @@ namespace dxvk {
     if (unlikely(ShouldRecord()))
       return m_recorder->SetClipPlane(Index, pPlane);
 
+    bool changed = false;
+    for (uint32_t i = 0; i < 4; i++) {
+      if (m_state.clipPlanes[Index].coeff[i] != pPlane[i]) {
+        changed = true;
+        break;
+      }
+    }
+
+    if (!changed)
+      return D3D_OK;
+
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentClipPlane(Index);
+
     bool dirty = false;
 
     for (uint32_t i = 0; i < 4; i++) {
       dirty |= m_state.clipPlanes[Index].coeff[i] != pPlane[i];
       m_state.clipPlanes[Index].coeff[i] = pPlane[i];
     }
+    NotifyGtaSaStateChanged();
 
     bool enabled = m_state.renderStates[D3DRS_CLIPPLANEENABLE] & (1u << Index);
     dirty &= enabled;
@@ -2307,12 +2555,20 @@ namespace dxvk {
     auto& states         = m_state.renderStates;
     const DWORD oldValue = states[State];
 
+    m_gtaSaCompat.RecordStateAudit(
+      D3D9GtaSaStateAuditKind::RenderState,
+      Value == oldValue);
+
     if (likely(Value != oldValue)) {
+      if (unlikely(ShouldCaptureGtaSaStateJournal()))
+        m_gtaSaStateJournal->CaptureCurrentRenderState(State);
+
       constexpr uint32_t nvidiaVendorId = uint32_t(DxvkGpuVendor::Nvidia);
       constexpr uint32_t amdVendorId    = uint32_t(DxvkGpuVendor::Amd);
       constexpr uint32_t intelVendorId  = uint32_t(DxvkGpuVendor::Intel);
 
       states[State] = Value;
+      NotifyGtaSaStateChanged();
 
       switch (State) {
         case D3DRS_SEPARATEALPHABLENDENABLE:
@@ -2357,7 +2613,10 @@ namespace dxvk {
           break;
 
         case D3DRS_BLENDFACTOR:
-          BindBlendFactor();
+          if (m_d3d9Options.gtaSaDeferScalarStateBindings)
+            m_dirty.set(D3D9DeviceDirtyFlag::BlendFactor);
+          else
+            BindBlendFactor();
           break;
 
         case D3DRS_MULTISAMPLEMASK:
@@ -2410,7 +2669,10 @@ namespace dxvk {
           break;
 
         case D3DRS_STENCILREF:
-          BindDepthStencilReference();
+          if (m_d3d9Options.gtaSaDeferScalarStateBindings)
+            m_dirty.set(D3D9DeviceDirtyFlag::StencilReference);
+          else
+            BindDepthStencilReference();
           break;
 
         case D3DRS_SCISSORTESTENABLE:
@@ -2692,6 +2954,8 @@ namespace dxvk {
       return D3DERR_INVALIDCALL;
     }
 
+    m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::StateBlockCreate);
+
     try {
       const Com<D3D9StateBlock> sb = new D3D9StateBlock(this, stateBlockType);
       *ppSB = sb.ref();
@@ -2710,9 +2974,11 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::BeginStateBlock() {
     D3D9DeviceLock lock = LockDevice();
 
-    // Only one state block can be recorded at a given time.
-    if (unlikely(ShouldRecord()))
+    // State-block recording and native state journaling are mutually exclusive.
+    if (unlikely(ShouldRecord() || m_gtaSaStateJournal != nullptr))
       return D3DERR_INVALIDCALL;
+
+    m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::StateBlockBeginRecord);
 
     m_recorder = new D3D9StateBlock(this, D3D9StateBlockType::None);
 
@@ -2726,6 +2992,8 @@ namespace dxvk {
     // Recording a state block can't end if recording hasn't been started.
     if (unlikely(ppSB == nullptr || !ShouldRecord()))
       return D3DERR_INVALIDCALL;
+
+    m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::StateBlockEndRecord);
 
     InitReturnPtr(ppSB);
 
@@ -2788,6 +3056,453 @@ namespace dxvk {
     DWORD stateSampler = RemapSamplerState(Stage);
 
     return SetStateTexture(stateSampler, pTexture);
+  }
+
+
+  HRESULT D3D9DeviceEx::SubmitGtaSaStateBatch(
+    const D3D9GtaSaStateBatch* pBatch) {
+    const HRESULT validation = ValidateGtaSaStateBatch(pBatch);
+    if (FAILED(validation))
+      return validation;
+
+    D3D9DeviceLock lock = LockDevice();
+    return ApplyGtaSaStateBatch(pBatch);
+  }
+
+
+  HRESULT D3D9DeviceEx::ApplyGtaSaStateBatch(
+    const D3D9GtaSaStateBatch* pBatch) {
+    HRESULT result = D3D_OK;
+
+    for (UINT i = 0u; i < pBatch->VertexFloatRangeCount; i++) {
+      const auto& range = pBatch->VertexFloatRanges[i];
+      result = SetShaderConstants<
+        D3D9ShaderType::VertexShader,
+        D3D9ConstantType::Float>(
+          range.StartRegister, range.Data, range.RegisterCount);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->VertexBoolRangeCount; i++) {
+      const auto& range = pBatch->VertexBoolRanges[i];
+      result = SetShaderConstants<
+        D3D9ShaderType::VertexShader,
+        D3D9ConstantType::Bool>(
+          range.StartRegister, range.Data, range.RegisterCount);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->PixelFloatRangeCount; i++) {
+      const auto& range = pBatch->PixelFloatRanges[i];
+      result = SetShaderConstants<
+        D3D9ShaderType::PixelShader,
+        D3D9ConstantType::Float>(
+          range.StartRegister, range.Data, range.RegisterCount);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->PixelBoolRangeCount; i++) {
+      const auto& range = pBatch->PixelBoolRanges[i];
+      result = SetShaderConstants<
+        D3D9ShaderType::PixelShader,
+        D3D9ConstantType::Bool>(
+          range.StartRegister, range.Data, range.RegisterCount);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->TextureBindingCount; i++) {
+      const auto& binding = pBatch->TextureBindings[i];
+      result = SetTexture(binding.Stage, binding.Texture);
+      if (FAILED(result)) return result;
+    }
+
+    return D3D_OK;
+  }
+
+
+  HRESULT D3D9DeviceEx::SubmitGtaSaStateDrawBatch(
+    const D3D9GtaSaStateDrawBatch* pBatch) {
+    const HRESULT validation = ValidateGtaSaStateDrawBatch(pBatch);
+    if (FAILED(validation))
+      return validation;
+
+    D3D9DeviceLock lock = LockDevice();
+    HRESULT result = ApplyGtaSaStateBatch(pBatch->StateBatch);
+    if (FAILED(result))
+      return result;
+
+    const auto& draw = pBatch->Draw;
+    if (draw.Kind == D3D9_GTA_SA_DRAW_PRIMITIVE) {
+      return DrawPrimitive(
+        draw.PrimitiveType,
+        draw.StartIndexOrVertex,
+        draw.PrimitiveCount);
+    }
+
+    return DrawIndexedPrimitive(
+      draw.PrimitiveType,
+      draw.BaseVertexIndex,
+      draw.MinVertexIndex,
+      draw.NumVertices,
+      draw.StartIndexOrVertex,
+      draw.PrimitiveCount);
+  }
+
+
+  HRESULT D3D9DeviceEx::SubmitGtaSaEffectStateBatch(
+    const D3D9GtaSaEffectStateBatch* pBatch) {
+    constexpr UINT MaxStateEntries = 512u;
+    constexpr UINT MaxConstantRanges = 256u;
+    constexpr UINT ValidFlags =
+        D3D9_GTA_SA_EFFECT_STATE_HAS_MATERIAL
+      | D3D9_GTA_SA_EFFECT_STATE_HAS_NPATCH_MODE
+      | D3D9_GTA_SA_EFFECT_STATE_HAS_FVF
+      | D3D9_GTA_SA_EFFECT_STATE_HAS_VERTEX_SHADER
+      | D3D9_GTA_SA_EFFECT_STATE_HAS_PIXEL_SHADER;
+
+    if (pBatch == nullptr)
+      return E_POINTER;
+
+    if (pBatch->StructSize < sizeof(D3D9GtaSaEffectStateBatch)
+     || pBatch->ApiVersion < 5u
+     || pBatch->ApiVersion > D3D9_GTA_SA_COMPAT_API_VERSION
+     || (pBatch->Flags & ~ValidFlags)
+     || pBatch->Reserved != 0u
+     || pBatch->TransformCount > MaxStateEntries
+     || pBatch->LightCount > MaxStateEntries
+     || pBatch->LightEnableCount > MaxStateEntries
+     || pBatch->RenderStateCount > MaxStateEntries
+     || pBatch->TextureBindingCount > MaxStateEntries
+     || pBatch->TextureStageStateCount > MaxStateEntries
+     || pBatch->SamplerStateCount > MaxStateEntries
+     || pBatch->VertexFloatRangeCount > MaxConstantRanges
+     || pBatch->VertexIntRangeCount > MaxConstantRanges
+     || pBatch->VertexBoolRangeCount > MaxConstantRanges
+     || pBatch->PixelFloatRangeCount > MaxConstantRanges
+     || pBatch->PixelIntRangeCount > MaxConstantRanges
+     || pBatch->PixelBoolRangeCount > MaxConstantRanges)
+      return D3DERR_INVALIDCALL;
+
+    if ((pBatch->TransformCount && !pBatch->Transforms)
+     || (pBatch->LightCount && !pBatch->Lights)
+     || (pBatch->LightEnableCount && !pBatch->LightEnables)
+     || (pBatch->RenderStateCount && !pBatch->RenderStates)
+     || (pBatch->TextureBindingCount && !pBatch->TextureBindings)
+     || (pBatch->TextureStageStateCount && !pBatch->TextureStageStates)
+     || (pBatch->SamplerStateCount && !pBatch->SamplerStates)
+     || (pBatch->VertexFloatRangeCount && !pBatch->VertexFloatRanges)
+     || (pBatch->VertexIntRangeCount && !pBatch->VertexIntRanges)
+     || (pBatch->VertexBoolRangeCount && !pBatch->VertexBoolRanges)
+     || (pBatch->PixelFloatRangeCount && !pBatch->PixelFloatRanges)
+     || (pBatch->PixelIntRangeCount && !pBatch->PixelIntRanges)
+     || (pBatch->PixelBoolRangeCount && !pBatch->PixelBoolRanges))
+      return D3DERR_INVALIDCALL;
+
+    auto validTransform = [] (D3DTRANSFORMSTATETYPE state) {
+      const UINT value = UINT(state);
+      return state == D3DTS_VIEW
+          || state == D3DTS_PROJECTION
+          || (state >= D3DTS_TEXTURE0 && state <= D3DTS_TEXTURE7)
+          || (value >= UINT(D3DTS_WORLD) && value <= UINT(D3DTS_WORLD) + 255u);
+    };
+
+    for (UINT i = 0u; i < pBatch->TransformCount; i++) {
+      if (!validTransform(pBatch->Transforms[i].State))
+        return D3DERR_INVALIDCALL;
+    }
+
+    for (UINT i = 0u; i < pBatch->LightCount; i++) {
+      if (pBatch->Lights[i].Index >= MaxStateEntries)
+        return D3DERR_INVALIDCALL;
+    }
+
+    for (UINT i = 0u; i < pBatch->LightEnableCount; i++) {
+      if (pBatch->LightEnables[i].Index >= MaxStateEntries)
+        return D3DERR_INVALIDCALL;
+    }
+
+    for (UINT i = 0u; i < pBatch->RenderStateCount; i++) {
+      const UINT state = UINT(pBatch->RenderStates[i].State);
+      if (state > 255u || (state != 0u && state < UINT(D3DRS_ZENABLE)))
+        return D3DERR_INVALIDCALL;
+    }
+
+    for (UINT i = 0u; i < pBatch->TextureBindingCount; i++) {
+      if (InvalidSampler(pBatch->TextureBindings[i].Stage))
+        return D3DERR_INVALIDCALL;
+    }
+
+    for (UINT i = 0u; i < pBatch->TextureStageStateCount; i++) {
+      const auto& binding = pBatch->TextureStageStates[i];
+      if (binding.Stage >= caps::TextureStageCount
+       || binding.Type < D3DTSS_COLOROP
+       || binding.Type > D3DTSS_CONSTANT)
+        return D3DERR_INVALIDCALL;
+    }
+
+    for (UINT i = 0u; i < pBatch->SamplerStateCount; i++) {
+      const auto& binding = pBatch->SamplerStates[i];
+      if (InvalidSampler(binding.Sampler)
+       || binding.Type < D3DSAMP_ADDRESSU
+       || binding.Type > D3DSAMP_DMAPOFFSET)
+        return D3DERR_INVALIDCALL;
+    }
+
+    auto validateFloatRanges = [] (
+      const D3D9GtaSaFloatConstantRange* ranges,
+            UINT                         count,
+            UINT                         capacity) {
+      for (UINT i = 0u; i < count; i++) {
+        const auto& range = ranges[i];
+        if (range.StartRegister > capacity
+         || range.RegisterCount > capacity - range.StartRegister
+         || (range.RegisterCount && !range.Data))
+          return false;
+      }
+      return true;
+    };
+
+    auto validateIntRanges = [] (
+      const D3D9GtaSaIntConstantRange* ranges,
+            UINT                       count,
+            UINT                       capacity) {
+      for (UINT i = 0u; i < count; i++) {
+        const auto& range = ranges[i];
+        if (range.StartRegister > capacity
+         || range.RegisterCount > capacity - range.StartRegister
+         || (range.RegisterCount && !range.Data))
+          return false;
+      }
+      return true;
+    };
+
+    auto validateBoolRanges = [] (
+      const D3D9GtaSaBoolConstantRange* ranges,
+            UINT                        count,
+            UINT                        capacity) {
+      for (UINT i = 0u; i < count; i++) {
+        const auto& range = ranges[i];
+        if (range.StartRegister > capacity
+         || range.RegisterCount > capacity - range.StartRegister
+         || (range.RegisterCount && !range.Data))
+          return false;
+      }
+      return true;
+    };
+
+    if (!validateFloatRanges(pBatch->VertexFloatRanges,
+          pBatch->VertexFloatRangeCount, caps::MaxFloatConstantsVS)
+     || !validateIntRanges(pBatch->VertexIntRanges,
+          pBatch->VertexIntRangeCount, caps::MaxOtherConstants)
+     || !validateBoolRanges(pBatch->VertexBoolRanges,
+          pBatch->VertexBoolRangeCount, caps::MaxOtherConstants)
+     || !validateFloatRanges(pBatch->PixelFloatRanges,
+          pBatch->PixelFloatRangeCount, caps::MaxSM3FloatConstantsPS)
+     || !validateIntRanges(pBatch->PixelIntRanges,
+          pBatch->PixelIntRangeCount, caps::MaxOtherConstants)
+     || !validateBoolRanges(pBatch->PixelBoolRanges,
+          pBatch->PixelBoolRangeCount, caps::MaxOtherConstants))
+      return D3DERR_INVALIDCALL;
+
+    D3D9DeviceLock lock = LockDevice();
+    HRESULT result = D3D_OK;
+
+    for (UINT i = 0u; i < pBatch->TransformCount; i++) {
+      const auto& binding = pBatch->Transforms[i];
+      result = SetTransform(binding.State, &binding.Matrix);
+      if (FAILED(result)) return result;
+    }
+
+    if (pBatch->Flags & D3D9_GTA_SA_EFFECT_STATE_HAS_MATERIAL) {
+      result = SetMaterial(&pBatch->Material);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->LightCount; i++) {
+      const auto& binding = pBatch->Lights[i];
+      result = SetLight(binding.Index, &binding.Light);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->LightEnableCount; i++) {
+      const auto& binding = pBatch->LightEnables[i];
+      result = LightEnable(binding.Index, binding.Enable);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->RenderStateCount; i++) {
+      const auto& binding = pBatch->RenderStates[i];
+      result = SetRenderState(binding.State, binding.Value);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->TextureBindingCount; i++) {
+      const auto& binding = pBatch->TextureBindings[i];
+      result = SetTexture(binding.Stage, binding.Texture);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->TextureStageStateCount; i++) {
+      const auto& binding = pBatch->TextureStageStates[i];
+      result = SetTextureStageState(binding.Stage, binding.Type, binding.Value);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->SamplerStateCount; i++) {
+      const auto& binding = pBatch->SamplerStates[i];
+      result = SetSamplerState(binding.Sampler, binding.Type, binding.Value);
+      if (FAILED(result)) return result;
+    }
+
+    if (pBatch->Flags & D3D9_GTA_SA_EFFECT_STATE_HAS_NPATCH_MODE) {
+      result = SetNPatchMode(pBatch->NPatchMode);
+      if (FAILED(result)) return result;
+    }
+
+    if (pBatch->Flags & D3D9_GTA_SA_EFFECT_STATE_HAS_FVF) {
+      result = SetFVF(pBatch->FVF);
+      if (FAILED(result)) return result;
+    }
+
+    if (pBatch->Flags & D3D9_GTA_SA_EFFECT_STATE_HAS_VERTEX_SHADER) {
+      result = SetVertexShader(pBatch->VertexShader);
+      if (FAILED(result)) return result;
+    }
+
+    if (pBatch->Flags & D3D9_GTA_SA_EFFECT_STATE_HAS_PIXEL_SHADER) {
+      result = SetPixelShader(pBatch->PixelShader);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->VertexFloatRangeCount; i++) {
+      const auto& range = pBatch->VertexFloatRanges[i];
+      result = SetShaderConstants<
+        D3D9ShaderType::VertexShader,
+        D3D9ConstantType::Float>(
+          range.StartRegister, range.Data, range.RegisterCount);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->VertexIntRangeCount; i++) {
+      const auto& range = pBatch->VertexIntRanges[i];
+      result = SetShaderConstants<
+        D3D9ShaderType::VertexShader,
+        D3D9ConstantType::Int>(
+          range.StartRegister, range.Data, range.RegisterCount);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->VertexBoolRangeCount; i++) {
+      const auto& range = pBatch->VertexBoolRanges[i];
+      result = SetShaderConstants<
+        D3D9ShaderType::VertexShader,
+        D3D9ConstantType::Bool>(
+          range.StartRegister, range.Data, range.RegisterCount);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->PixelFloatRangeCount; i++) {
+      const auto& range = pBatch->PixelFloatRanges[i];
+      result = SetShaderConstants<
+        D3D9ShaderType::PixelShader,
+        D3D9ConstantType::Float>(
+          range.StartRegister, range.Data, range.RegisterCount);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->PixelIntRangeCount; i++) {
+      const auto& range = pBatch->PixelIntRanges[i];
+      result = SetShaderConstants<
+        D3D9ShaderType::PixelShader,
+        D3D9ConstantType::Int>(
+          range.StartRegister, range.Data, range.RegisterCount);
+      if (FAILED(result)) return result;
+    }
+
+    for (UINT i = 0u; i < pBatch->PixelBoolRangeCount; i++) {
+      const auto& range = pBatch->PixelBoolRanges[i];
+      result = SetShaderConstants<
+        D3D9ShaderType::PixelShader,
+        D3D9ConstantType::Bool>(
+          range.StartRegister, range.Data, range.RegisterCount);
+      if (FAILED(result)) return result;
+    }
+
+    return D3D_OK;
+  }
+
+
+  HRESULT D3D9DeviceEx::BeginGtaSaStateJournal(bool selective) {
+    D3D9DeviceLock lock = LockDevice();
+
+    if (ShouldRecord() || m_gtaSaStateJournal != nullptr)
+      return D3DERR_INVALIDCALL;
+
+    if (m_gtaSaStateJournalCache != nullptr) {
+      m_gtaSaStateJournal = std::move(m_gtaSaStateJournalCache);
+    } else {
+      try {
+        m_gtaSaStateJournal = new D3D9StateBlock(
+          this, D3D9StateBlockType::None, true, false, true);
+      } catch (const DxvkError& e) {
+        Logger::err(e.message());
+        return E_OUTOFMEMORY;
+      }
+    }
+
+    m_gtaSaStateJournalSelective = selective;
+    m_gtaSaStateJournalCaptureEnabled = !selective;
+    return D3D_OK;
+  }
+
+
+  HRESULT D3D9DeviceEx::SetGtaSaStateJournalCaptureEnabled(BOOL Enable) {
+    D3D9DeviceLock lock = LockDevice();
+
+    if (m_gtaSaStateJournal == nullptr || !m_gtaSaStateJournalSelective)
+      return D3DERR_INVALIDCALL;
+
+    m_gtaSaStateJournalCaptureEnabled = Enable != FALSE;
+    return D3D_OK;
+  }
+
+
+  HRESULT D3D9DeviceEx::RestoreGtaSaStateJournal() {
+    D3D9DeviceLock lock = LockDevice();
+
+    if (m_gtaSaStateJournal == nullptr)
+      return D3DERR_INVALIDCALL;
+
+    Com<D3D9StateBlock, false> journal = std::move(m_gtaSaStateJournal);
+    m_gtaSaStateJournalSelective = false;
+    m_gtaSaStateJournalCaptureEnabled = false;
+    const HRESULT result = journal->Apply();
+    journal->ResetJournal();
+    m_gtaSaStateJournalCache = std::move(journal);
+    return result;
+  }
+
+
+  void D3D9DeviceEx::DiscardGtaSaStateJournal() {
+    D3D9DeviceLock lock = LockDevice();
+    if (m_gtaSaStateJournal != nullptr) {
+      m_gtaSaStateJournal->ResetJournal();
+      m_gtaSaStateJournalCache = std::move(m_gtaSaStateJournal);
+    }
+    m_gtaSaStateJournalSelective = false;
+    m_gtaSaStateJournalCaptureEnabled = false;
+  }
+
+
+  void D3D9DeviceEx::RestoreGtaSaUndefinedLight(DWORD Index) {
+    if (Index >= m_state.lights.size())
+      return;
+
+    auto& light = m_state.lights[Index];
+    if (light.isEnabled)
+      m_dirty.set(D3D9DeviceDirtyFlag::FFVertexData);
+
+    light = D3D9LightState();
   }
 
 
@@ -2944,7 +3659,11 @@ namespace dxvk {
     if (m_state.scissorRect == *pRect)
       return D3D_OK;
 
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentScissorRect();
+
     m_state.scissorRect = *pRect;
+    NotifyGtaSaStateChanged();
 
     m_dirty.set(D3D9DeviceDirtyFlag::ViewportScissor);
 
@@ -2989,7 +3708,14 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetNPatchMode(float nSegments) {
     D3D9DeviceLock lock = LockDevice();
 
+    if (m_state.nPatchSegments == nSegments)
+      return D3D_OK;
+
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentNPatchMode();
+
     m_state.nPatchSegments = nSegments;
+    NotifyGtaSaStateChanged();
 
     return D3D_OK;
   }
@@ -3037,16 +3763,26 @@ namespace dxvk {
 
       if (likely(drawArgs)) {
         new (drawArgs) VkDrawIndirectCommand(draw);
+        if (unlikely(m_gtaSaCompat.IsStateAuditActive())) {
+          m_gtaSaCompat.RecordD3D9Draw(
+            D3D9GtaSaDrawKind::Primitive, true);
+          m_d3d9BatchSize += 1u;
+        }
         return D3D_OK;
       }
     }
 
+    if (unlikely(m_gtaSaCompat.IsStateAuditActive()))
+      m_gtaSaCompat.RecordD3D9Draw(
+        D3D9GtaSaDrawKind::Primitive, false);
     EmitCsCmd<VkDrawIndirectCommand>(D3D9CmdType::Draw, 1u,
       [this] (DxvkContext* ctx, const VkDrawIndirectCommand* drawArgs, uint32_t drawCount) {
         ctx->draw(drawCount, drawArgs);
       });
 
     new (m_csData->first()) VkDrawIndirectCommand(draw);
+    if (unlikely(m_gtaSaCompat.IsStateAuditActive()))
+      m_d3d9BatchSize = 1u;
     return D3D_OK;
   }
 
@@ -3088,10 +3824,18 @@ namespace dxvk {
 
       if (likely(drawArgs)) {
         new (drawArgs) VkDrawIndexedIndirectCommand(draw);
+        if (unlikely(m_gtaSaCompat.IsStateAuditActive())) {
+          m_gtaSaCompat.RecordD3D9Draw(
+            D3D9GtaSaDrawKind::Indexed, true);
+          m_d3d9BatchSize += 1u;
+        }
         return D3D_OK;
       }
     }
 
+    if (unlikely(m_gtaSaCompat.IsStateAuditActive()))
+      m_gtaSaCompat.RecordD3D9Draw(
+        D3D9GtaSaDrawKind::Indexed, false);
     EmitCsCmd<VkDrawIndexedIndirectCommand>(D3D9CmdType::DrawIndexed, 1u,
       [this] (DxvkContext* ctx, VkDrawIndexedIndirectCommand* drawArgs, uint32_t drawCount) {
       // If instancing is enabled for any vertex binding, but none of the instanced
@@ -3110,6 +3854,8 @@ namespace dxvk {
     });
 
     new (m_csData->first()) VkDrawIndexedIndirectCommand(draw);
+    if (unlikely(m_gtaSaCompat.IsStateAuditActive()))
+      m_d3d9BatchSize = 1u;
     return D3D_OK;
   }
 
@@ -3140,6 +3886,9 @@ namespace dxvk {
     auto upSlice = AllocUPBuffer(bufferSize);
     FillUPVertexBuffer(upSlice.mapPtr, pVertexStreamZeroData, dataSize, bufferSize);
 
+    if (unlikely(m_gtaSaCompat.IsStateAuditActive()))
+      m_gtaSaCompat.RecordD3D9Draw(
+        D3D9GtaSaDrawKind::PrimitiveUP, false);
     EmitCs([this,
       cBufferSlice  = std::move(upSlice.slice),
       cPrimType     = PrimitiveType,
@@ -3156,10 +3905,17 @@ namespace dxvk {
       ctx->bindVertexBuffer(0, DxvkBufferSlice(), 0);
     });
 
-    m_state.vertexBuffers[0].vertexBuffer = nullptr;
-    m_state.vertexBuffers[0].offset       = 0;
-    m_state.vertexBuffers[0].length       = 0;
-    m_state.vertexBuffers[0].stride       = 0;
+    auto& upStream = m_state.vertexBuffers[0];
+    if (upStream.vertexBuffer != nullptr
+     || upStream.offset != 0u
+     || upStream.length != 0u
+     || upStream.stride != 0u) {
+      upStream.vertexBuffer = nullptr;
+      upStream.offset       = 0u;
+      upStream.length       = 0u;
+      upStream.stride       = 0u;
+      NotifyGtaSaStateChanged();
+    }
     return D3D_OK;
   }
 
@@ -3201,6 +3957,9 @@ namespace dxvk {
     FillUPVertexBuffer(data, pVertexStreamZeroData, vertexDataSize, vertexBufferSize);
     std::memcpy(data + vertexBufferSize, pIndexData, indicesSize);
 
+    if (unlikely(m_gtaSaCompat.IsStateAuditActive()))
+      m_gtaSaCompat.RecordD3D9Draw(
+        D3D9GtaSaDrawKind::IndexedUP, false);
     EmitCs([this,
       cVertexSize   = vertexBufferSize,
       cBufferSlice  = std::move(upSlice.slice),
@@ -3224,12 +3983,21 @@ namespace dxvk {
       ctx->bindIndexBuffer(DxvkBufferSlice(), VK_INDEX_TYPE_UINT32);
     });
 
-    m_state.vertexBuffers[0].vertexBuffer = nullptr;
-    m_state.vertexBuffers[0].offset       = 0;
-    m_state.vertexBuffers[0].length       = 0;
-    m_state.vertexBuffers[0].stride       = 0;
+    auto& upStream = m_state.vertexBuffers[0];
+    const bool streamChanged = upStream.vertexBuffer != nullptr
+      || upStream.offset != 0u
+      || upStream.length != 0u
+      || upStream.stride != 0u;
+    const bool indicesChanged = m_state.indices != nullptr;
 
+    upStream.vertexBuffer = nullptr;
+    upStream.offset       = 0u;
+    upStream.length       = 0u;
+    upStream.stride       = 0u;
     m_state.indices = nullptr;
+
+    if (streamChanged || indicesChanged)
+      NotifyGtaSaStateChanged();
     return D3D_OK;
   }
 
@@ -3357,9 +4125,11 @@ namespace dxvk {
       ctx->bindShader<VK_SHADER_STAGE_GEOMETRY_BIT>(nullptr);
     });
 
-    // We unbound the pixel shader before,
-    // let's make sure that gets rebound.
-    if (m_state.pixelShader != nullptr) {
+    // ProcessVertices unbinds the fragment shader on the CS thread. Defer the
+    // restore to the next draw when GTA shader coalescing is enabled.
+    if (m_d3d9Options.gtaSaDeferShaderBinding) {
+      InvalidateGtaSaDeferredShaderBinding<D3D9ShaderType::PixelShader>();
+    } else if (m_state.pixelShader != nullptr) {
       BindShader<D3D9ShaderType::PixelShader>(
         GetCommonShader(m_state.pixelShader));
     } else {
@@ -3422,6 +4192,9 @@ namespace dxvk {
     if (decl == m_state.vertexDecl.ptr())
       return D3D_OK;
 
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentVertexDeclaration();
+
     bool dirtyFFShader = decl == nullptr || m_state.vertexDecl == nullptr;
     if (!dirtyFFShader)
       dirtyFFShader |= decl->GetFlags()        != m_state.vertexDecl->GetFlags()
@@ -3430,22 +4203,41 @@ namespace dxvk {
     if (dirtyFFShader)
       m_dirty.set(D3D9DeviceDirtyFlag::FFVertexData);
 
+    const bool oldHasPositionT = m_state.vertexDecl != nullptr
+      && m_state.vertexDecl->TestFlag(D3D9VertexDeclFlag::HasPositionT);
     const bool wasUsingProgrammableVS = UseProgrammableVS();
 
     m_state.vertexDecl = decl;
+    NotifyGtaSaStateChanged();
 
+    const bool newHasPositionT = decl != nullptr
+      && decl->TestFlag(D3D9VertexDeclFlag::HasPositionT);
     const bool usesProgrammableVS = UseProgrammableVS();
 
     if (unlikely(usesProgrammableVS != wasUsingProgrammableVS)) {
       if (usesProgrammableVS) {
-        BindShader<D3D9ShaderType::VertexShader>(GetCommonShader(m_state.vertexShader));
+        if (m_d3d9Options.gtaSaDeferShaderBinding)
+          MarkGtaSaDeferredShaderBinding<D3D9ShaderType::VertexShader>();
+        else
+          BindShader<D3D9ShaderType::VertexShader>(GetCommonShader(m_state.vertexShader));
       } else {
         m_dirty.set(D3D9DeviceDirtyFlag::FFVertexData);
-        BindFFUbershader<D3D9ShaderType::VertexShader>();
+        if (m_d3d9Options.gtaSaDeferShaderBinding)
+          MarkGtaSaDeferredShaderBinding<D3D9ShaderType::VertexShader>();
+        else
+          BindFFUbershader<D3D9ShaderType::VertexShader>();
       }
     }
 
-    m_dirty.set(D3D9DeviceDirtyFlag::InputLayout, D3D9DeviceDirtyFlag::Fog);
+    m_dirty.set(D3D9DeviceDirtyFlag::InputLayout);
+
+    // Fog mode only depends on the programmable/fixed-function transition,
+    // PositionT while fixed-function, and the projection/render states.
+    const bool fogInputsChanged = usesProgrammableVS != wasUsingProgrammableVS
+      || (!wasUsingProgrammableVS && !usesProgrammableVS
+        && oldHasPositionT != newHasPositionT);
+    if (unlikely(fogInputsChanged))
+      m_dirty.set(D3D9DeviceDirtyFlag::Fog);
     return D3D_OK;
   }
 
@@ -3538,8 +4330,15 @@ namespace dxvk {
     if (unlikely(ShouldRecord()))
       return m_recorder->SetVertexShader(shader);
 
+    m_gtaSaCompat.RecordStateAudit(
+      D3D9GtaSaStateAuditKind::VertexShader,
+      shader == m_state.vertexShader.ptr());
+
     if (shader == m_state.vertexShader.ptr())
       return D3D_OK;
+
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentVertexShader();
 
     auto* oldShader = GetCommonShader(m_state.vertexShader);
     auto* newShader = GetCommonShader(shader);
@@ -3554,18 +4353,30 @@ namespace dxvk {
     const bool wasUsingProgrammableVS = UseProgrammableVS();
 
     m_state.vertexShader = shader;
+    NotifyGtaSaStateChanged();
 
     const bool usesProgrammableVS = UseProgrammableVS();
 
     if (usesProgrammableVS) {
-      BindShader<D3D9ShaderType::VertexShader>(GetCommonShader(shader));
+      if (m_d3d9Options.gtaSaDeferShaderBinding)
+        MarkGtaSaDeferredShaderBinding<D3D9ShaderType::VertexShader>();
+      else
+        BindShader<D3D9ShaderType::VertexShader>(GetCommonShader(shader));
     } else if (wasUsingProgrammableVS) {
       m_dirty.set(D3D9DeviceDirtyFlag::FFVertexData);
-      BindFFUbershader<D3D9ShaderType::VertexShader>();
+      if (m_d3d9Options.gtaSaDeferShaderBinding)
+        MarkGtaSaDeferredShaderBinding<D3D9ShaderType::VertexShader>();
+      else
+        BindFFUbershader<D3D9ShaderType::VertexShader>();
     }
 
-    m_dirty.set(D3D9DeviceDirtyFlag::InputLayout,
-                D3D9DeviceDirtyFlag::Fog);
+    m_dirty.set(D3D9DeviceDirtyFlag::InputLayout);
+
+    // Switching between programmable vertex shaders does not change fog
+    // evaluation. Recompute it only when the pipeline crosses the
+    // programmable/fixed-function boundary.
+    if (unlikely(usesProgrammableVS != wasUsingProgrammableVS))
+      m_dirty.set(D3D9DeviceDirtyFlag::Fog);
     return D3D_OK;
   }
 
@@ -3693,6 +4504,12 @@ namespace dxvk {
 
     auto& vbo = m_state.vertexBuffers[StreamNumber];
 
+    if (unlikely(ShouldCaptureGtaSaStateJournal())
+     && (vbo.vertexBuffer != buffer
+      || (buffer && (vbo.offset != OffsetInBytes || vbo.stride != Stride)))) {
+      m_gtaSaStateJournal->CaptureCurrentStreamSource(StreamNumber);
+    }
+
     if (vbo.vertexBuffer != buffer) {
       const uint32_t bit = 1u << StreamNumber;
       m_vbSlotTracking.uploadPerDraw &= ~bit;
@@ -3725,12 +4542,14 @@ namespace dxvk {
         vbo.length = 0u;
         vbo.stride = 0u;
       }
+      NotifyGtaSaStateChanged();
     } else if (likely(buffer && (vbo.offset != OffsetInBytes || vbo.stride != Stride))) {
       vbo.offset = OffsetInBytes;
       vbo.stride = Stride;
 
       BindVertexBufferRange(StreamNumber,
         vbo.offset, vbo.length, vbo.stride);
+      NotifyGtaSaStateChanged();
     }
 
     return D3D_OK;
@@ -3794,7 +4613,11 @@ namespace dxvk {
     if (oldSetting == Setting)
       return D3D_OK;
 
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentStreamSourceFreq(StreamNumber);
+
     m_state.streamFreq[StreamNumber] = Setting;
+    NotifyGtaSaStateChanged();
 
     if (instanced)
       m_vbSlotTracking.instanced |=   1u << StreamNumber;
@@ -3836,7 +4659,11 @@ namespace dxvk {
     if (buffer == m_state.indices.ptr())
       return D3D_OK;
 
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentIndices();
+
     m_state.indices = buffer;
+    NotifyGtaSaStateChanged();
 
     // Don't unbind the buffer if the game sets a nullptr here.
     // Operation Flashpoint Red River breaks if we do that.
@@ -3896,8 +4723,15 @@ namespace dxvk {
     if (unlikely(ShouldRecord()))
       return m_recorder->SetPixelShader(shader);
 
+    m_gtaSaCompat.RecordStateAudit(
+      D3D9GtaSaStateAuditKind::PixelShader,
+      shader == m_state.pixelShader.ptr());
+
     if (shader == m_state.pixelShader.ptr())
       return D3D_OK;
+
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentPixelShader();
 
     auto* oldShader = GetCommonShader(m_state.pixelShader);
     auto* newShader = GetCommonShader(shader);
@@ -3911,10 +4745,14 @@ namespace dxvk {
 
     const D3D9ShaderMasks oldShaderMasks = PSShaderMasks();
     m_state.pixelShader = shader;
+    NotifyGtaSaStateChanged();
     const D3D9ShaderMasks newShaderMasks = PSShaderMasks();
 
     if (shader != nullptr) {
-      BindShader<D3D9ShaderType::PixelShader>(newShader);
+      if (m_d3d9Options.gtaSaDeferShaderBinding)
+        MarkGtaSaDeferredShaderBinding<D3D9ShaderType::PixelShader>();
+      else
+        BindShader<D3D9ShaderType::PixelShader>(newShader);
 
       const auto& programInfo = GetCommonShader(m_state.pixelShader)->GetInfo();
 
@@ -3927,7 +4765,10 @@ namespace dxvk {
       m_dirty.set(D3D9DeviceDirtyFlag::FFPixelShader,
                   D3D9DeviceDirtyFlag::SpecializationEntries);
 
-      BindFFUbershader<D3D9ShaderType::PixelShader>();
+      if (m_d3d9Options.gtaSaDeferShaderBinding)
+        MarkGtaSaDeferredShaderBinding<D3D9ShaderType::PixelShader>();
+      else
+        BindFFUbershader<D3D9ShaderType::PixelShader>();
     }
 
     // Check whether the color output mask or the mask of the used samplers
@@ -4466,19 +5307,29 @@ namespace dxvk {
           D3DDISPLAYMODEEX*      pFullscreenDisplayMode) {
     D3D9DeviceLock lock = LockDevice();
 
+    if (m_d3d9Options.gtaSaDeferShaderBinding) {
+      InvalidateGtaSaDeferredShaderBinding<D3D9ShaderType::VertexShader>();
+      InvalidateGtaSaDeferredShaderBinding<D3D9ShaderType::PixelShader>();
+    }
+    m_gtaSaCompat.OnResetBegin();
+    auto finishReset = [this, pPresentationParameters] (HRESULT result) {
+      m_gtaSaCompat.OnResetEnd(result, pPresentationParameters);
+      return result;
+    };
+
     HRESULT hr;
     if (likely(m_deviceType != D3DDEVTYPE_NULLREF)) {
       hr = m_parent->ValidatePresentationParametersEx(pPresentationParameters, pFullscreenDisplayMode);
 
       if (unlikely(FAILED(hr)))
-        return hr;
+        return finishReset(hr);
     }
 
     hr = ResetSwapChain(pPresentationParameters, pFullscreenDisplayMode);
     if (FAILED(hr))
-      return hr;
+      return finishReset(hr);
 
-    return D3D_OK;
+    return finishReset(D3D_OK);
   }
 
 
@@ -4543,10 +5394,18 @@ namespace dxvk {
 
     auto& state = m_state.samplerStates;
 
+    m_gtaSaCompat.RecordStateAudit(
+      D3D9GtaSaStateAuditKind::SamplerState,
+      state[StateSampler][Type] == Value);
+
     if (state[StateSampler][Type] == Value)
       return D3D_OK;
 
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentStateSamplerState(StateSampler, Type);
+
     state[StateSampler][Type] = Value;
+    NotifyGtaSaStateChanged();
 
     const uint32_t samplerBit = 1u << StateSampler;
 
@@ -4580,8 +5439,15 @@ namespace dxvk {
     if (unlikely(ShouldRecord()))
       return m_recorder->SetStateTexture(StateSampler, pTexture);
 
+    m_gtaSaCompat.RecordStateAudit(
+      D3D9GtaSaStateAuditKind::Texture,
+      m_state.textures[StateSampler] == pTexture);
+
     if (m_state.textures[StateSampler] == pTexture)
       return D3D_OK;
+
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentStateTexture(StateSampler);
 
     auto oldTexture = GetCommonTexture(m_state.textures[StateSampler]);
     auto newTexture = GetCommonTexture(pTexture);
@@ -4615,6 +5481,7 @@ namespace dxvk {
     DWORD newUsage = newTexture != nullptr ? newTexture->Desc()->Usage : 0;
     DWORD combinedUsage = oldUsage | newUsage;
     TextureChangePrivate(m_state.textures[StateSampler], pTexture);
+    NotifyGtaSaStateChanged();
     m_textureSlotTracking.textureDirty |= 1u << StateSampler;
     UpdateTextureBitmasks(StateSampler, combinedUsage);
 
@@ -4634,7 +5501,15 @@ namespace dxvk {
     if (unlikely(ShouldRecord()))
       return m_recorder->SetStateTransform(idx, pMatrix);
 
-    m_state.transforms[idx] = ConvertMatrix(pMatrix);
+    const Matrix4 matrix = ConvertMatrix(pMatrix);
+    if (m_state.transforms[idx] == matrix)
+      return D3D_OK;
+
+    if (unlikely(ShouldCaptureGtaSaStateJournal()))
+      m_gtaSaStateJournal->CaptureCurrentStateTransform(idx);
+
+    m_state.transforms[idx] = matrix;
+    NotifyGtaSaStateChanged();
 
     m_dirty.set(D3D9DeviceDirtyFlag::FFVertexData);
 
@@ -4664,8 +5539,16 @@ namespace dxvk {
     if (unlikely(ShouldRecord()))
       return m_recorder->SetStateTextureStageState(Stage, Type, Value);
 
+    m_gtaSaCompat.RecordStateAudit(
+      D3D9GtaSaStateAuditKind::TextureStageState,
+      m_state.textureStages[Stage][Type] == Value);
+
     if (likely(m_state.textureStages[Stage][Type] != Value)) {
+      if (unlikely(ShouldCaptureGtaSaStateJournal()))
+        m_gtaSaStateJournal->CaptureCurrentStateTextureStageState(Stage, Type);
+
       m_state.textureStages[Stage][Type] = Value;
+      NotifyGtaSaStateChanged();
 
       switch (Type) {
         case DXVK_TSS_COLOROP:
@@ -5866,10 +6749,14 @@ namespace dxvk {
   }
 
 
-  void D3D9DeviceEx::EmitCsChunk(DxvkCsChunkRef&& chunk) {
+  void D3D9DeviceEx::EmitCsChunk(
+          DxvkCsChunkRef&&          chunk,
+          D3D9GtaSaBatchBreakReason reason) {
     // Flush init commands so that the CS thread
     // can processe them before the first use.
     m_initializer->FlushCsChunk();
+
+    CloseD3D9DrawBatch(reason);
 
     // Reset last CS command since it is no longer safe to access
     m_csDataType = D3D9CmdType::None;
@@ -6625,14 +7512,33 @@ namespace dxvk {
       float fogEnd   = bit::cast<float>(rs[D3DRS_FOGEND]);
       float fogStart = bit::cast<float>(rs[D3DRS_FOGSTART]);
 
-      m_pushData.shared.fogColor[0] = uint8_t(fogColor >>  0u);
-      m_pushData.shared.fogColor[1] = uint8_t(fogColor >>  8u);
-      m_pushData.shared.fogColor[2] = uint8_t(fogColor >> 16u);
-      m_pushData.shared.fogDensity = fogDensity;
-      m_pushData.shared.fogDistanceEnd = fogEnd;
-      m_pushData.shared.fogDistanceScale = (fogEnd != fogStart) ? 1.0f / (fogEnd - fogStart) : 0.0f;
+      const uint8_t fogColorR = uint8_t(fogColor >>  0u);
+      const uint8_t fogColorG = uint8_t(fogColor >>  8u);
+      const uint8_t fogColorB = uint8_t(fogColor >> 16u);
+      const float fogDistanceScale = (fogEnd != fogStart)
+        ? 1.0f / (fogEnd - fogStart)
+        : 0.0f;
 
-      m_dirty.set(D3D9DeviceDirtyFlag::PushDataShared);
+      const bool pushDataChanged =
+           m_pushData.shared.fogColor[0] != fogColorR
+        || m_pushData.shared.fogColor[1] != fogColorG
+        || m_pushData.shared.fogColor[2] != fogColorB
+        || bit::cast<uint32_t>(m_pushData.shared.fogDensity)
+          != bit::cast<uint32_t>(fogDensity)
+        || bit::cast<uint32_t>(m_pushData.shared.fogDistanceEnd)
+          != bit::cast<uint32_t>(fogEnd)
+        || bit::cast<uint32_t>(m_pushData.shared.fogDistanceScale)
+          != bit::cast<uint32_t>(fogDistanceScale);
+
+      if (pushDataChanged) {
+        m_pushData.shared.fogColor[0] = fogColorR;
+        m_pushData.shared.fogColor[1] = fogColorG;
+        m_pushData.shared.fogColor[2] = fogColorB;
+        m_pushData.shared.fogDensity = fogDensity;
+        m_pushData.shared.fogDistanceEnd = fogEnd;
+        m_pushData.shared.fogDistanceScale = fogDistanceScale;
+        m_dirty.set(D3D9DeviceDirtyFlag::PushDataShared);
+      }
     }
   }
 
@@ -6659,14 +7565,53 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::UpdatePushData() {
-    if (m_dirty.test(D3D9DeviceDirtyFlag::PushDataShared))
-      UpdatePushDataBlock(m_pushData.shared);
-    if (m_dirty.test(D3D9DeviceDirtyFlag::PushDataVs))
-      UpdatePushDataBlock(m_pushData.vs);
-    if (m_dirty.test(D3D9DeviceDirtyFlag::PushDataFfvs))
-      UpdatePushDataBlock(m_pushData.ffvs);
-    if (m_dirty.test(D3D9DeviceDirtyFlag::PushDataFfps))
-      UpdatePushDataBlock(m_pushData.ffps);
+    const bool updateShared = m_dirty.test(D3D9DeviceDirtyFlag::PushDataShared);
+    const bool updateVs     = m_dirty.test(D3D9DeviceDirtyFlag::PushDataVs);
+    const bool updateFfvs   = m_dirty.test(D3D9DeviceDirtyFlag::PushDataFfvs);
+    const bool updateFfps   = m_dirty.test(D3D9DeviceDirtyFlag::PushDataFfps);
+
+    if (m_d3d9Options.gtaSaCoalescePushData) {
+      const auto shared = m_pushData.shared;
+      const auto vs     = m_pushData.vs;
+      const auto ffvs   = m_pushData.ffvs;
+      const auto ffps   = m_pushData.ffps;
+
+      // Keep the legacy stage/offset order exactly: shared, VS, FFVS, FFPS.
+      // The only change is that one callback replaces up to four callbacks,
+      // so a draw batch is interrupted at most once by this state update.
+      EmitCs([
+        updateShared,
+        updateVs,
+        updateFfvs,
+        updateFfps,
+        cShared = shared,
+        cVs = vs,
+        cFfvs = ffvs,
+        cFfps = ffps
+      ] (DxvkContext* ctx) {
+        if (updateShared)
+          ctx->pushData(D3D9SharedPushData::Stages,
+            D3D9SharedPushData::Offset, sizeof(cShared), &cShared);
+        if (updateVs)
+          ctx->pushData(D3D9VsPushData::Stages,
+            D3D9VsPushData::Offset, sizeof(cVs), &cVs);
+        if (updateFfvs)
+          ctx->pushData(D3D9FfvsPushData::Stages,
+            D3D9FfvsPushData::Offset, sizeof(cFfvs), &cFfvs);
+        if (updateFfps)
+          ctx->pushData(D3D9FfpsPushData::Stages,
+            D3D9FfpsPushData::Offset, sizeof(cFfps), &cFfps);
+      });
+    } else {
+      if (updateShared)
+        UpdatePushDataBlock(m_pushData.shared);
+      if (updateVs)
+        UpdatePushDataBlock(m_pushData.vs);
+      if (updateFfvs)
+        UpdatePushDataBlock(m_pushData.ffvs);
+      if (updateFfps)
+        UpdatePushDataBlock(m_pushData.ffps);
+    }
 
     m_dirty.clr(D3D9DeviceDirtyFlag::PushDataShared,
                 D3D9DeviceDirtyFlag::PushDataVs,
@@ -7012,6 +7957,8 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::BindBlendFactor() {
+    m_dirty.clr(D3D9DeviceDirtyFlag::BlendFactor);
+
     DxvkBlendConstants blendConstants;
     DecodeD3DCOLOR(
       D3DCOLOR(m_state.renderStates[D3DRS_BLENDFACTOR]),
@@ -7170,6 +8117,8 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::BindDepthStencilReference() {
+    m_dirty.clr(D3D9DeviceDirtyFlag::StencilReference);
+
     auto& rs = m_state.renderStates;
 
     uint32_t ref = uint32_t(rs[D3DRS_STENCILREF]) & 0xff;
@@ -7180,20 +8129,100 @@ namespace dxvk {
   }
 
 
-  void D3D9DeviceEx::BindSampler(DWORD Sampler) {
-    m_samplerBindCount++;
+  void D3D9DeviceEx::InvalidateGtaSaResourceBindingCache() {
+    if (!m_d3d9Options.gtaSaResourceBindingCache)
+      return;
 
+    for (auto& view : m_gtaSaTextureBindingCache)
+      view = nullptr;
+
+    for (auto& entry : m_gtaSaSamplerBindingCache)
+      entry = GtaSaSamplerBindingCacheEntry();
+
+    m_gtaSaTextureBindingCacheValid = 0u;
+    m_gtaSaSamplerBindingCacheValid = 0u;
+    m_gtaSaResourceBindingCacheInvalidations += 1u;
+  }
+
+
+  bool D3D9DeviceEx::PrepareGtaSaSamplerBinding(
+          DWORD                                      Sampler,
+          const std::array<DWORD, SamplerStateCount>& State,
+          bool                                       IsCube,
+          bool                                       IsMultiMip,
+          bool                                       IsDepth,
+          const Rc<DxvkImageView>&                   BorderView) {
+    if (!m_d3d9Options.gtaSaResourceBindingCache)
+      return true;
+
+    const uint32_t bit = 1u << Sampler;
+    auto& entry = m_gtaSaSamplerBindingCache[Sampler];
+    const D3D9SamplerInfo samplerInfo(State);
+
+    if ((m_gtaSaSamplerBindingCacheValid & bit)
+     && entry.state.eq(samplerInfo)
+     && entry.isCube == IsCube
+     && entry.isMultiMip == IsMultiMip
+     && entry.isDepth == IsDepth
+     && entry.borderView == BorderView) {
+      m_gtaSaSamplerBindingCacheHits += 1u;
+      return false;
+    }
+
+    entry.state = samplerInfo;
+    entry.isCube = IsCube;
+    entry.isMultiMip = IsMultiMip;
+    entry.isDepth = IsDepth;
+    entry.borderView = BorderView;
+    m_gtaSaSamplerBindingCacheValid |= bit;
+    return true;
+  }
+
+
+  bool D3D9DeviceEx::PrepareGtaSaTextureBinding(
+          DWORD                    Sampler,
+          const Rc<DxvkImageView>& View) {
+    if (!m_d3d9Options.gtaSaResourceBindingCache)
+      return true;
+
+    const uint32_t bit = 1u << Sampler;
+    if ((m_gtaSaTextureBindingCacheValid & bit)
+     && m_gtaSaTextureBindingCache[Sampler] == View) {
+      m_gtaSaTextureBindingCacheHits += 1u;
+      return false;
+    }
+
+    m_gtaSaTextureBindingCache[Sampler] = View;
+    m_gtaSaTextureBindingCacheValid |= bit;
+    return true;
+  }
+
+
+  void D3D9DeviceEx::BindSampler(DWORD Sampler) {
     const D3D9CommonTexture* tex = GetCommonTexture(m_state.textures[Sampler]);
     const bool srgb = m_state.samplerStates[Sampler][D3DSAMP_SRGBTEXTURE] & 0x1;
+    const std::array<DWORD, SamplerStateCount> samplerState =
+      m_state.samplerStates[Sampler];
 
     Rc<DxvkImageView> imageView;
 
     if (tex && SamplerUsesBorderColor(Sampler))
       imageView = tex->GetSampleView(srgb);
 
+    if (!PrepareGtaSaSamplerBinding(
+          Sampler,
+          samplerState,
+          tex && tex->IsCube(),
+          tex && (tex->Desc()->MipLevels > 1u),
+          bool(m_textureSlotTracking.depth & (1u << Sampler)),
+          imageView))
+      return;
+
+    m_samplerBindCount++;
+
     EmitCs([this,
       cSlot       = Sampler,
-      cState      = D3D9SamplerInfo(m_state.samplerStates[Sampler]),
+      cState      = D3D9SamplerInfo(samplerState),
       cIsCube     = tex && tex->IsCube(),
       cIsMultiMip = tex && (tex->Desc()->MipLevels > 1u),
       cIsDepth    = bool(m_textureSlotTracking.depth & (1u << Sampler)),
@@ -7265,10 +8294,14 @@ namespace dxvk {
   void D3D9DeviceEx::BindTexture(DWORD StateSampler) {
     bool srgb = m_state.samplerStates[StateSampler][D3DSAMP_SRGBTEXTURE] & 0x1;
     D3D9CommonTexture* commonTex = GetCommonTexture(m_state.textures[StateSampler]);
+    Rc<DxvkImageView> imageView = commonTex->GetSampleView(srgb);
+
+    if (!PrepareGtaSaTextureBinding(StateSampler, imageView))
+      return;
 
     EmitCs([
       cSlot       = StateSampler,
-      cImageView  = commonTex->GetSampleView(srgb)
+      cImageView  = std::move(imageView)
     ](DxvkContext* ctx) mutable {
       auto [stage, slot] = D3D9ShaderResourceMapping::getTextureSlotInfo(cSlot);
       ctx->bindResourceImageView(stage, slot, std::move(cImageView));
@@ -7276,8 +8309,171 @@ namespace dxvk {
   }
 
 
+  void D3D9DeviceEx::BindSamplerBatch(uint32_t mask) {
+    struct PendingSampler {
+      DWORD                   slot = 0u;
+      D3D9SamplerInfo         state = D3D9SamplerInfo(std::array<DWORD, SamplerStateCount> { });
+      bool                    isCube = false;
+      bool                    isMultiMip = false;
+      bool                    isDepth = false;
+      Rc<DxvkImageView>       view;
+      uint64_t                bindId = 0u;
+    };
+
+    std::array<PendingSampler, SamplerCount> bindings = { };
+    uint32_t bindingCount = 0u;
+
+    for (uint32_t i : bit::BitMask(mask)) {
+      const D3D9CommonTexture* tex = GetCommonTexture(m_state.textures[i]);
+      const bool srgb = m_state.samplerStates[i][D3DSAMP_SRGBTEXTURE] & 0x1;
+      const std::array<DWORD, SamplerStateCount> samplerState =
+        m_state.samplerStates[i];
+
+      Rc<DxvkImageView> imageView;
+      if (tex && SamplerUsesBorderColor(i))
+        imageView = tex->GetSampleView(srgb);
+
+      if (!PrepareGtaSaSamplerBinding(
+            i,
+            samplerState,
+            tex && tex->IsCube(),
+            tex && (tex->Desc()->MipLevels > 1u),
+            bool(m_textureSlotTracking.depth & (1u << i)),
+            imageView))
+        continue;
+
+      m_samplerBindCount++;
+
+      auto& binding = bindings[bindingCount++];
+      binding.slot = i;
+      binding.state = D3D9SamplerInfo(samplerState);
+      binding.isCube = tex && tex->IsCube();
+      binding.isMultiMip = tex && (tex->Desc()->MipLevels > 1u);
+      binding.isDepth = bool(m_textureSlotTracking.depth & (1u << i));
+      binding.view = std::move(imageView);
+      binding.bindId = m_samplerBindCount;
+    }
+
+    if (bindingCount == 0u)
+      return;
+
+    EmitCs([this, bindings = std::move(bindings), bindingCount] (DxvkContext* ctx) mutable {
+      for (uint32_t i = 0u; i < bindingCount; i++) {
+        auto& binding = bindings[i];
+        const auto& cState = binding.state;
+        DxvkSamplerKey key = { };
+
+        key.setFilter(
+          DecodeFilter(cState.minFilter),
+          DecodeFilter(cState.magFilter),
+          DecodeMipFilter(cState.mipFilter));
+
+        if (binding.isCube) {
+          key.setAddressModes(
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+          key.setLegacyCubeFilter(!m_d3d9Options.seamlessCubes);
+        } else {
+          key.setAddressModes(
+            DecodeAddressMode(cState.addressU),
+            DecodeAddressMode(cState.addressV),
+            DecodeAddressMode(cState.addressW));
+        }
+
+        key.setDepthCompare(binding.isDepth, VK_COMPARE_OP_LESS_OR_EQUAL);
+
+        if (cState.mipFilter) {
+          uint32_t anisotropy = cState.maxAnisotropy;
+
+          // Anisotropic filtering doesn't make any sense with only one mip
+          if (cState.minFilter != D3DTEXF_ANISOTROPIC || !binding.isMultiMip)
+            anisotropy = 0u;
+
+          // Forcing anisotropic filtering doesn't make any sense with only one mip
+          if (m_d3d9Options.samplerAnisotropy != -1
+           && binding.isMultiMip
+           && cState.minFilter > D3DTEXF_POINT)
+            anisotropy = m_d3d9Options.samplerAnisotropy;
+
+          key.setAniso(anisotropy);
+
+          float lodBias = cState.mipLodBias;
+          lodBias += m_d3d9Options.samplerLodBias;
+
+          if (m_d3d9Options.clampNegativeLodBias)
+            lodBias = std::max(lodBias, 0.0f);
+
+          key.setLodRange(float(cState.maxMipLevel), 16.0f, lodBias);
+        }
+
+        if (key.u.p.hasBorder) {
+          DecodeD3DCOLOR(cState.borderColor, key.borderColor.float32);
+
+          if (binding.view)
+            key.setViewProperties(
+              binding.view->info().unpackSwizzle(),
+              binding.view->info().format);
+        }
+
+        auto [stage, slot] = D3D9ShaderResourceMapping::getTextureSlotInfo(binding.slot);
+        ctx->bindResourceSampler(stage, slot, m_dxvkDevice->createSampler(key));
+
+        // Let the main thread know about current sampler stats
+        uint64_t liveCount = m_dxvkDevice->getSamplerStats().liveCount;
+        m_lastSamplerStats.store(liveCount | (binding.bindId << SamplerCountBits));
+      }
+    });
+  }
+
+
+  void D3D9DeviceEx::BindTextureBatch(uint32_t mask) {
+    struct PendingTexture {
+      DWORD             slot = 0u;
+      Rc<DxvkImageView> view;
+    };
+
+    std::array<PendingTexture, SamplerCount> bindings = { };
+    uint32_t bindingCount = 0u;
+
+    for (uint32_t i : bit::BitMask(mask)) {
+      bool srgb = m_state.samplerStates[i][D3DSAMP_SRGBTEXTURE] & 0x1;
+      D3D9CommonTexture* commonTex = GetCommonTexture(m_state.textures[i]);
+      Rc<DxvkImageView> imageView = commonTex->GetSampleView(srgb);
+
+      if (!PrepareGtaSaTextureBinding(i, imageView))
+        continue;
+
+      auto& binding = bindings[bindingCount++];
+      binding.slot = i;
+      binding.view = std::move(imageView);
+    }
+
+    if (bindingCount == 0u)
+      return;
+
+    EmitCs([bindings = std::move(bindings), bindingCount] (DxvkContext* ctx) mutable {
+      for (uint32_t i = 0u; i < bindingCount; i++) {
+        auto& binding = bindings[i];
+        auto [stage, slot] = D3D9ShaderResourceMapping::getTextureSlotInfo(binding.slot);
+        ctx->bindResourceImageView(stage, slot, std::move(binding.view));
+      }
+    });
+  }
+
+
   void D3D9DeviceEx::UnbindTextures(uint32_t mask) {
-    EmitCs([cMask = mask] (DxvkContext* ctx) {
+    uint32_t emitMask = 0u;
+    for (uint32_t i : bit::BitMask(mask)) {
+      if (PrepareGtaSaTextureBinding(i, nullptr))
+        emitMask |= 1u << i;
+    }
+
+    if (emitMask == 0u)
+      return;
+
+    EmitCs([cMask = emitMask] (DxvkContext* ctx) {
       for (uint32_t i : bit::BitMask(cMask)) {
         auto [stage, slot] = D3D9ShaderResourceMapping::getTextureSlotInfo(i);
         ctx->bindResourceImageView(stage, slot, nullptr);
@@ -7289,8 +8485,12 @@ namespace dxvk {
   void D3D9DeviceEx::UndirtySamplers(uint32_t mask) {
     EnsureSamplerLimit();
 
-    for (uint32_t i : bit::BitMask(mask))
-      BindSampler(i);
+    if (m_d3d9Options.gtaSaCoalesceSamplerBindings) {
+      BindSamplerBatch(mask);
+    } else {
+      for (uint32_t i : bit::BitMask(mask))
+        BindSampler(i);
+    }
 
     m_textureSlotTracking.samplerStateDirty &= ~mask;
   }
@@ -7300,8 +8500,13 @@ namespace dxvk {
     const uint32_t activeMask   = usedMask & m_textureSlotTracking.bound;
     const uint32_t inactiveMask = usedMask & ~m_textureSlotTracking.bound;
 
-    for (uint32_t i : bit::BitMask(activeMask))
-      BindTexture(i);
+    if (m_d3d9Options.gtaSaCoalesceTextureBindings) {
+      if (activeMask)
+        BindTextureBatch(activeMask);
+    } else {
+      for (uint32_t i : bit::BitMask(activeMask))
+        BindTexture(i);
+    }
 
     if (inactiveMask)
       UnbindTextures(inactiveMask);
@@ -7348,20 +8553,39 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::PrepareDraw(D3DPRIMITIVETYPE PrimitiveType, bool UploadVBOs, bool UploadIBO) {
-    // Need to update texture masks for FFPS early so that we properly track hazards
-    if (unlikely(!UseProgrammablePS()) && m_dirty.test(D3D9DeviceDirtyFlag::FFPixelShader))
-      UpdateFixedFunctionPS();
+    const bool auditPrepareDraw = m_gtaSaCompat.IsStateAuditActive();
+    uint32_t auditCategoryMask = 0u;
+    uint32_t auditBufferUploadUnits = 0u;
+    uint32_t auditTextureUploadUnits = 0u;
+    uint32_t auditMipGenerationUnits = 0u;
+    uint32_t auditSamplerUnits = 0u;
+    uint32_t auditTextureUnits = 0u;
 
-    if (unlikely(m_textureSlotTracking.unresolvableHazardRT != 0 || m_textureSlotTracking.unresolvableHazardDS != 0))
+    auto markAuditCategory = [&] (D3D9GtaSaPrepareDrawAuditKind kind) {
+      if (auditPrepareDraw)
+        auditCategoryMask |= 1u << uint32_t(kind);
+    };
+
+    // Need to update texture masks for FFPS early so that we properly track hazards
+    if (unlikely(!UseProgrammablePS()) && m_dirty.test(D3D9DeviceDirtyFlag::FFPixelShader)) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::FixedFunctionPixel);
+      UpdateFixedFunctionPS();
+    }
+
+    if (unlikely(m_textureSlotTracking.unresolvableHazardRT != 0 || m_textureSlotTracking.unresolvableHazardDS != 0)) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::Hazard);
       EmitFeedbackLoopBarriers();
+    }
 
     if (likely(UploadVBOs)) {
       const uint32_t usedBuffersMask = m_state.vertexDecl != nullptr ? m_state.vertexDecl->GetStreamMask() : ~0u;
       const uint32_t buffersToUpload = m_vbSlotTracking.needsUpload & usedBuffersMask;
       for (uint32_t bufferIdx : bit::BitMask(buffersToUpload)) {
         auto* vbo = GetCommonBuffer(m_state.vertexBuffers[bufferIdx].vertexBuffer);
-        if (likely(vbo != nullptr && vbo->NeedsUpload()))
+        if (likely(vbo != nullptr && vbo->NeedsUpload())) {
+          auditBufferUploadUnits += auditPrepareDraw ? 1u : 0u;
           FlushBuffer(vbo);
+        }
       }
       m_vbSlotTracking.needsUpload &= ~buffersToUpload;
     }
@@ -7370,58 +8594,111 @@ namespace dxvk {
     const uint32_t usedTextureMask = m_textureSlotTracking.bound & usedSamplerMask;
 
     const uint32_t texturesToUpload = m_textureSlotTracking.needsUpload & usedTextureMask;
-    if (unlikely(texturesToUpload != 0))
+    if (unlikely(texturesToUpload != 0)) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::TextureUpload);
+      if (auditPrepareDraw)
+        auditTextureUploadUnits = bit::popcnt(texturesToUpload);
       UploadManagedTextures(texturesToUpload);
+    }
 
     const uint32_t texturesToGen = m_textureSlotTracking.needsMipGen & usedTextureMask;
-    if (unlikely(texturesToGen != 0))
+    if (unlikely(texturesToGen != 0)) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::MipGeneration);
+      if (auditPrepareDraw)
+        auditMipGenerationUnits = bit::popcnt(texturesToGen);
       GenerateTextureMips(texturesToGen);
+    }
 
     auto* ibo = GetCommonBuffer(m_state.indices);
-    if (unlikely(UploadIBO && ibo != nullptr && ibo->NeedsUpload()))
+    if (unlikely(UploadIBO && ibo != nullptr && ibo->NeedsUpload())) {
+      auditBufferUploadUnits += auditPrepareDraw ? 1u : 0u;
       FlushBuffer(ibo);
+    }
 
-    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::Fog)))
+    if (auditBufferUploadUnits != 0u)
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::BufferUpload);
+
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::Fog))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::Fog);
       UpdateFog();
+    }
 
-    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::Framebuffer)))
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::Framebuffer))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::Framebuffer);
       BindFramebuffer();
+    }
 
-    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::ViewportScissor)))
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::ViewportScissor))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::ViewportScissor);
       BindViewportAndScissor();
+    }
 
     const uint32_t activeDirtySamplers = m_textureSlotTracking.samplerStateDirty & usedTextureMask;
-    if (unlikely(activeDirtySamplers))
+    if (unlikely(activeDirtySamplers)) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::Sampler);
+      if (auditPrepareDraw)
+        auditSamplerUnits = bit::popcnt(activeDirtySamplers);
       UndirtySamplers(activeDirtySamplers);
+    }
 
     const uint32_t usedDirtyTextures = m_textureSlotTracking.textureDirty & usedSamplerMask;
-    if (likely(usedDirtyTextures))
+    if (likely(usedDirtyTextures)) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::Texture);
+      if (auditPrepareDraw)
+        auditTextureUnits = bit::popcnt(usedDirtyTextures);
       UndirtyTextures(usedDirtyTextures);
+    }
 
-    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::BlendState)))
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::BlendState))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::Blend);
       BindBlendState();
+    }
 
-    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::DepthStencilState)))
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::BlendFactor))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::Blend);
+      BindBlendFactor();
+    }
+
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::DepthStencilState))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::DepthStencil);
       BindDepthStencilState();
+    }
 
-    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::RasterizerState)))
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::StencilReference))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::DepthStencil);
+      BindDepthStencilReference();
+    }
+
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::RasterizerState))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::Rasterizer);
       BindRasterizerState();
+    }
 
-    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::DepthBias)))
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::DepthBias))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::DepthBias);
       BindDepthBias();
+    }
 
-    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::MultiSampleState)))
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::MultiSampleState))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::MultiSample);
       BindMultiSampleState();
+    }
 
-    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::AlphaTestState)))
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::AlphaTestState))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::AlphaTest);
       BindAlphaTestState();
+    }
 
-    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::ClipPlanes)))
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::ClipPlanes))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::ClipPlanes);
       UpdateClipPlanes();
+    }
 
     UpdatePointMode(PrimitiveType == D3DPT_POINTLIST);
 
     if (likely(UseProgrammableVS())) {
+      if (m_consts[uint32_t(D3D9ShaderType::VertexShader)].dirty)
+        markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::VertexConstants);
       UpdateShaderConstants<D3D9ShaderType::VertexShader>();
 
       if (likely(!CanSWVP())) {
@@ -7432,13 +8709,23 @@ namespace dxvk {
           m_dirty.set(D3D9DeviceDirtyFlag::SpecializationEntries);
       }
     } else {
+      if (m_dirty.any(D3D9DeviceDirtyFlag::FFVertexData,
+                      D3D9DeviceDirtyFlag::FFVertexBlend,
+                      D3D9DeviceDirtyFlag::FFVertexShader,
+                      D3D9DeviceDirtyFlag::FFViewport,
+                      D3D9DeviceDirtyFlag::PointScale))
+        markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::FixedFunctionVertex);
       UpdateFixedFunctionVS();
     }
 
-    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::InputLayout)))
+    if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::InputLayout))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::InputLayout);
       BindInputLayout();
+    }
 
     if (likely(UseProgrammablePS())) {
+      if (m_consts[uint32_t(D3D9ShaderType::PixelShader)].dirty)
+        markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::PixelConstants);
       UpdateShaderConstants<D3D9ShaderType::PixelShader>();
 
       uint32_t boolConstants = m_state.psConsts->bConsts[0]
@@ -7447,6 +8734,9 @@ namespace dxvk {
       if (m_specData.setPsBoolConstants(boolConstants))
         m_dirty.set(D3D9DeviceDirtyFlag::SpecializationEntries);
     }
+
+    if (m_d3d9Options.gtaSaDeferShaderBinding)
+      FlushGtaSaDeferredShaderBindings();
 
     uint32_t nullOrUnusedMask = ~usedSamplerMask | ~usedTextureMask;
     uint32_t depthTextureMask = m_textureSlotTracking.depth;
@@ -7463,6 +8753,7 @@ namespace dxvk {
       m_dirty.set(D3D9DeviceDirtyFlag::SpecializationEntries);
 
     if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::SharedPixelShaderData))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::SharedPixelData);
       m_dirty.clr(D3D9DeviceDirtyFlag::SharedPixelShaderData);
 
       auto data = GetConstantBuffer(CbvIndex::PSShared).AllocTyped<D3D9SharedPS>(1u);
@@ -7484,6 +8775,7 @@ namespace dxvk {
     }
 
     if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::DepthBounds))) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::DepthBounds);
       m_dirty.clr(D3D9DeviceDirtyFlag::DepthBounds);
 
       DxvkDepthBounds db = { };
@@ -7507,10 +8799,22 @@ namespace dxvk {
       });
     }
 
-    if (m_dirty.test(D3D9DeviceDirtyFlag::SpecializationEntries))
+    const bool specializationDirty =
+      m_dirty.test(D3D9DeviceDirtyFlag::SpecializationEntries);
+    const bool deferSpecAndPushData = specializationDirty
+      && m_d3d9Options.gtaSaCoalesceSpecAndPushData
+      && m_dirty.any(D3D9DeviceDirtyFlag::PushDataShared,
+                     D3D9DeviceDirtyFlag::PushDataVs,
+                     D3D9DeviceDirtyFlag::PushDataFfvs,
+                     D3D9DeviceDirtyFlag::PushDataFfps);
+
+    if (specializationDirty && !deferSpecAndPushData) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::Specialization);
       BindSpecConstants();
+    }
 
     if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::VertexBuffers) && UploadVBOs)) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::VertexBuffers);
       for (uint32_t i = 0; i < caps::MaxStreams; i++) {
         const D3D9VBO& vbo = m_state.vertexBuffers[i];
         BindVertexBuffer(i, vbo.vertexBuffer.ptr(),
@@ -7520,17 +8824,50 @@ namespace dxvk {
     }
 
     if (unlikely(m_dirty.test(D3D9DeviceDirtyFlag::IndexBuffer) && UploadIBO)) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::IndexBuffer);
       BindIndices();
       m_dirty.clr(D3D9DeviceDirtyFlag::IndexBuffer);
     }
 
-    if (m_dirty.any(D3D9DeviceDirtyFlag::PushDataShared,
-                    D3D9DeviceDirtyFlag::PushDataVs,
-                    D3D9DeviceDirtyFlag::PushDataFfvs,
-                    D3D9DeviceDirtyFlag::PushDataFfps))
-      UpdatePushData();
+    const bool pushDataDirty =
+      m_dirty.any(D3D9DeviceDirtyFlag::PushDataShared,
+                  D3D9DeviceDirtyFlag::PushDataVs,
+                  D3D9DeviceDirtyFlag::PushDataFfvs,
+                  D3D9DeviceDirtyFlag::PushDataFfps);
+
+    if (pushDataDirty) {
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::PushData);
+      if (deferSpecAndPushData) {
+        markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::Specialization);
+        BindSpecConstantsAndPushData();
+      } else {
+        UpdatePushData();
+      }
+    } else if (deferSpecAndPushData) {
+      // A producer-side helper may have consumed the push-data dirty bit
+      // between the first check and this point. Do not leave specialization
+      // dirty in that unusual case.
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::Specialization);
+      BindSpecConstants();
+    }
+
+    D3DPRIMITIVETYPE effectivePrimitiveType = PrimitiveType;
+    if (unlikely(effectivePrimitiveType == D3DPT_FORCE_DWORD))
+      effectivePrimitiveType = D3DPT_POINTLIST;
+    if (m_iaState.primitiveType != effectivePrimitiveType)
+      markAuditCategory(D3D9GtaSaPrepareDrawAuditKind::PrimitiveType);
 
     ApplyPrimitiveType(PrimitiveType);
+
+    if (auditPrepareDraw) {
+      m_gtaSaCompat.RecordPrepareDrawAudit(
+        auditCategoryMask,
+        auditBufferUploadUnits,
+        auditTextureUploadUnits,
+        auditMipGenerationUnits,
+        auditSamplerUnits,
+        auditTextureUnits);
+    }
   }
 
 
@@ -7598,10 +8935,7 @@ namespace dxvk {
 
 
   template <D3D9ShaderType ShaderStage>
-  void D3D9DeviceEx::BindShader(
-  const D3D9CommonShader*                 pShaderModule) {
-    auto shader = pShaderModule->GetShader();
-
+  void D3D9DeviceEx::BindShaderModule(Rc<DxvkShader> shader) {
     if (unlikely(shader->needsCompile()))
       m_dxvkDevice->requestCompileShader(shader);
 
@@ -7615,21 +8949,89 @@ namespace dxvk {
 
 
   template <D3D9ShaderType ShaderStage>
-  void D3D9DeviceEx::BindFFUbershader() {
-    constexpr VkShaderStageFlagBits Stage = ShaderStage == D3D9ShaderType::VertexShader
-      ? VK_SHADER_STAGE_VERTEX_BIT
-      : VK_SHADER_STAGE_FRAGMENT_BIT;
+  void D3D9DeviceEx::BindShader(
+  const D3D9CommonShader*                 pShaderModule) {
+    BindShaderModule<ShaderStage>(pShaderModule->GetShader());
+  }
 
-    EmitCs([
-      cShader = m_ffModules.GetShader<ShaderStage>()
-    ](DxvkContext* ctx) mutable {
-      ctx->bindShader<Stage>(std::move(cShader));
-    });
+
+  template <D3D9ShaderType ShaderStage>
+  void D3D9DeviceEx::BindFFUbershader() {
+    BindShaderModule<ShaderStage>(m_ffModules.GetShader<ShaderStage>());
+  }
+
+
+  template <D3D9ShaderType ShaderStage>
+  void D3D9DeviceEx::MarkGtaSaDeferredShaderBinding() {
+    const uint32_t index = uint32_t(ShaderStage);
+    m_gtaSaDeferredShaderBindings[index].markDirty();
+    m_gtaSaCompat.RecordDeferredShaderBindingWrite(ShaderStage);
+  }
+
+
+  template <D3D9ShaderType ShaderStage>
+  void D3D9DeviceEx::InvalidateGtaSaDeferredShaderBinding() {
+    m_gtaSaDeferredShaderBindings[uint32_t(ShaderStage)].invalidate();
+  }
+
+
+  template <D3D9ShaderType ShaderStage>
+  void D3D9DeviceEx::FlushGtaSaDeferredShaderBinding() {
+    Rc<DxvkShader> desired;
+    if constexpr (ShaderStage == D3D9ShaderType::VertexShader) {
+      desired = UseProgrammableVS()
+        ? GetCommonShader(m_state.vertexShader)->GetShader()
+        : m_ffModules.GetShader<ShaderStage>();
+    } else {
+      desired = UseProgrammablePS()
+        ? GetCommonShader(m_state.pixelShader)->GetShader()
+        : m_ffModules.GetShader<ShaderStage>();
+    }
+
+    const uint32_t index = uint32_t(ShaderStage);
+    const D3D9GtaSaDeferredBindingDecision decision =
+      m_gtaSaDeferredShaderBindings[index].resolve(desired.ptr());
+    if (decision == D3D9GtaSaDeferredBindingDecision::None)
+      return;
+
+    const bool bind = decision == D3D9GtaSaDeferredBindingDecision::Bind;
+    m_gtaSaCompat.RecordDeferredShaderBindingResolve(ShaderStage, bind);
+    if (!bind)
+      return;
+
+    m_gtaSaBoundShaderModules[index] = desired;
+    BindShaderModule<ShaderStage>(std::move(desired));
+  }
+
+
+  void D3D9DeviceEx::FlushGtaSaDeferredShaderBindings() {
+    FlushGtaSaDeferredShaderBinding<D3D9ShaderType::VertexShader>();
+    FlushGtaSaDeferredShaderBinding<D3D9ShaderType::PixelShader>();
   }
 
 
   void D3D9DeviceEx::BindInputLayout() {
     m_dirty.clr(D3D9DeviceDirtyFlag::InputLayout);
+
+    const bool programmableVS = UseProgrammableVS();
+    auto* currentDecl = m_state.vertexDecl.ptr();
+    auto* currentShader = programmableVS ? m_state.vertexShader.ptr() : nullptr;
+
+    if (m_d3d9Options.gtaSaInputLayoutCache
+     && m_gtaSaInputLayoutValid
+     && m_gtaSaInputLayoutDecl.ptr() == currentDecl
+     && m_gtaSaInputLayoutShader.ptr() == currentShader
+     && m_gtaSaInputLayoutInstanced == m_vbSlotTracking.instanced
+     && m_gtaSaInputLayoutStreamFreq == m_state.streamFreq)
+      return;
+
+    if (m_d3d9Options.gtaSaInputLayoutCache) {
+      m_gtaSaInputLayoutDecl = currentDecl;
+      m_gtaSaInputLayoutShader = currentShader;
+      m_gtaSaInputLayoutInstanced = m_vbSlotTracking.instanced;
+      m_gtaSaInputLayoutStreamFreq = m_state.streamFreq;
+      m_gtaSaInputLayoutValid = true;
+    }
 
     if (likely(m_state.vertexDecl)) {
       std::array<uint32_t, caps::MaxStreams> streamFreq;
@@ -7639,7 +9041,7 @@ namespace dxvk {
 
       const auto& vertexElements = m_state.vertexDecl->GetElements();
 
-      const auto& inputSignature = UseProgrammableVS()
+      const auto& inputSignature = programmableVS
         ? GetCommonShader(m_state.vertexShader)->GetInputSignature()
         : GetFixedFunctionIsgn();
 
@@ -7845,6 +9247,7 @@ namespace dxvk {
   void D3D9DeviceEx::SetVertexBoolBitfield(uint32_t idx, uint32_t mask, uint32_t bits) {
     m_state.vsConsts->bConsts[idx] &= ~mask;
     m_state.vsConsts->bConsts[idx] |= bits & mask;
+    NotifyGtaSaStateChanged();
 
     m_consts[uint32_t(D3D9ShaderType::VertexShader)].dirty |= CanSWVP();
   }
@@ -7853,6 +9256,7 @@ namespace dxvk {
   void D3D9DeviceEx::SetPixelBoolBitfield(uint32_t idx, uint32_t mask, uint32_t bits) {
     m_state.psConsts->bConsts[idx] &= ~mask;
     m_state.psConsts->bConsts[idx] |= bits & mask;
+    NotifyGtaSaStateChanged();
   }
 
 
@@ -8063,12 +9467,56 @@ namespace dxvk {
         StartRegister, pConstantData, Count);
     }
 
+    if (unlikely(ShouldCaptureGtaSaStateJournal())) {
+      if constexpr (ShaderType == D3D9ShaderType::VertexShader) {
+        if constexpr (ConstantType == D3D9ConstantType::Float)
+          m_gtaSaStateJournal->CaptureCurrentVertexShaderConstantF(StartRegister, Count);
+        else if constexpr (ConstantType == D3D9ConstantType::Int)
+          m_gtaSaStateJournal->CaptureCurrentVertexShaderConstantI(StartRegister, Count);
+        else
+          m_gtaSaStateJournal->CaptureCurrentVertexShaderConstantB(StartRegister, Count);
+      } else {
+        if constexpr (ConstantType == D3D9ConstantType::Float)
+          m_gtaSaStateJournal->CaptureCurrentPixelShaderConstantF(StartRegister, Count);
+        else if constexpr (ConstantType == D3D9ConstantType::Int)
+          m_gtaSaStateJournal->CaptureCurrentPixelShaderConstantI(StartRegister, Count);
+        else
+          m_gtaSaStateJournal->CaptureCurrentPixelShaderConstantB(StartRegister, Count);
+      }
+    }
+
     // Only mark constants as dirty if any of the actual data has changed
     bool anyConstantDirty = UpdateStateConstants<ShaderType, ConstantType, T>(
       &m_state, StartRegister, pConstantData, Count);
 
+    if constexpr (ShaderType == D3D9ShaderType::VertexShader) {
+      if constexpr (ConstantType == D3D9ConstantType::Float) {
+        m_gtaSaCompat.RecordStateAudit(
+          D3D9GtaSaStateAuditKind::VertexFloatConstants, !anyConstantDirty, Count);
+      } else if constexpr (ConstantType == D3D9ConstantType::Int) {
+        m_gtaSaCompat.RecordStateAudit(
+          D3D9GtaSaStateAuditKind::VertexIntConstants, !anyConstantDirty, Count);
+      } else {
+        m_gtaSaCompat.RecordStateAudit(
+          D3D9GtaSaStateAuditKind::VertexBoolConstants, !anyConstantDirty, Count);
+      }
+    } else {
+      if constexpr (ConstantType == D3D9ConstantType::Float) {
+        m_gtaSaCompat.RecordStateAudit(
+          D3D9GtaSaStateAuditKind::PixelFloatConstants, !anyConstantDirty, Count);
+      } else if constexpr (ConstantType == D3D9ConstantType::Int) {
+        m_gtaSaCompat.RecordStateAudit(
+          D3D9GtaSaStateAuditKind::PixelIntConstants, !anyConstantDirty, Count);
+      } else {
+        m_gtaSaCompat.RecordStateAudit(
+          D3D9GtaSaStateAuditKind::PixelBoolConstants, !anyConstantDirty, Count);
+      }
+    }
+
     if (unlikely(!anyConstantDirty))
       return D3D_OK;
+
+    NotifyGtaSaStateChanged();
 
     D3D9ConstantSets& constSet = m_consts[uint32_t(ShaderType)];
 
@@ -8616,6 +10064,13 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::ResetState(D3DPRESENT_PARAMETERS* pPresentationParameters) {
+    NotifyGtaSaStateChanged();
+    InvalidateGtaSaResourceBindingCache();
+
+    m_gtaSaInputLayoutValid = false;
+    m_gtaSaInputLayoutDecl = nullptr;
+    m_gtaSaInputLayoutShader = nullptr;
+
     SetDepthStencilSurface(nullptr);
 
     for (uint32_t i = 0; i < caps::MaxSimultaneousRenderTargets; i++)
@@ -8976,6 +10431,8 @@ namespace dxvk {
     ExecuteFlush(false);
     SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
 
+    m_gtaSaCompat.OnDeviceReady(pPresentationParameters);
+
     return D3D_OK;
   }
 
@@ -9111,6 +10568,56 @@ namespace dxvk {
       ctx->setSpecConstants(VK_PIPELINE_BIND_POINT_GRAPHICS,
         0u, sizeof(cSpecData) / sizeof(uint32_t), &cSpecData);
     });
+  }
+
+
+  void D3D9DeviceEx::BindSpecConstantsAndPushData() {
+    m_dirty.clr(D3D9DeviceDirtyFlag::SpecializationEntries);
+
+    const bool updateShared = m_dirty.test(D3D9DeviceDirtyFlag::PushDataShared);
+    const bool updateVs     = m_dirty.test(D3D9DeviceDirtyFlag::PushDataVs);
+    const bool updateFfvs   = m_dirty.test(D3D9DeviceDirtyFlag::PushDataFfvs);
+    const bool updateFfps   = m_dirty.test(D3D9DeviceDirtyFlag::PushDataFfps);
+
+    const auto specData = m_specData;
+    const auto shared = m_pushData.shared;
+    const auto vs     = m_pushData.vs;
+    const auto ffvs   = m_pushData.ffvs;
+    const auto ffps   = m_pushData.ffps;
+
+    // Preserve the old ordering: specialization first, then push-data blocks
+    // in shared/VS/FFVS/FFPS order. Only the command callback is shared.
+    EmitCs([
+      updateShared,
+      updateVs,
+      updateFfvs,
+      updateFfps,
+      cSpecData = specData,
+      cShared = shared,
+      cVs = vs,
+      cFfvs = ffvs,
+      cFfps = ffps
+    ] (DxvkContext* ctx) {
+      ctx->setSpecConstants(VK_PIPELINE_BIND_POINT_GRAPHICS,
+        0u, sizeof(cSpecData) / sizeof(uint32_t), &cSpecData);
+      if (updateShared)
+        ctx->pushData(D3D9SharedPushData::Stages,
+          D3D9SharedPushData::Offset, sizeof(cShared), &cShared);
+      if (updateVs)
+        ctx->pushData(D3D9VsPushData::Stages,
+          D3D9VsPushData::Offset, sizeof(cVs), &cVs);
+      if (updateFfvs)
+        ctx->pushData(D3D9FfvsPushData::Stages,
+          D3D9FfvsPushData::Offset, sizeof(cFfvs), &cFfvs);
+      if (updateFfps)
+        ctx->pushData(D3D9FfpsPushData::Stages,
+          D3D9FfpsPushData::Offset, sizeof(cFfps), &cFfps);
+    });
+
+    m_dirty.clr(D3D9DeviceDirtyFlag::PushDataShared,
+                D3D9DeviceDirtyFlag::PushDataVs,
+                D3D9DeviceDirtyFlag::PushDataFfvs,
+                D3D9DeviceDirtyFlag::PushDataFfps);
   }
 
 

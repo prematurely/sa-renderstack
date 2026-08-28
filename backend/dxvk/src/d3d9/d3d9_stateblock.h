@@ -6,6 +6,9 @@
 
 #include "../util/util_bit.h"
 
+#include <cstring>
+#include <type_traits>
+
 namespace dxvk {
 
   enum class D3D9CapturedStateFlag : uint32_t {
@@ -26,7 +29,8 @@ namespace dxvk {
     Transforms,
     TextureStages,
     Material,
-    Lights
+    Lights,
+    NPatchMode
   };
 
   using D3D9CapturedStateFlags = Flags<D3D9CapturedStateFlag>;
@@ -55,14 +59,21 @@ namespace dxvk {
       bit::bitset<caps::MaxFloatConstantsSoftware>      fConsts;
       bit::bitset<caps::MaxOtherConstantsSoftware>      iConsts;
       bit::bitset<caps::MaxOtherConstantsSoftware>      bConsts;
+      uint32_t                                          fDwordCount = 0;
+      uint32_t                                          iDwordCount = 0;
+      uint32_t                                          bDwordCount = 0;
     } vsConsts;
 
     struct {
       bit::bitset<caps::MaxSM3FloatConstantsPS>         fConsts;
       bit::bitset<caps::MaxOtherConstants>              iConsts;
       bit::bitset<caps::MaxOtherConstants>              bConsts;
+      uint32_t                                          fDwordCount = 0;
+      uint32_t                                          iDwordCount = 0;
+      uint32_t                                          bDwordCount = 0;
     } psConsts;
 
+    bit::bitvector                                      lightChanges;
     bit::bitvector                                      lightEnabledChanges;
   };
 
@@ -88,7 +99,12 @@ namespace dxvk {
 
   public:
 
-    D3D9StateBlock(D3D9DeviceEx* pDevice, D3D9StateBlockType Type);
+    D3D9StateBlock(
+      D3D9DeviceEx*      pDevice,
+      D3D9StateBlockType Type,
+      bool               forcePrefilter = false,
+      bool               countLosableResource = true,
+      bool               journal = false);
 
     ~D3D9StateBlock();
 
@@ -98,6 +114,37 @@ namespace dxvk {
 
     HRESULT STDMETHODCALLTYPE Capture() final;
     HRESULT STDMETHODCALLTYPE Apply() final;
+
+    void ResetJournal();
+
+    void CaptureCurrentVertexDeclaration();
+    void CaptureCurrentIndices();
+    void CaptureCurrentRenderState(D3DRENDERSTATETYPE State);
+    void CaptureCurrentStateSamplerState(
+      DWORD StateSampler,
+      D3DSAMPLERSTATETYPE Type);
+    void CaptureCurrentStreamSource(UINT StreamNumber);
+    void CaptureCurrentStreamSourceFreq(UINT StreamNumber);
+    void CaptureCurrentStateTexture(DWORD StateSampler);
+    void CaptureCurrentVertexShader();
+    void CaptureCurrentPixelShader();
+    void CaptureCurrentMaterial();
+    HRESULT CaptureCurrentLight(DWORD Index);
+    HRESULT CaptureCurrentLightEnable(DWORD Index);
+    void CaptureCurrentStateTransform(uint32_t idx);
+    void CaptureCurrentStateTextureStageState(
+      DWORD Stage,
+      D3D9TextureStageStateTypes Type);
+    void CaptureCurrentViewport();
+    void CaptureCurrentScissorRect();
+    void CaptureCurrentClipPlane(DWORD Index);
+    void CaptureCurrentVertexShaderConstantF(UINT StartRegister, UINT Count);
+    void CaptureCurrentVertexShaderConstantI(UINT StartRegister, UINT Count);
+    void CaptureCurrentVertexShaderConstantB(UINT StartRegister, UINT Count);
+    void CaptureCurrentPixelShaderConstantF(UINT StartRegister, UINT Count);
+    void CaptureCurrentPixelShaderConstantI(UINT StartRegister, UINT Count);
+    void CaptureCurrentPixelShaderConstantB(UINT StartRegister, UINT Count);
+    void CaptureCurrentNPatchMode();
 
     HRESULT SetVertexDeclaration(D3D9VertexDecl* pDecl);
 
@@ -180,6 +227,8 @@ namespace dxvk {
       const BOOL* pConstantData,
             UINT  BoolCount);
 
+    HRESULT SetNPatchMode(float nSegments);
+
     enum class D3D9StateFunction {
       Apply,
       Capture
@@ -188,40 +237,91 @@ namespace dxvk {
     template <typename Dst, typename Src, bool IgnoreStreamOffset>
     void ApplyOrCapture(Dst* dst, const Src* src) {
       if (m_captures.flags.test(D3D9CapturedStateFlag::StreamFreq)) {
-        for (uint32_t idx : bit::BitMask(m_captures.streamFreq.dword(0)))
-          dst->SetStreamSourceFreq(idx, src->streamFreq[idx]);
+        for (uint32_t idx : bit::BitMask(m_captures.streamFreq.dword(0))) {
+          bool unchanged = false;
+          if constexpr (std::is_same_v<Dst, D3D9DeviceEx>) {
+            if (m_prefilter)
+              unchanged = m_deviceState->streamFreq[idx] == src->streamFreq[idx];
+          }
+
+          if (!unchanged)
+            dst->SetStreamSourceFreq(idx, src->streamFreq[idx]);
+        }
       }
 
-      if (m_captures.flags.test(D3D9CapturedStateFlag::Indices))
-        dst->SetIndices(src->indices.ptr());
+      if (m_captures.flags.test(D3D9CapturedStateFlag::Indices)) {
+        bool unchanged = false;
+        if constexpr (std::is_same_v<Dst, D3D9DeviceEx>) {
+          if (m_prefilter)
+            unchanged = m_deviceState->indices.ptr() == src->indices.ptr();
+        }
+
+        if (!unchanged)
+          dst->SetIndices(src->indices.ptr());
+      }
 
       if (m_captures.flags.test(D3D9CapturedStateFlag::RenderStates)) {
         for (uint32_t i = 0; i < m_captures.renderStates.dwordCount(); i++) {
           for (uint32_t rs : bit::BitMask(m_captures.renderStates.dword(i))) {
             uint32_t idx = i * 32 + rs;
+            const DWORD value = src->renderStates[idx];
 
-            dst->SetRenderState(D3DRENDERSTATETYPE(idx), src->renderStates[idx]);
+            bool unchanged = false;
+            if (m_prefilter) {
+              if constexpr (std::is_same_v<Dst, D3D9DeviceEx>)
+                unchanged = m_deviceState->renderStates[idx] == value;
+              else
+                unchanged = m_state.renderStates[idx] == value;
+            }
+
+            if (!unchanged)
+              dst->SetRenderState(D3DRENDERSTATETYPE(idx), value);
           }
         }
       }
 
       if (m_captures.flags.test(D3D9CapturedStateFlag::SamplerStates)) {
         for (uint32_t samplerIdx : bit::BitMask(m_captures.samplers.dword(0))) {
-          for (uint32_t stateIdx : bit::BitMask(m_captures.samplerStates[samplerIdx].dword(0)))
-            dst->SetStateSamplerState(samplerIdx, D3DSAMPLERSTATETYPE(stateIdx), src->samplerStates[samplerIdx][stateIdx]);
+          for (uint32_t stateIdx : bit::BitMask(m_captures.samplerStates[samplerIdx].dword(0))) {
+            const DWORD value = src->samplerStates[samplerIdx][stateIdx];
+
+            bool unchanged = false;
+            if (m_prefilter) {
+              if constexpr (std::is_same_v<Dst, D3D9DeviceEx>)
+                unchanged = m_deviceState->samplerStates[samplerIdx][stateIdx] == value;
+              else
+                unchanged = m_state.samplerStates[samplerIdx][stateIdx] == value;
+            }
+
+            if (!unchanged)
+              dst->SetStateSamplerState(samplerIdx, D3DSAMPLERSTATETYPE(stateIdx), value);
+          }
         }
       }
 
       if (m_captures.flags.test(D3D9CapturedStateFlag::VertexBuffers)) {
         for (uint32_t idx : bit::BitMask(m_captures.vertexBuffers.dword(0))) {
           const auto& vbo = src->vertexBuffers[idx];
+          bool unchanged = false;
+          if constexpr (std::is_same_v<Dst, D3D9DeviceEx>) {
+            if (m_prefilter) {
+              const auto& current = m_deviceState->vertexBuffers[idx];
+              unchanged = current.vertexBuffer.ptr() == vbo.vertexBuffer.ptr()
+                && current.stride == vbo.stride;
+              if constexpr (!IgnoreStreamOffset)
+                unchanged = unchanged && current.offset == vbo.offset;
+            }
+          }
+
           if constexpr (!IgnoreStreamOffset) {
-            dst->SetStreamSource(
-              idx,
-              vbo.vertexBuffer.ptr(),
-              vbo.offset,
-              vbo.stride);
-          } else {
+            if (!unchanged) {
+              dst->SetStreamSource(
+                idx,
+                vbo.vertexBuffer.ptr(),
+                vbo.offset,
+                vbo.stride);
+            }
+          } else if (!unchanged) {
             // For whatever reason, D3D9 doesn't capture the stream offset
             dst->SetStreamSourceWithoutOffset(
               idx,
@@ -231,111 +331,327 @@ namespace dxvk {
         }
       }
 
-      if (m_captures.flags.test(D3D9CapturedStateFlag::Material))
-        dst->SetMaterial(&src->material);
+      if (m_captures.flags.test(D3D9CapturedStateFlag::Material)) {
+        bool unchanged = false;
+        if constexpr (std::is_same_v<Dst, D3D9DeviceEx>) {
+          if (m_prefilter)
+            unchanged = std::memcmp(&m_deviceState->material,
+              &src->material, sizeof(D3DMATERIAL9)) == 0;
+        }
 
-      if (m_captures.flags.test(D3D9CapturedStateFlag::Textures)) {
-        for (uint32_t idx : bit::BitMask(m_captures.textures.dword(0)))
-          dst->SetStateTexture(idx, src->textures[idx]);
+        if (!unchanged)
+          dst->SetMaterial(&src->material);
       }
 
-      if (m_captures.flags.test(D3D9CapturedStateFlag::VertexShader))
-        dst->SetVertexShader(src->vertexShader.ptr());
+      if (m_captures.flags.test(D3D9CapturedStateFlag::Textures)) {
+        for (uint32_t idx : bit::BitMask(m_captures.textures.dword(0))) {
+          auto* texture = src->textures[idx];
 
-      if (m_captures.flags.test(D3D9CapturedStateFlag::PixelShader))
-        dst->SetPixelShader(src->pixelShader.ptr());
+          bool unchanged = false;
+          if (m_prefilter) {
+            if constexpr (std::is_same_v<Dst, D3D9DeviceEx>)
+              unchanged = m_deviceState->textures[idx] == texture;
+            else
+              unchanged = m_state.textures[idx] == texture;
+          }
+
+          if (!unchanged)
+            dst->SetStateTexture(idx, texture);
+        }
+      }
+
+      if (m_captures.flags.test(D3D9CapturedStateFlag::VertexShader)) {
+        auto* shader = src->vertexShader.ptr();
+        bool unchanged = false;
+        if (m_prefilter) {
+          if constexpr (std::is_same_v<Dst, D3D9DeviceEx>)
+            unchanged = m_deviceState->vertexShader.ptr() == shader;
+          else
+            unchanged = m_state.vertexShader.ptr() == shader;
+        }
+        if (!unchanged)
+          dst->SetVertexShader(shader);
+      }
+
+      if (m_captures.flags.test(D3D9CapturedStateFlag::PixelShader)) {
+        auto* shader = src->pixelShader.ptr();
+        bool unchanged = false;
+        if (m_prefilter) {
+          if constexpr (std::is_same_v<Dst, D3D9DeviceEx>)
+            unchanged = m_deviceState->pixelShader.ptr() == shader;
+          else
+            unchanged = m_state.pixelShader.ptr() == shader;
+        }
+        if (!unchanged)
+          dst->SetPixelShader(shader);
+      }
 
       if (m_captures.flags.test(D3D9CapturedStateFlag::Transforms)) {
         for (uint32_t i = 0; i < m_captures.transforms.dwordCount(); i++) {
           for (uint32_t trans : bit::BitMask(m_captures.transforms.dword(i))) {
             uint32_t idx = i * 32 + trans;
 
-            dst->SetStateTransform(idx, reinterpret_cast<const D3DMATRIX*>(&src->transforms[idx]));
+            bool unchanged = false;
+            if constexpr (std::is_same_v<Dst, D3D9DeviceEx>) {
+              if (m_prefilter)
+                unchanged = m_deviceState->transforms[idx] == src->transforms[idx];
+            }
+
+            if (!unchanged)
+              dst->SetStateTransform(idx, reinterpret_cast<const D3DMATRIX*>(&src->transforms[idx]));
           }
         }
       }
 
       if (m_captures.flags.test(D3D9CapturedStateFlag::TextureStages)) {
         for (uint32_t stageIdx : bit::BitMask(m_captures.textureStages.dword(0))) {
-          for (uint32_t stateIdx : bit::BitMask(m_captures.textureStageStates[stageIdx].dword(0)))
-            dst->SetStateTextureStageState(stageIdx, D3D9TextureStageStateTypes(stateIdx), src->textureStages[stageIdx][stateIdx]);
+          for (uint32_t stateIdx : bit::BitMask(m_captures.textureStageStates[stageIdx].dword(0))) {
+            const DWORD value = src->textureStages[stageIdx][stateIdx];
+
+            bool unchanged = false;
+            if (m_prefilter) {
+              if constexpr (std::is_same_v<Dst, D3D9DeviceEx>)
+                unchanged = m_deviceState->textureStages[stageIdx][stateIdx] == value;
+              else
+                unchanged = m_state.textureStages[stageIdx][stateIdx] == value;
+            }
+
+            if (!unchanged)
+              dst->SetStateTextureStageState(stageIdx, D3D9TextureStageStateTypes(stateIdx), value);
+          }
         }
       }
 
-      if (m_captures.flags.test(D3D9CapturedStateFlag::Viewport))
-        dst->SetViewport(&src->viewport);
+      if (m_captures.flags.test(D3D9CapturedStateFlag::Viewport)) {
+        bool unchanged = false;
+        if constexpr (std::is_same_v<Dst, D3D9DeviceEx>) {
+          if (m_prefilter)
+            unchanged = m_deviceState->viewport == src->viewport;
+        }
 
-      if (m_captures.flags.test(D3D9CapturedStateFlag::ScissorRect))
-        dst->SetScissorRect(&src->scissorRect);
+        if (!unchanged)
+          dst->SetViewport(&src->viewport);
+      }
+
+      if (m_captures.flags.test(D3D9CapturedStateFlag::ScissorRect)) {
+        bool unchanged = false;
+        if constexpr (std::is_same_v<Dst, D3D9DeviceEx>) {
+          if (m_prefilter)
+            unchanged = m_deviceState->scissorRect == src->scissorRect;
+        }
+
+        if (!unchanged)
+          dst->SetScissorRect(&src->scissorRect);
+      }
 
       if (m_captures.flags.test(D3D9CapturedStateFlag::ClipPlanes)) {
-        for (uint32_t idx : bit::BitMask(m_captures.clipPlanes.dword(0)))
-          dst->SetClipPlane(idx, src->clipPlanes[idx].coeff);
-      }
-
-      if (m_captures.flags.test(D3D9CapturedStateFlag::VsConstants)) {
-        for (uint32_t i = 0; i < m_captures.vsConsts.fConsts.dwordCount(); i++) {
-          for (uint32_t consts : bit::BitMask(m_captures.vsConsts.fConsts.dword(i))) {
-            uint32_t idx = i * 32 + consts;
-
-            dst->SetVertexShaderConstantF(idx, reinterpret_cast<const float*>(&src->vsConsts->fConsts[idx]), 1);
+        for (uint32_t idx : bit::BitMask(m_captures.clipPlanes.dword(0))) {
+          bool unchanged = false;
+          if constexpr (std::is_same_v<Dst, D3D9DeviceEx>) {
+            if (m_prefilter)
+              unchanged = m_deviceState->clipPlanes[idx] == src->clipPlanes[idx];
           }
-        }
 
-        for (uint32_t i = 0; i < m_captures.vsConsts.iConsts.dwordCount(); i++) {
-          for (uint32_t consts : bit::BitMask(m_captures.vsConsts.iConsts.dword(i))) {
-            uint32_t idx = i * 32 + consts;
-
-            dst->SetVertexShaderConstantI(idx, reinterpret_cast<const int*>(&src->vsConsts->iConsts[idx]), 1);
-          }
-        }
-
-        if (m_captures.vsConsts.bConsts.any()) {
-          for (uint32_t i = 0; i < m_captures.vsConsts.bConsts.dwordCount(); i++)
-            dst->SetVertexBoolBitfield(i, m_captures.vsConsts.bConsts.dword(i), src->vsConsts->bConsts[i]);
+          if (!unchanged)
+            dst->SetClipPlane(idx, src->clipPlanes[idx].coeff);
         }
       }
 
-      if (m_captures.flags.test(D3D9CapturedStateFlag::PsConstants)) {
-        for (uint32_t i = 0; i < m_captures.psConsts.fConsts.dwordCount(); i++) {
-          for (uint32_t consts : bit::BitMask(m_captures.psConsts.fConsts.dword(i))) {
-            uint32_t idx = i * 32 + consts;
+      if (!m_prefilter) {
+        if (m_captures.flags.test(D3D9CapturedStateFlag::VsConstants)) {
+          for (uint32_t i = 0; i < m_captures.vsConsts.fConsts.dwordCount(); i++) {
+            for (uint32_t consts : bit::BitMask(m_captures.vsConsts.fConsts.dword(i))) {
+              uint32_t idx = i * 32 + consts;
 
-            dst->SetPixelShaderConstantF(idx, reinterpret_cast<const float*>(&src->psConsts->fConsts[idx]), 1);
+              dst->SetVertexShaderConstantF(idx, reinterpret_cast<const float*>(&src->vsConsts->fConsts[idx]), 1);
+            }
+          }
+
+          for (uint32_t i = 0; i < m_captures.vsConsts.iConsts.dwordCount(); i++) {
+            for (uint32_t consts : bit::BitMask(m_captures.vsConsts.iConsts.dword(i))) {
+              uint32_t idx = i * 32 + consts;
+
+              dst->SetVertexShaderConstantI(idx, reinterpret_cast<const int*>(&src->vsConsts->iConsts[idx]), 1);
+            }
+          }
+
+          if (m_captures.vsConsts.bConsts.any()) {
+            for (uint32_t i = 0; i < m_captures.vsConsts.bConsts.dwordCount(); i++)
+              dst->SetVertexBoolBitfield(i, m_captures.vsConsts.bConsts.dword(i), src->vsConsts->bConsts[i]);
           }
         }
 
-        for (uint32_t i = 0; i < m_captures.psConsts.iConsts.dwordCount(); i++) {
-          for (uint32_t consts : bit::BitMask(m_captures.psConsts.iConsts.dword(i))) {
-            uint32_t idx = i * 32 + consts;
+        if (m_captures.flags.test(D3D9CapturedStateFlag::PsConstants)) {
+          for (uint32_t i = 0; i < m_captures.psConsts.fConsts.dwordCount(); i++) {
+            for (uint32_t consts : bit::BitMask(m_captures.psConsts.fConsts.dword(i))) {
+              uint32_t idx = i * 32 + consts;
 
-            dst->SetPixelShaderConstantI(idx, reinterpret_cast<const int*>(&src->psConsts->iConsts[idx]), 1);
+              dst->SetPixelShaderConstantF(idx, reinterpret_cast<const float*>(&src->psConsts->fConsts[idx]), 1);
+            }
+          }
+
+          for (uint32_t i = 0; i < m_captures.psConsts.iConsts.dwordCount(); i++) {
+            for (uint32_t consts : bit::BitMask(m_captures.psConsts.iConsts.dword(i))) {
+              uint32_t idx = i * 32 + consts;
+
+              dst->SetPixelShaderConstantI(idx, reinterpret_cast<const int*>(&src->psConsts->iConsts[idx]), 1);
+            }
+          }
+
+          if (m_captures.psConsts.bConsts.any()) {
+            for (uint32_t i = 0; i < m_captures.psConsts.bConsts.dwordCount(); i++)
+              dst->SetPixelBoolBitfield(i, m_captures.psConsts.bConsts.dword(i), src->psConsts->bConsts[i]);
+          }
+        }
+      } else {
+        auto applyConstantRanges = [] (auto& captures, uint32_t dwordCount, auto&& applyRange) {
+          const uint32_t registerCount = dwordCount * 32;
+          uint32_t rangeStart = 0;
+
+          while (rangeStart < registerCount) {
+            while (rangeStart < registerCount && !captures.get(rangeStart))
+              rangeStart++;
+
+            if (rangeStart == registerCount)
+              break;
+
+            uint32_t rangeEnd = rangeStart + 1;
+            while (rangeEnd < registerCount && captures.get(rangeEnd))
+              rangeEnd++;
+
+            applyRange(rangeStart, rangeEnd - rangeStart);
+            rangeStart = rangeEnd;
+          }
+        };
+
+        if (m_captures.flags.test(D3D9CapturedStateFlag::VsConstants)) {
+          applyConstantRanges(m_captures.vsConsts.fConsts, m_captures.vsConsts.fDwordCount,
+            [&] (uint32_t start, uint32_t count) {
+              const auto* source = &src->vsConsts->fConsts[start];
+              const auto* current = std::is_same_v<Dst, D3D9DeviceEx>
+                ? &m_deviceState->vsConsts->fConsts[start]
+                : &m_state.vsConsts->fConsts[start];
+              if (std::memcmp(current, source, count * sizeof(*source)) != 0)
+                dst->SetVertexShaderConstantF(start, reinterpret_cast<const float*>(source), count);
+            });
+
+          applyConstantRanges(m_captures.vsConsts.iConsts, m_captures.vsConsts.iDwordCount,
+            [&] (uint32_t start, uint32_t count) {
+              const auto* source = &src->vsConsts->iConsts[start];
+              const auto* current = std::is_same_v<Dst, D3D9DeviceEx>
+                ? &m_deviceState->vsConsts->iConsts[start]
+                : &m_state.vsConsts->iConsts[start];
+              if (std::memcmp(current, source, count * sizeof(*source)) != 0)
+                dst->SetVertexShaderConstantI(start, reinterpret_cast<const int*>(source), count);
+            });
+
+          if (m_captures.vsConsts.bDwordCount) {
+            for (uint32_t i = 0; i < m_captures.vsConsts.bDwordCount; i++) {
+              const uint32_t mask = m_captures.vsConsts.bConsts.dword(i);
+              const uint32_t bits = src->vsConsts->bConsts[i];
+              const uint32_t current = std::is_same_v<Dst, D3D9DeviceEx>
+                ? m_deviceState->vsConsts->bConsts[i]
+                : m_state.vsConsts->bConsts[i];
+              if ((current & mask) != (bits & mask))
+                dst->SetVertexBoolBitfield(i, mask, bits);
+            }
           }
         }
 
-        if (m_captures.psConsts.bConsts.any()) {
-          for (uint32_t i = 0; i < m_captures.psConsts.bConsts.dwordCount(); i++)
-            dst->SetPixelBoolBitfield(i, m_captures.psConsts.bConsts.dword(i), src->psConsts->bConsts[i]);
+        if (m_captures.flags.test(D3D9CapturedStateFlag::PsConstants)) {
+          applyConstantRanges(m_captures.psConsts.fConsts, m_captures.psConsts.fDwordCount,
+            [&] (uint32_t start, uint32_t count) {
+              const auto* source = &src->psConsts->fConsts[start];
+              const auto* current = std::is_same_v<Dst, D3D9DeviceEx>
+                ? &m_deviceState->psConsts->fConsts[start]
+                : &m_state.psConsts->fConsts[start];
+              if (std::memcmp(current, source, count * sizeof(*source)) != 0)
+                dst->SetPixelShaderConstantF(start, reinterpret_cast<const float*>(source), count);
+            });
+
+          applyConstantRanges(m_captures.psConsts.iConsts, m_captures.psConsts.iDwordCount,
+            [&] (uint32_t start, uint32_t count) {
+              const auto* source = &src->psConsts->iConsts[start];
+              const auto* current = std::is_same_v<Dst, D3D9DeviceEx>
+                ? &m_deviceState->psConsts->iConsts[start]
+                : &m_state.psConsts->iConsts[start];
+              if (std::memcmp(current, source, count * sizeof(*source)) != 0)
+                dst->SetPixelShaderConstantI(start, reinterpret_cast<const int*>(source), count);
+            });
+
+          if (m_captures.psConsts.bDwordCount) {
+            for (uint32_t i = 0; i < m_captures.psConsts.bDwordCount; i++) {
+              const uint32_t mask = m_captures.psConsts.bConsts.dword(i);
+              const uint32_t bits = src->psConsts->bConsts[i];
+              const uint32_t current = std::is_same_v<Dst, D3D9DeviceEx>
+                ? m_deviceState->psConsts->bConsts[i]
+                : m_state.psConsts->bConsts[i];
+              if ((current & mask) != (bits & mask))
+                dst->SetPixelBoolBitfield(i, mask, bits);
+            }
+          }
         }
       }
 
       if (m_captures.flags.test(D3D9CapturedStateFlag::Lights)) {
-        for (uint32_t i = 0; i < src->lights.size(); i++) {
-          if (!src->lights[i].isValid)
-            continue;
+        for (uint32_t i = 0; i < m_captures.lightChanges.dwordCount(); i++) {
+          for (uint32_t light : bit::BitMask(m_captures.lightChanges.dword(i))) {
+            const uint32_t idx = i * 32 + light;
 
-          dst->SetLight(i, &src->lights[i].light);
+            if (idx < src->lights.size() && src->lights[idx].isValid)
+            {
+              bool unchanged = false;
+              if constexpr (std::is_same_v<Dst, D3D9DeviceEx>) {
+                if (m_prefilter && idx < m_deviceState->lights.size()) {
+                  const auto& current = m_deviceState->lights[idx];
+                  unchanged = current.isValid
+                    && std::memcmp(&current.light, &src->lights[idx].light,
+                      sizeof(D3DLIGHT9)) == 0;
+                }
+              }
+
+              if (!unchanged)
+                dst->SetLight(idx, &src->lights[idx].light);
+            }
+          }
         }
 
         for (uint32_t i = 0; i < m_captures.lightEnabledChanges.dwordCount(); i++) {
           for (uint32_t consts : bit::BitMask(m_captures.lightEnabledChanges.dword(i))) {
             uint32_t idx = i * 32 + consts;
 
-            if (idx < src->lights.size())
-              dst->LightEnable(idx, src->lights[idx].isEnabled);
+            if (idx < src->lights.size()) {
+              bool unchanged = false;
+              if constexpr (std::is_same_v<Dst, D3D9DeviceEx>) {
+                if (m_prefilter && idx < m_deviceState->lights.size()) {
+                  const auto& current = m_deviceState->lights[idx];
+                  unchanged = current.isValid == src->lights[idx].isValid
+                    && current.isEnabled == src->lights[idx].isEnabled;
+                }
+              }
+
+              if (!unchanged)
+                dst->LightEnable(idx, src->lights[idx].isEnabled);
+            }
+          }
+        }
+
+        if constexpr (std::is_same_v<Dst, D3D9DeviceEx>) {
+          if (m_journal) {
+            for (uint32_t i = 0; i < m_captures.lightChanges.dwordCount(); i++) {
+              for (uint32_t light : bit::BitMask(m_captures.lightChanges.dword(i))) {
+                const uint32_t idx = i * 32 + light;
+
+                if (idx >= src->lights.size() || !src->lights[idx].isValid)
+                  dst->RestoreGtaSaUndefinedLight(idx);
+              }
+            }
           }
         }
       }
+
+      if (m_captures.flags.test(D3D9CapturedStateFlag::NPatchMode))
+        dst->SetNPatchMode(src->nPatchSegments);
     }
 
     template <D3D9StateFunction Func, bool IgnoreStreamOffset>
@@ -362,12 +678,16 @@ namespace dxvk {
 
         for (uint32_t i = 0; i < Count; i++) {
           uint32_t reg = StartRegister + i;
-          if      constexpr (ConstantType == D3D9ConstantType::Float)
+          if constexpr (ConstantType == D3D9ConstantType::Float) {
             setCaptures.fConsts.set(reg, true);
-          else if constexpr (ConstantType == D3D9ConstantType::Int)
+            setCaptures.fDwordCount = std::max(setCaptures.fDwordCount, reg / 32 + 1);
+          } else if constexpr (ConstantType == D3D9ConstantType::Int) {
             setCaptures.iConsts.set(reg, true);
-          else if constexpr (ConstantType == D3D9ConstantType::Bool)
+            setCaptures.iDwordCount = std::max(setCaptures.iDwordCount, reg / 32 + 1);
+          } else if constexpr (ConstantType == D3D9ConstantType::Bool) {
             setCaptures.bConsts.set(reg, true);
+            setCaptures.bDwordCount = std::max(setCaptures.bDwordCount, reg / 32 + 1);
+          }
         }
 
         UpdateStateConstants<ShaderType, ConstantType, T>(
@@ -396,10 +716,21 @@ namespace dxvk {
 
     void CaptureType(D3D9StateBlockType State);
 
+    template <
+      D3D9ShaderType   ShaderType,
+      D3D9ConstantType ConstantType>
+    void CaptureCurrentShaderConstants(UINT StartRegister, UINT Count);
+
     D3D9CapturableState  m_state;
     D3D9StateCaptures    m_captures;
 
     D3D9DeviceState*     m_deviceState;
+    const bool           m_prefilter;
+    const bool           m_fastSkip;
+    const bool           m_countLosableResource;
+    const bool           m_journal;
+    bool                  m_hasApplied = false;
+    uint64_t              m_lastAppliedStateSerial = 0u;
 
   };
 
