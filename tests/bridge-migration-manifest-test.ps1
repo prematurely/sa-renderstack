@@ -5,13 +5,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$root = Split-Path -Parent $PSScriptRoot
-$allowlistPath = Join-Path $root 'tools/migration/bridge-overlay-files.txt'
-$bridgeManifestPath = Join-Path $root 'migration/bridge-overlay-manifest.json'
-$runtimeManifestPath = Join-Path $root 'migration/runtime-config-manifest.json'
-$bridgeDestination = Join-Path $root 'src/bridge/legacy'
-$generatedBridgeConfigPath = Join-Path $root 'config/SA.RenderStack.ini'
-$generatedDxvkConfigPath = Join-Path $root 'config/dxvk.conf'
+. (Join-Path $PSScriptRoot 'helpers/git-baseline.ps1')
+$BridgeBaselineCommit = '67f1750364f8f455bba6bfb8af03e6d16511cc60'
 $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
 $utf8NoBom = [Text.UTF8Encoding]::new($false)
 $expectedAllowlistSha256 = '1764CD9BB1D4524EA4C389A3CF9CD1A9DAFFC35E43E35E4541FBC7DA695BC2CF'
@@ -37,6 +32,9 @@ if ($liveAudit -and (
         [string]::IsNullOrWhiteSpace($ActiveDxvkConfig))) {
     throw 'Live Bridge audit arguments must be non-empty'
 }
+
+Assert-GitFullHistory
+Assert-GitCommit -Commit $BridgeBaselineCommit -Label 'Bridge final baseline'
 
 $expectedRowsText = @'
 BridgeD3D9.cpp|AAF27275CFAFAACEC0A41F5175E2CC9F917027FF04ECB27530ECC71F4E27508E|A0E68B198E7940F8EB15B3942D96BE8BCBA46EEDA126628864C2D5DA2D88338C
@@ -198,20 +196,47 @@ function Test-ByteSequenceEqual {
     return $true
 }
 
-function Assert-CanonicalTrackedText {
+function Convert-HistoricalBridgeBlob {
     param(
-        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [byte[]]$Bytes,
+        [Parameter(Mandatory)] [string]$Normalization,
         [Parameter(Mandatory)] [string]$Label
     )
 
-    $bytes = [IO.File]::ReadAllBytes($Path)
-    if ($bytes.Length -ge 3 -and
-        $bytes[0] -eq 0xEF -and
-        $bytes[1] -eq 0xBB -and
-        $bytes[2] -eq 0xBF) {
+    if ($Normalization -cne 'utf8-bomless-crlf') {
+        return ,$Bytes
+    }
+
+    $stream = [IO.MemoryStream]::new()
+    try {
+        foreach ($byte in $Bytes) {
+            if ($byte -eq 13) {
+                throw "$Label Git blob unexpectedly contains a CR byte"
+            }
+            if ($byte -eq 10) {
+                $stream.WriteByte(13)
+            }
+            $stream.WriteByte($byte)
+        }
+        return ,$stream.ToArray()
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Assert-CanonicalTrackedText {
+    param(
+        [Parameter(Mandatory)] [byte[]]$Bytes,
+        [Parameter(Mandatory)] [string]$Label
+    )
+
+    if ($Bytes.Length -ge 3 -and
+        $Bytes[0] -eq 0xEF -and
+        $Bytes[1] -eq 0xBB -and
+        $Bytes[2] -eq 0xBF) {
         throw "$Label contains a UTF-8 BOM"
     }
-    $text = $strictUtf8.GetString($bytes)
+    $text = $strictUtf8.GetString($Bytes)
     if ($text.Contains("`r")) {
         throw "$Label is not LF-only"
     }
@@ -224,16 +249,12 @@ function Assert-CanonicalTrackedText {
 
 function Read-ValidatedJson {
     param(
-        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [byte[]]$Bytes,
         [Parameter(Mandatory)] [string]$Label
     )
 
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "$Label is missing: $Path"
-    }
-    $bytes = [IO.File]::ReadAllBytes($Path)
-    [Task4JsonDuplicatePropertyValidator]::AssertNoDuplicateProperties($bytes, $Label)
-    $text = Assert-CanonicalTrackedText -Path $Path -Label $Label
+    [Task4JsonDuplicatePropertyValidator]::AssertNoDuplicateProperties($Bytes, $Label)
+    $text = Assert-CanonicalTrackedText -Bytes $Bytes -Label $Label
     return [pscustomobject]@{
         Text = $text
         Value = ($text | ConvertFrom-Json)
@@ -301,11 +322,12 @@ function Get-ExpectedTransformation {
     return @($expectedTransformations | Where-Object { $_.path -ceq $Path })
 }
 
-if (-not (Test-Path -LiteralPath $allowlistPath -PathType Leaf)) {
-    throw 'Bridge overlay allowlist is missing'
-}
-$allowlistText = Assert-CanonicalTrackedText -Path $allowlistPath -Label 'Bridge overlay allowlist'
-$allowlistSha256 = Get-BytesSha256 -Bytes $utf8NoBom.GetBytes($allowlistText)
+$allowlistBytes = Read-GitBlob -Commit $BridgeBaselineCommit `
+    -Path 'tools/migration/bridge-overlay-files.txt' `
+    -Label 'Bridge overlay allowlist'
+$allowlistText = Assert-CanonicalTrackedText -Bytes $allowlistBytes `
+    -Label 'Bridge overlay allowlist'
+$allowlistSha256 = Get-BytesSha256 -Bytes $allowlistBytes
 if ($allowlistSha256 -cne $expectedAllowlistSha256) {
     throw "Bridge overlay allowlist hash differs: $allowlistSha256"
 }
@@ -322,7 +344,11 @@ foreach ($relativePath in $allowlist) {
     Assert-SafeRelativePath -Path $relativePath
 }
 
-$bridgeManifestJson = Read-ValidatedJson -Path $bridgeManifestPath -Label 'Bridge overlay manifest'
+$bridgeManifestBytes = Read-GitBlob -Commit $BridgeBaselineCommit `
+    -Path 'migration/bridge-overlay-manifest.json' `
+    -Label 'Bridge overlay manifest'
+$bridgeManifestJson = Read-ValidatedJson -Bytes $bridgeManifestBytes `
+    -Label 'Bridge overlay manifest'
 $bridgeManifest = $bridgeManifestJson.Value
 Assert-PropertySet -Object $bridgeManifest -Expected @('sourceLabel', 'files') -Label 'Bridge overlay manifest'
 Assert-NoRootedStrings -Object $bridgeManifest -Label 'Bridge overlay manifest'
@@ -387,11 +413,13 @@ foreach ($entry in $manifestFiles) {
         }
     }
 
-    $destinationPath = Join-Path $bridgeDestination $relativePath
-    if (-not (Test-Path -LiteralPath $destinationPath -PathType Leaf)) {
-        throw "Imported Bridge file is missing: $relativePath"
-    }
-    $destinationBytes = [IO.File]::ReadAllBytes($destinationPath)
+    $destinationBlobBytes = Read-GitBlob -Commit $BridgeBaselineCommit `
+        -Path "src/bridge/legacy/$relativePath" `
+        -Label "Bridge baseline destination '$relativePath'"
+    $destinationBytes = Convert-HistoricalBridgeBlob `
+        -Bytes $destinationBlobBytes `
+        -Normalization $expectedNormalization `
+        -Label "Bridge baseline destination '$relativePath'"
     if ((Get-BytesSha256 -Bytes $destinationBytes) -cne $expectedRow[0].sha256) {
         throw "Imported Bridge file hash differs: $relativePath"
     }
@@ -435,12 +463,16 @@ foreach ($entry in $manifestFiles) {
         }
         $derivedBytes = $utf8NoBom.GetBytes($derivedText)
         if (-not (Test-ByteSequenceEqual -Left $derivedBytes -Right $destinationBytes)) {
-            throw "Audited Bridge source does not derive the committed file: $relativePath"
+            throw "Audited Bridge source does not derive the historical file: $relativePath"
         }
     }
 }
 
-$runtimeManifestJson = Read-ValidatedJson -Path $runtimeManifestPath -Label 'Runtime config manifest'
+$runtimeManifestBytes = Read-GitBlob -Commit $BridgeBaselineCommit `
+    -Path 'migration/runtime-config-manifest.json' `
+    -Label 'Runtime config manifest'
+$runtimeManifestJson = Read-ValidatedJson -Bytes $runtimeManifestBytes `
+    -Label 'Runtime config manifest'
 $runtimeManifest = $runtimeManifestJson.Value
 Assert-PropertySet -Object $runtimeManifest -Expected @('sourceLabel', 'files') -Label 'Runtime config manifest'
 Assert-NoRootedStrings -Object $runtimeManifest -Label 'Runtime config manifest'
@@ -506,24 +538,36 @@ for ($runtimeIndex = 0; $runtimeIndex -lt $runtimeFiles.Count; $runtimeIndex++) 
     }
 }
 
-foreach ($configPath in @($generatedBridgeConfigPath, $generatedDxvkConfigPath)) {
-    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
-        throw "Generated runtime config is missing: $configPath"
+$generatedBridgeConfigBytes = Read-GitBlob -Commit $BridgeBaselineCommit `
+    -Path 'config/SA.RenderStack.ini' `
+    -Label 'Generated Bridge runtime config'
+$generatedDxvkConfigBytes = Read-GitBlob -Commit $BridgeBaselineCommit `
+    -Path 'config/dxvk.conf' `
+    -Label 'Generated DXVK runtime config'
+$generatedConfigs = @(
+    [pscustomobject]@{
+        Label = 'Generated Bridge runtime config'
+        Bytes = $generatedBridgeConfigBytes
+    },
+    [pscustomobject]@{
+        Label = 'Generated DXVK runtime config'
+        Bytes = $generatedDxvkConfigBytes
     }
-    $configBytes = [IO.File]::ReadAllBytes($configPath)
+)
+foreach ($config in $generatedConfigs) {
+    $configBytes = $config.Bytes
     if ($configBytes.Length -ge 3 -and
         $configBytes[0] -eq 0xEF -and
         $configBytes[1] -eq 0xBB -and
         $configBytes[2] -eq 0xBF) {
-        throw "Generated runtime config contains a BOM: $configPath"
+        throw "$($config.Label) contains a BOM"
     }
     $configText = $strictUtf8.GetString($configBytes)
     if ($configText.Contains("`r")) {
-        throw "Generated runtime config is not LF-only: $configPath"
+        throw "$($config.Label) is not LF-only"
     }
 }
 
-$generatedBridgeConfigBytes = [IO.File]::ReadAllBytes($generatedBridgeConfigPath)
 if ((Get-BytesSha256 -Bytes $generatedBridgeConfigBytes) -cne $expectedGeneratedBridgeConfigSha256) {
     throw 'Generated SA.RenderStack.ini hash differs'
 }
@@ -561,7 +605,6 @@ if ((Get-BytesSha256 -Bytes $reconstructedNormalizedBridgeBytes) -cne $expectedN
     throw 'Generated Bridge config differs from normalized active input beyond the declared line'
 }
 
-$generatedDxvkConfigBytes = [IO.File]::ReadAllBytes($generatedDxvkConfigPath)
 if ((Get-BytesSha256 -Bytes $generatedDxvkConfigBytes) -cne $expectedDxvkConfigSha256) {
     throw 'Generated dxvk.conf hash differs'
 }

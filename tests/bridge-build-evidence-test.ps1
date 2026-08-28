@@ -1,12 +1,15 @@
+param(
+    [string]$ExportsPath,
+    [string]$EvidencePath,
+    [string]$Candidate
+)
 $ErrorActionPreference = 'Stop'
 
-$root = Split-Path -Parent $PSScriptRoot
-$exportsPath = Join-Path $root 'migration/bridge-exports.txt'
-$evidencePath = Join-Path $root 'migration/bridge-build-evidence.json'
-$candidatePath = Join-Path $root 'out/build/bridge/d3d9.dll'
+. (Join-Path $PSScriptRoot 'helpers/git-baseline.ps1')
+$BridgeBaselineCommit = '67f1750364f8f455bba6bfb8af03e6d16511cc60'
 $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
-$utf8NoBom = [Text.UTF8Encoding]::new($false)
 $expectedReferenceSha256 = 'B0BBE0C98B132EA0B8E6BA0FA2C978D82C48063A50C2324BE3A8F7141FE7E9FF'
+$expectedHistoricalCandidateSha256 = '49B0AEF34B450FDC9ED23C9FDB0EC537310EB75F0D49C59FE851BB9D0025FC48'
 $expectedExportsSha256 = '93B2438F39A97F664BE6B3F2791C36981358B18647FE463BEEC94E0F66DA76B0'
 $expectedExportsText = @'
 1 Direct3DCreate9
@@ -21,6 +24,42 @@ $expectedExportsText = @'
 10 DXGIDeclareAdapterRemovalSupport
 11 DXGIGetDebugInterface1
 '@ + "`n"
+
+$providedCurrentArguments = @(
+    $PSBoundParameters.ContainsKey('ExportsPath'),
+    $PSBoundParameters.ContainsKey('EvidencePath'),
+    $PSBoundParameters.ContainsKey('Candidate')
+)
+$providedCurrentArgumentCount = @($providedCurrentArguments | Where-Object { $_ }).Count
+if ($providedCurrentArgumentCount -notin 0, 3) {
+    throw 'Current Bridge evidence mode requires -ExportsPath, -EvidencePath, and -Candidate together'
+}
+$currentMode = $providedCurrentArgumentCount -eq 3
+if ($currentMode -and (
+        [string]::IsNullOrWhiteSpace($ExportsPath) -or
+        [string]::IsNullOrWhiteSpace($EvidencePath) -or
+        [string]::IsNullOrWhiteSpace($Candidate))) {
+    throw 'Current Bridge evidence arguments must be non-empty'
+}
+
+if ($currentMode) {
+    foreach ($currentPath in @($ExportsPath, $EvidencePath, $Candidate)) {
+        if (-not (Test-Path -LiteralPath $currentPath -PathType Leaf)) {
+            throw "Current Bridge evidence input is missing: $currentPath"
+        }
+    }
+    $exportsBytes = [IO.File]::ReadAllBytes($ExportsPath)
+    $evidenceBytes = [IO.File]::ReadAllBytes($EvidencePath)
+} else {
+    Assert-GitFullHistory
+    Assert-GitCommit -Commit $BridgeBaselineCommit -Label 'Bridge final baseline'
+    $exportsBytes = Read-GitBlob -Commit $BridgeBaselineCommit `
+        -Path 'migration/bridge-exports.txt' `
+        -Label 'Historical Bridge export evidence'
+    $evidenceBytes = Read-GitBlob -Commit $BridgeBaselineCommit `
+        -Path 'migration/bridge-build-evidence.json' `
+        -Label 'Historical Bridge build evidence'
+}
 
 if (-not ('Task4BuildJsonDuplicatePropertyValidator' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -68,21 +107,17 @@ function Get-BytesSha256 {
 
 function Assert-CanonicalTrackedText {
     param(
-        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [byte[]]$Bytes,
         [Parameter(Mandatory)] [string]$Label
     )
 
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "$Label is missing: $Path"
-    }
-    $bytes = [IO.File]::ReadAllBytes($Path)
-    if ($bytes.Length -ge 3 -and
-        $bytes[0] -eq 0xEF -and
-        $bytes[1] -eq 0xBB -and
-        $bytes[2] -eq 0xBF) {
+    if ($Bytes.Length -ge 3 -and
+        $Bytes[0] -eq 0xEF -and
+        $Bytes[1] -eq 0xBB -and
+        $Bytes[2] -eq 0xBF) {
         throw "$Label contains a UTF-8 BOM"
     }
-    $text = $strictUtf8.GetString($bytes)
+    $text = $strictUtf8.GetString($Bytes)
     if ($text.Contains("`r")) {
         throw "$Label is not LF-only"
     }
@@ -91,7 +126,7 @@ function Assert-CanonicalTrackedText {
         throw "$Label must end in exactly one LF"
     }
     return [pscustomobject]@{
-        Bytes = $bytes
+        Bytes = $Bytes
         Text = $text
     }
 }
@@ -144,7 +179,8 @@ function Assert-NoRootedStrings {
     }
 }
 
-$exportsFile = Assert-CanonicalTrackedText -Path $exportsPath -Label 'Bridge export evidence'
+$exportsFile = Assert-CanonicalTrackedText -Bytes $exportsBytes `
+    -Label 'Bridge export evidence'
 if ($exportsFile.Text -cne $expectedExportsText) {
     throw 'Bridge export rows differ from the independent exact rows'
 }
@@ -152,7 +188,8 @@ if ((Get-BytesSha256 -Bytes $exportsFile.Bytes) -cne $expectedExportsSha256) {
     throw 'Bridge export evidence hash differs'
 }
 
-$evidenceFile = Assert-CanonicalTrackedText -Path $evidencePath -Label 'Bridge build evidence'
+$evidenceFile = Assert-CanonicalTrackedText -Bytes $evidenceBytes `
+    -Label 'Bridge build evidence'
 [Task4BuildJsonDuplicatePropertyValidator]::AssertNoDuplicateProperties(
     $evidenceFile.Bytes,
     'Bridge build evidence')
@@ -181,6 +218,10 @@ foreach ($binaryLabel in @('reference', 'candidate')) {
     if ([string]::IsNullOrWhiteSpace([string]$binary.label)) {
         throw "Bridge build evidence $binaryLabel label is empty"
     }
+    foreach ($stringProperty in @('label', 'sha256', 'machine', 'exportSetSha256')) {
+        Assert-ExactType -Value $binary.$stringProperty -ExpectedType ([String]) `
+            -Label "Bridge build evidence $binaryLabel $stringProperty"
+    }
     Assert-ExactType -Value $binary.exportCount -ExpectedType ([Int64]) `
         -Label "Bridge build evidence $binaryLabel exportCount"
     if ($binary.machine -cne 'I386' -or $binary.exportCount -ne 11) {
@@ -197,6 +238,10 @@ if ($evidence.reference.label -cne 'audited-bridge-baseline' -or
 if ($evidence.reference.sha256 -cne $expectedReferenceSha256) {
     throw 'Bridge build evidence reference hash differs'
 }
+if (-not $currentMode -and
+    $evidence.candidate.sha256 -cne $expectedHistoricalCandidateSha256) {
+    throw 'Historical Bridge build evidence candidate hash differs'
+}
 Assert-ExactType -Value $evidence.exportsEqual -ExpectedType ([Boolean]) `
     -Label 'Bridge build evidence exportsEqual'
 Assert-ExactType -Value $evidence.binaryHashExpectedToDiffer -ExpectedType ([Boolean]) `
@@ -206,16 +251,17 @@ if ($evidence.exportsEqual -ne $true -or
     throw 'Bridge build evidence comparison flags differ'
 }
 foreach ($versionProperty in @('msbuildVersion', 'toolsetVersion', 'compilerVersion')) {
+    Assert-ExactType -Value $evidence.$versionProperty -ExpectedType ([String]) `
+        -Label "Bridge build evidence $versionProperty"
     if ([string]::IsNullOrWhiteSpace([string]$evidence.$versionProperty)) {
         throw "Bridge build evidence $versionProperty is empty"
     }
 }
-if (-not (Test-Path -LiteralPath $candidatePath -PathType Leaf)) {
-    throw 'Current Bridge candidate DLL is missing'
-}
-$candidateHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $candidatePath).Hash
-if ($evidence.candidate.sha256 -cne $candidateHash) {
-    throw 'Bridge build evidence candidate hash differs from the current DLL'
+if ($currentMode) {
+    $candidateHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Candidate).Hash
+    if ($evidence.candidate.sha256 -cne $candidateHash) {
+        throw 'Bridge build evidence candidate hash differs from the current DLL'
+    }
 }
 
 Write-Output 'PASS Bridge PE/export build evidence'

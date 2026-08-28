@@ -3,10 +3,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$root = Split-Path -Parent $PSScriptRoot
-$allowlistPath = Join-Path $root 'tools/migration/dxvk-overlay-files.txt'
-$manifestPath = Join-Path $root 'migration/dxvk-overlay-manifest.json'
-$evidencePath = Join-Path $root 'migration/dxvk-baseline-evidence.json'
+. (Join-Path $PSScriptRoot 'helpers/git-baseline.ps1')
+$DxvkBaselineCommit = '07d715df896a1b54d8e08086435408b38f688fae'
 $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
 $utf8NoBom = [Text.UTF8Encoding]::new($false)
 $liveAudit = $PSBoundParameters.ContainsKey('Source')
@@ -16,6 +14,9 @@ $forbiddenPathPattern = '(^|/)build(/|$)|(^|/)\.wraplock$|\.bak$|\.log$|\.exe$|\
 if ($liveAudit -and [string]::IsNullOrWhiteSpace($Source)) {
     throw 'Live DXVK overlay audit requires a non-empty -Source path'
 }
+
+Assert-GitFullHistory
+Assert-GitCommit -Commit $DxvkBaselineCommit -Label 'DXVK source baseline'
 
 $expectedRowsText = @'
 meson_options.txt|75DD24BAF0C080D013AFDE82ABBFC913FBD1E818E88FABEF48604E4C1EA1E054|E08A0E9E84F058955C8B67F0D74AE4D3D0AE221F1635D6BD9FFACF2E2F5835A4
@@ -127,13 +128,12 @@ function Get-CanonicalUtf8Text {
 
 function Read-ValidatedJson {
     param(
-        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [byte[]] $Bytes,
         [Parameter(Mandatory)] [string] $Label
     )
 
-    $bytes = [IO.File]::ReadAllBytes($Path)
     try {
-        [Task3JsonDuplicatePropertyValidator]::AssertNoDuplicateProperties($bytes, $Label)
+        [Task3JsonDuplicatePropertyValidator]::AssertNoDuplicateProperties($Bytes, $Label)
     } catch {
         $exception = $_.Exception
         while ($exception.InnerException) {
@@ -142,7 +142,7 @@ function Read-ValidatedJson {
         throw $exception.Message
     }
 
-    $text = $strictUtf8.GetString($bytes)
+    $text = $strictUtf8.GetString($Bytes)
     return [pscustomobject]@{
         Text = $text
         Value = ($text | ConvertFrom-Json)
@@ -215,11 +215,10 @@ function Assert-NoRootedStrings {
     }
 }
 
-if (-not (Test-Path -LiteralPath $allowlistPath -PathType Leaf)) {
-    throw 'DXVK overlay allowlist is missing'
-}
-
-$allowlistText = Get-CanonicalUtf8Text -Bytes ([IO.File]::ReadAllBytes($allowlistPath))
+$allowlistBytes = Read-GitBlob -Commit $DxvkBaselineCommit `
+    -Path 'tools/migration/dxvk-overlay-files.txt' `
+    -Label 'DXVK overlay allowlist'
+$allowlistText = Get-CanonicalUtf8Text -Bytes $allowlistBytes
 $allowlist = @(
     $allowlistText -split "`n" |
         ForEach-Object { $_.Trim() } |
@@ -240,7 +239,7 @@ foreach ($relative in $allowlist) {
 if (-not $allowlistText.EndsWith("`n", [StringComparison]::Ordinal)) {
     throw 'DXVK overlay allowlist must end with LF'
 }
-$allowlistSha256 = Get-Sha256 -Bytes $utf8NoBom.GetBytes($allowlistText)
+$allowlistSha256 = Get-Sha256 -Bytes $allowlistBytes
 if ($allowlistSha256 -cne $expectedAllowlistSha256) {
     throw "DXVK overlay allowlist hash differs: $allowlistSha256"
 }
@@ -249,10 +248,10 @@ if (($allowlist -join "`n") -cne ($literalPaths -join "`n")) {
     throw 'DXVK overlay allowlist entries differ from literal anchors'
 }
 
-if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-    throw 'DXVK overlay manifest is missing'
-}
-$manifestJson = Read-ValidatedJson -Path $manifestPath -Label 'DXVK overlay manifest'
+$manifestBytes = Read-GitBlob -Commit $DxvkBaselineCommit `
+    -Path 'migration/dxvk-overlay-manifest.json' `
+    -Label 'DXVK overlay manifest'
+$manifestJson = Read-ValidatedJson -Bytes $manifestBytes -Label 'DXVK overlay manifest'
 $manifestText = $manifestJson.Text
 $manifest = $manifestJson.Value
 Assert-PropertySet -Object $manifest -Expected @('sourceLabel', 'upstreamCommit', 'files') -Label 'Overlay manifest'
@@ -297,15 +296,12 @@ foreach ($entry in $manifestFiles) {
         throw "Unexpected normalization for $relative"
     }
 
-    $destinationPath = Join-Path $root (Join-Path 'backend/dxvk' $relative)
-    if (-not (Test-Path -LiteralPath $destinationPath -PathType Leaf)) {
-        throw "Imported destination file is missing: $relative"
-    }
-
-    $destinationBytes = [IO.File]::ReadAllBytes($destinationPath)
+    $destinationBytes = Read-GitBlob -Commit $DxvkBaselineCommit `
+        -Path "backend/dxvk/$relative" `
+        -Label "DXVK baseline destination '$relative'"
     $destinationSha256 = Get-Sha256 -Bytes $destinationBytes
     if ($destinationSha256 -cne $expected[0].sha256) {
-        throw "Committed destination canonical hash differs for $relative"
+        throw "Historical destination canonical hash differs for $relative"
     }
     if ($destinationBytes.Length -ge 3 -and
         $destinationBytes[0] -eq 0xEF -and
@@ -334,20 +330,20 @@ foreach ($entry in $manifestFiles) {
         $normalizedSourceSha256 = Get-Sha256 -Bytes $normalizedSourceBytes
         if ($normalizedSourceSha256 -cne $expected[0].sha256 -or
             $normalizedSourceSha256 -cne $destinationSha256) {
-            throw "Normalized audited source hash differs from committed destination for $relative"
+            throw "Normalized audited source hash differs from historical destination for $relative"
         }
         if (-not [Linq.Enumerable]::SequenceEqual[byte](
                 $normalizedSourceBytes,
                 $destinationBytes)) {
-            throw "Normalized audited source bytes differ from committed destination for $relative"
+            throw "Normalized audited source bytes differ from historical destination for $relative"
         }
     }
 }
 
-if (-not (Test-Path -LiteralPath $evidencePath -PathType Leaf)) {
-    throw 'DXVK baseline evidence is missing'
-}
-$evidenceJson = Read-ValidatedJson -Path $evidencePath -Label 'DXVK baseline evidence'
+$evidenceBytes = Read-GitBlob -Commit $DxvkBaselineCommit `
+    -Path 'migration/dxvk-baseline-evidence.json' `
+    -Label 'DXVK baseline evidence'
+$evidenceJson = Read-ValidatedJson -Bytes $evidenceBytes -Label 'DXVK baseline evidence'
 $evidenceText = $evidenceJson.Text
 if ($evidenceText -match '(?i)\.exe') {
     throw 'DXVK baseline evidence contains forbidden .exe text'
