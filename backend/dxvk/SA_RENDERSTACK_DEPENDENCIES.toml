@@ -1,0 +1,41 @@
+[[dependency]]
+path = "backend/dxvk/include/native/directx"
+url = "https://github.com/Joshua-Ashton/mingw-directx-headers"
+commit = "9df86f2341616ef1888ae59919feaa6d4fad693d"
+root_tree = "66fcb250507a2c45bd9a22f44795d0e4c7b613f5"
+import = "git-subtree-squash"
+
+[[dependency]]
+path = "backend/dxvk/include/vulkan"
+url = "https://github.com/KhronosGroup/Vulkan-Headers"
+commit = "8864cdc896bbc2a9b6eb36b3218fc9ef57908d77"
+root_tree = "25b446994cd7956846e2d07e9958724d78c7ae3d"
+import = "git-subtree-squash"
+
+[[dependency]]
+path = "backend/dxvk/include/spirv"
+url = "https://github.com/KhronosGroup/SPIRV-Headers.git"
+commit = "04f10f650d514df88b76d25e83db360142c7b174"
+root_tree = "2883db5426133e951df98616f78904371e854339"
+import = "git-subtree-squash"
+
+[[dependency]]
+path = "backend/dxvk/subprojects/libdisplay-info"
+url = "https://github.com/doitsujin/libdisplay-info.git"
+commit = "275e6459c7ab1ddd4b125f28d0440716e4888078"
+root_tree = "af4bbd04360eda1a4634a5aaf5d0408eb71925a1"
+import = "git-subtree-squash"
+
+[[dependency]]
+path = "backend/dxvk/subprojects/dxbc-spirv"
+url = "https://github.com/doitsujin/dxbc-spirv.git"
+commit = "6da3ed38834b0ae3ae7f4267568181dabc7104bc"
+root_tree = "2c78a92506fe3789d000d42b2dc17cde6fa298a3"
+import = "git-subtree-squash"
+
+[[dependency]]
+path = "backend/dxvk/subprojects/dxbc-spirv/submodules/spirv_headers"
+url = "https://github.com/KhronosGroup/SPIRV-Headers.git"
+commit = "c8ad050fcb29e42a2f57d9f59e97488f465c436d"
+root_tree = "7577966d18e3d5203339a5daa9146f10fe46e785"
+import = "git-subtree-squash"
