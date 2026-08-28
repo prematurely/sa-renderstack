@@ -5,6 +5,7 @@
 #include "../GtaSaCompatApiVersions.h"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 
@@ -12,6 +13,16 @@ using Direct3DCreate9Proc = IDirect3D9* (WINAPI*)(UINT);
 
 namespace
 {
+constexpr IID kCompatIids[] = {
+    {0x9f89b542, 0x4f50, 0x4e7d, {0xb2, 0xa4, 0xe8, 0xea, 0xb3, 0xc7, 0xd9, 0xf1}},
+    {0x9f89b542, 0x4f50, 0x4e7d, {0xb2, 0xa4, 0xe8, 0xea, 0xb3, 0xc7, 0xd9, 0xf2}},
+    {0x9f89b542, 0x4f50, 0x4e7d, {0xb2, 0xa4, 0xe8, 0xea, 0xb3, 0xc7, 0xd9, 0xf3}},
+    {0x9f89b542, 0x4f50, 0x4e7d, {0xb2, 0xa4, 0xe8, 0xea, 0xb3, 0xc7, 0xd9, 0xf4}},
+    {0x9f89b542, 0x4f50, 0x4e7d, {0xb2, 0xa4, 0xe8, 0xea, 0xb3, 0xc7, 0xd9, 0xf5}},
+    {0x9f89b542, 0x4f50, 0x4e7d, {0xb2, 0xa4, 0xe8, 0xea, 0xb3, 0xc7, 0xd9, 0xf6}},
+    {0x9f89b542, 0x4f50, 0x4e7d, {0xb2, 0xa4, 0xe8, 0xea, 0xb3, 0xc7, 0xd9, 0xf7}},
+};
+
 LRESULT CALLBACK SmokeWindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
 {
     return DefWindowProcA(window, message, wparam, lparam);
@@ -110,21 +121,43 @@ int main(int argc, char** argv)
     status.StructSize = sizeof(status);
     result = compat->GetStatus(&status);
 
-    const auto queryAndRelease = [device](REFIID iid) {
+    bool legacyInterfacesAvailable = true;
+    IUnknown* stableCompatIdentity = nullptr;
+    for (std::size_t index = 0; index < 7u; ++index) {
         IUnknown* queried = nullptr;
         const HRESULT queryResult = device->QueryInterface(
-            iid, reinterpret_cast<void**>(&queried));
-        const bool available = SUCCEEDED(queryResult) && queried != nullptr;
-        if (queried) queried->Release();
-        return available;
-    };
-    const bool legacyInterfacesAvailable =
-        queryAndRelease(__uuidof(ID3D9GtaSaCompatDevice)) &&
-        queryAndRelease(__uuidof(ID3D9GtaSaCompatDevice1)) &&
-        queryAndRelease(__uuidof(ID3D9GtaSaCompatDevice2)) &&
-        queryAndRelease(__uuidof(ID3D9GtaSaCompatDevice3)) &&
-        queryAndRelease(__uuidof(ID3D9GtaSaCompatDevice4)) &&
-        queryAndRelease(__uuidof(ID3D9GtaSaCompatDevice5));
+            kCompatIids[index], reinterpret_cast<void**>(&queried));
+        if (queryResult != S_OK || !queried) {
+            std::fprintf(
+                stderr, "API %u QueryInterface failed: 0x%08lX\n",
+                static_cast<unsigned>(index + 1u), ULONG(queryResult));
+            legacyInterfacesAvailable = false;
+            if (queried) queried->Release();
+            continue;
+        }
+
+        IUnknown* identity = nullptr;
+        const HRESULT identityResult = queried->QueryInterface(
+            IID_IUnknown, reinterpret_cast<void**>(&identity));
+        if (identityResult != S_OK || !identity) {
+            std::fprintf(
+                stderr, "API %u IUnknown query failed: 0x%08lX\n",
+                static_cast<unsigned>(index + 1u), ULONG(identityResult));
+            legacyInterfacesAvailable = false;
+        } else if (!stableCompatIdentity) {
+            stableCompatIdentity = identity;
+            identity = nullptr;
+        } else if (identity != stableCompatIdentity) {
+            std::fprintf(
+                stderr, "API %u returned a different compatibility IUnknown\n",
+                static_cast<unsigned>(index + 1u));
+            legacyInterfacesAvailable = false;
+        }
+
+        if (identity) identity->Release();
+        queried->Release();
+    }
+    if (stableCompatIdentity) stableCompatIdentity->Release();
 
     const float expected[4] = { 11.0f, 22.0f, 33.0f, 44.0f };
     D3D9GtaSaFloatConstantRange range{ 7u, 1u, expected };

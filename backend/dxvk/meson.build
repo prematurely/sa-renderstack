@@ -174,6 +174,17 @@ else
   ]
 endif
 
+renderstack_sdk_dir = get_option('renderstack_sdk_dir')
+if get_option('enable_d3d9')
+  if renderstack_sdk_dir == '' or not fs.is_absolute(renderstack_sdk_dir)
+    error('D3D9 requires an absolute -Drenderstack_sdk_dir path')
+  endif
+  if not fs.is_file(renderstack_sdk_dir / 'sa_renderstack/backend_api.h')
+    error('SA RenderStack backend_api.h is missing from renderstack_sdk_dir')
+  endif
+  dxvk_include_dirs += [renderstack_sdk_dir]
+endif
+
 dxbc_spirv = subproject('dxbc-spirv')
 dxbc_spirv_dep = dxbc_spirv.get_variable('dxbc_spv_dep')
 
