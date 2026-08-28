@@ -110,6 +110,19 @@ function Assert-PropertySet {
     }
 }
 
+function Assert-ExactType {
+    param(
+        [Parameter(Mandatory)]$Value,
+        [Parameter(Mandatory)] [type]$ExpectedType,
+        [Parameter(Mandatory)] [string]$Label
+    )
+
+    $actualType = if ($null -eq $Value) { '<null>' } else { $Value.GetType().FullName }
+    if ($actualType -cne $ExpectedType.FullName) {
+        throw "$Label type differs: expected $($ExpectedType.FullName), found $actualType"
+    }
+}
+
 function Assert-NoRootedStrings {
     param(
         [Parameter(Mandatory)]$Object,
@@ -155,7 +168,9 @@ Assert-PropertySet -Object $evidence -Expected @(
     'binaryHashExpectedToDiffer'
 ) -Label 'Bridge build evidence'
 Assert-NoRootedStrings -Object $evidence -Label 'Bridge build evidence'
-if ([int]$evidence.schemaVersion -ne 1) {
+Assert-ExactType -Value $evidence.schemaVersion -ExpectedType ([Int64]) `
+    -Label 'Bridge build evidence schemaVersion'
+if ($evidence.schemaVersion -ne 1) {
     throw "Unexpected Bridge build evidence schema: $($evidence.schemaVersion)"
 }
 foreach ($binaryLabel in @('reference', 'candidate')) {
@@ -166,7 +181,9 @@ foreach ($binaryLabel in @('reference', 'candidate')) {
     if ([string]::IsNullOrWhiteSpace([string]$binary.label)) {
         throw "Bridge build evidence $binaryLabel label is empty"
     }
-    if ($binary.machine -cne 'I386' -or [int]$binary.exportCount -ne 11) {
+    Assert-ExactType -Value $binary.exportCount -ExpectedType ([Int64]) `
+        -Label "Bridge build evidence $binaryLabel exportCount"
+    if ($binary.machine -cne 'I386' -or $binary.exportCount -ne 11) {
         throw "Bridge build evidence $binaryLabel PE/export metadata differs"
     }
     if ($binary.exportSetSha256 -cne $expectedExportsSha256) {
@@ -180,6 +197,10 @@ if ($evidence.reference.label -cne 'audited-bridge-baseline' -or
 if ($evidence.reference.sha256 -cne $expectedReferenceSha256) {
     throw 'Bridge build evidence reference hash differs'
 }
+Assert-ExactType -Value $evidence.exportsEqual -ExpectedType ([Boolean]) `
+    -Label 'Bridge build evidence exportsEqual'
+Assert-ExactType -Value $evidence.binaryHashExpectedToDiffer -ExpectedType ([Boolean]) `
+    -Label 'Bridge build evidence binaryHashExpectedToDiffer'
 if ($evidence.exportsEqual -ne $true -or
     $evidence.binaryHashExpectedToDiffer -ne $true) {
     throw 'Bridge build evidence comparison flags differ'
