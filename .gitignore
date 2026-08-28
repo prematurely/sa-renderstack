@@ -1,0 +1,33 @@
+# Build outputs
+/out/
+/build/
+**/build-*/
+**/.vs/
+**/obj/
+**/.obj/
+**/meson-private/
+**/meson-logs/
+**/meson-info/
+
+# Runtime and compiler artifacts
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.obj
+*.o
+*.a
+*.map
+*.log
+*.dmp
+*.bak
+*.tmp
+
+# Local state
+.wraplock
+.cache/
+.superpowers/
+Diagnostics/
+CrashDumps/
