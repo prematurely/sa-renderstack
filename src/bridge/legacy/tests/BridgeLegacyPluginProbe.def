@@ -1,0 +1,9 @@
+LIBRARY BridgeLegacyPluginProbe
+EXPORTS
+    BridgeD3D9_PluginInit
+    BridgeD3D9_PluginShutdown
+    BridgeD3D9_OnCreateDevice
+    BridgeD3D9_OnResetBefore
+    BridgeD3D9_OnResetAfter
+    BridgeD3D9_OnReleaseDevice
+

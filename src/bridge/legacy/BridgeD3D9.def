@@ -1,0 +1,13 @@
+LIBRARY d3d9
+EXPORTS
+    Direct3DCreate9 @1
+    DebugSetLevel @2
+    DebugSetMute @3
+    Direct3DShaderValidatorCreate9 @4
+    PSGPError @5
+    PSGPSampleTexture @6
+    CreateDXGIFactory
+    CreateDXGIFactory1
+    CreateDXGIFactory2
+    DXGIDeclareAdapterRemovalSupport
+    DXGIGetDebugInterface1

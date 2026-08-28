@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{B2D3E4F5-6789-0ABC-DEF0-123456789ABC}</ProjectGuid>
+    <RootNamespace>BridgeD3D9</RootNamespace>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>MultiByte</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <OutDir>$(ProjectDir)..\..\d3d9_build\</OutDir>
+    <IntDir>$(ProjectDir).obj\Release\</IntDir>
+    <TargetName>d3d9</TargetName>
+    <TargetExt>.dll</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\..\backend\dxvk\include\vulkan\include;$(D3DX9IncludeDir);$(VULKAN_SDK)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <SDLCheck>false</SDLCheck>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <GenerateMapFile>true</GenerateMapFile>
+      <MapFileName>$(OutDir)d3d9.map</MapFileName>
+      <MapExports>true</MapExports>
+      <ModuleDefinitionFile>BridgeD3D9.def</ModuleDefinitionFile>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="BridgeD3D9.cpp" />
+    <ClCompile Include="EffectInspector.cpp" />
+    <ClCompile Include="ProperShadersStateJournal.cpp" />
+    <ClCompile Include="PerformanceAdapters.cpp" />
+    <ClCompile Include="PerformanceAdapterConfig.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="BridgeD3D9.def" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="BridgeD3D9Plugin.h" />
+    <ClInclude Include="d3d9_gta_sa_api.h" />
+    <ClInclude Include="GtaSaCompatApiVersions.h" />
+    <ClInclude Include="ProperShadersBatchPolicy.h" />
+    <ClInclude Include="ProperShadersEffectBindingCache.h" />
+    <ClInclude Include="ProperShadersPatchValidation.h" />
+    <ClInclude Include="ProperShadersStateJournal.h" />
+    <ClInclude Include="BridgePerformanceProviderV1.h" />
+    <ClInclude Include="PerformanceAdapters.h" />
+    <ClInclude Include="PerformanceAdapterConfig.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

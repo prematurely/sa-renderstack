@@ -1,0 +1,5 @@
+LIBRARY BridgeVulkanPassProbe
+EXPORTS
+    BridgeD3D9_PluginInit2
+    BridgeD3D9_PluginShutdown
+

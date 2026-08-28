@@ -1,0 +1,313 @@
+{
+  "sourceLabel": "BridgeD3D9-audited-20260829",
+  "files": [
+    {
+      "path": "BridgeD3D9.cpp",
+      "sourceSha256": "AAF27275CFAFAACEC0A41F5175E2CC9F917027FF04ECB27530ECC71F4E27508E",
+      "sha256": "A0E68B198E7940F8EB15B3942D96BE8BCBA46EEDA126628864C2D5DA2D88338C",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "BridgeD3D9.def",
+      "sourceSha256": "25B8D467061CB6259D12459463C96374416C165E052843BEEFB692F01B5768E0",
+      "sha256": "25B8D467061CB6259D12459463C96374416C165E052843BEEFB692F01B5768E0",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "BridgeD3D9.ini",
+      "sourceSha256": "231D338C08E21206244E7CCFF78BAABF71CDDEB507A8191E576BD43BDB801A99",
+      "sha256": "231D338C08E21206244E7CCFF78BAABF71CDDEB507A8191E576BD43BDB801A99",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "BridgeD3D9.vcxproj",
+      "sourceSha256": "2B60ACBA7070A93A561A32D55360EA643408582FCD7A5C57D14F5DCF910D7F8A",
+      "sha256": "30514555A38C3C404B5715ED44D8EA8C2F761242B32404CB70F22AF48F6162D6",
+      "normalization": "utf8-bomless-crlf",
+      "transformations": [
+        {
+          "kind": "build-include-relocation",
+          "from": "$(ProjectDir)..\\dxvk\\dxvk-3.0.1-bridge\\include\\vulkan\\include",
+          "to": "$(ProjectDir)..\\..\\..\\backend\\dxvk\\include\\vulkan\\include;$(D3DX9IncludeDir)"
+        }
+      ]
+    },
+    {
+      "path": "BridgeD3D9BackendTrace.vcxproj",
+      "sourceSha256": "52607DA120CDA77D8D1DAB0A7BE3B0E242D15B710635BFC35259F61D6BF3976F",
+      "sha256": "5B709F41BF50F492FF28E9F4700A090D5743A10C67F51873A8E284CDF17EE0AF",
+      "normalization": "utf8-bomless-crlf",
+      "transformations": [
+        {
+          "kind": "build-include-relocation",
+          "from": "$(ProjectDir)..\\dxvk\\dxvk-3.0.1-bridge\\include\\vulkan\\include",
+          "to": "$(ProjectDir)..\\..\\..\\backend\\dxvk\\include\\vulkan\\include;$(D3DX9IncludeDir)"
+        }
+      ]
+    },
+    {
+      "path": "BridgeD3D9Plugin.h",
+      "sourceSha256": "99A2CEAC01AD6303DA30F11072D06C5D6B5C11A019B7113985D7955EE20A7724",
+      "sha256": "99A2CEAC01AD6303DA30F11072D06C5D6B5C11A019B7113985D7955EE20A7724",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "BridgePerformanceProviderV1.h",
+      "sourceSha256": "E48B18037F5C2C8E5F213B2EFA4139BB725F0C2C300B51625FE42FD8DC8528DF",
+      "sha256": "E48B18037F5C2C8E5F213B2EFA4139BB725F0C2C300B51625FE42FD8DC8528DF",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "d3d9_gta_sa_api.h",
+      "sourceSha256": "6EBB0798EE196401395243EA0F6C211B57AD8DFCA18A272E897FA2447D7DB5A9",
+      "sha256": "6EBB0798EE196401395243EA0F6C211B57AD8DFCA18A272E897FA2447D7DB5A9",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "EffectInspector.cpp",
+      "sourceSha256": "3FE85EB2AA1F2627418EB9855740D0DD7E9C503493F870D7B14D5C36DED7DE6E",
+      "sha256": "3FE85EB2AA1F2627418EB9855740D0DD7E9C503493F870D7B14D5C36DED7DE6E",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "EffectInspector.h",
+      "sourceSha256": "A03BE20227F37EA6BBCE1AEFC4CFC8637819236DFE2663B90BD7A4219F811569",
+      "sha256": "F9EA9179A328D1ABCB636F4401B837E893BF3B9CB88AE64290CE99BEAE4DAFCC",
+      "normalization": "utf8-bomless-lf",
+      "transformations": [
+        {
+          "kind": "dxsdk-header-relocation",
+          "from": "#include \"../plugin-sdk/shared/dxsdk/d3dx9effect.h\"",
+          "to": "#include <d3dx9effect.h>"
+        }
+      ]
+    },
+    {
+      "path": "GtaSaCompatApiVersions.h",
+      "sourceSha256": "03EBC6BD21BFE44EBE049C35201CA96E4C04ACC1DC1BD10DB1507AFC491DB05A",
+      "sha256": "03EBC6BD21BFE44EBE049C35201CA96E4C04ACC1DC1BD10DB1507AFC491DB05A",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "PerformanceAdapterConfig.cpp",
+      "sourceSha256": "B2625AAD2B442CABA1F380734D602FFACD88C37B2EB88FE8955625ACD3036F0B",
+      "sha256": "B2625AAD2B442CABA1F380734D602FFACD88C37B2EB88FE8955625ACD3036F0B",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "PerformanceAdapterConfig.h",
+      "sourceSha256": "B688724CF809B8BE557D430123A04E81EC8A9B904C214EFDF4164EF78E86E95C",
+      "sha256": "B688724CF809B8BE557D430123A04E81EC8A9B904C214EFDF4164EF78E86E95C",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "PerformanceAdapters.cpp",
+      "sourceSha256": "BEBD804B3520CC3E56024058D063FC606F70D4D082C9A4C1B8F6BFA062C77A9E",
+      "sha256": "BEBD804B3520CC3E56024058D063FC606F70D4D082C9A4C1B8F6BFA062C77A9E",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "PerformanceAdapters.h",
+      "sourceSha256": "440EBD1E0BF4B43E9DCC2637CE3B322A2303DA4B2A0C44F65DC1C372F60A24B2",
+      "sha256": "440EBD1E0BF4B43E9DCC2637CE3B322A2303DA4B2A0C44F65DC1C372F60A24B2",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "POSTFX_CHAIN.md",
+      "sourceSha256": "E65CAFDBBE1428D343B20112780923561C61B196F4A73ACF62C5B6FFB6B12859",
+      "sha256": "E65CAFDBBE1428D343B20112780923561C61B196F4A73ACF62C5B6FFB6B12859",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "ProperShadersBatchPolicy.h",
+      "sourceSha256": "5F4CEE210333C6391BF9EB3E6D4C3131FE9E59F00631DCDE857BD744E46B984F",
+      "sha256": "5F4CEE210333C6391BF9EB3E6D4C3131FE9E59F00631DCDE857BD744E46B984F",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "ProperShadersEffectBindingCache.h",
+      "sourceSha256": "E2D1B93284693FBA3F6017661E123A434E7724C973835D20006A6920AFC9F85E",
+      "sha256": "E2D1B93284693FBA3F6017661E123A434E7724C973835D20006A6920AFC9F85E",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "ProperShadersPatchValidation.h",
+      "sourceSha256": "DBB17167CBC5D1C973E64D81C31719CE5D1E92B1631735FF09E6E1E46C51E97C",
+      "sha256": "DBB17167CBC5D1C973E64D81C31719CE5D1E92B1631735FF09E6E1E46C51E97C",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "ProperShadersStateJournal.cpp",
+      "sourceSha256": "8F4A79F9EA89DAD3D8DD0AA083EBC446112617F33518747612C62CCB5519F39C",
+      "sha256": "8F4A79F9EA89DAD3D8DD0AA083EBC446112617F33518747612C62CCB5519F39C",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "ProperShadersStateJournal.h",
+      "sourceSha256": "3498FFE54CA8C8FADB3333F3B1513A052392E5113E95CFE2ADE5477985B62449",
+      "sha256": "3498FFE54CA8C8FADB3333F3B1513A052392E5113E95CFE2ADE5477985B62449",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "tests/BridgeD3D9.test.ini",
+      "sourceSha256": "47D59540E27E2874ECD12B1DBE6ADA31108B618682AB642F8BDA125B6E201EBA",
+      "sha256": "47D59540E27E2874ECD12B1DBE6ADA31108B618682AB642F8BDA125B6E201EBA",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "tests/BridgeLegacyPluginProbe.cpp",
+      "sourceSha256": "722C9355B88D9B78CC10A1F5935D78B142DE2BD71EE87B1159ABE37610BD93F5",
+      "sha256": "722C9355B88D9B78CC10A1F5935D78B142DE2BD71EE87B1159ABE37610BD93F5",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "tests/BridgeLegacyPluginProbe.def",
+      "sourceSha256": "38FFBFB8B43F2408C21EEFFA5B79650F2D4F9F6A1CE4F68B17973BFE98768ACF",
+      "sha256": "38FFBFB8B43F2408C21EEFFA5B79650F2D4F9F6A1CE4F68B17973BFE98768ACF",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "tests/BridgeLegacyPluginProbe.vcxproj",
+      "sourceSha256": "26AEEF6C991305437BA13EC6BD09DF56A33AFACA59A040F4BA01294BB9C3A403",
+      "sha256": "8CFC6EF0DEDE3AE853D3D1E8861D89097EFD6C85ADCCB4425EE70F9246EC84F7",
+      "normalization": "utf8-bomless-crlf",
+      "transformations": [
+        {
+          "kind": "build-include-relocation",
+          "from": "$(ProjectDir)..\\..\\dxvk\\dxvk-3.0.1-bridge\\include\\vulkan\\include",
+          "to": "$(ProjectDir)..\\..\\..\\..\\backend\\dxvk\\include\\vulkan\\include"
+        }
+      ]
+    },
+    {
+      "path": "tests/BridgeVulkanPassProbe.cpp",
+      "sourceSha256": "39CF43318FAE1B2F810A837019D847EBD80627FE2BEF2EB26AC7F8F43430F649",
+      "sha256": "39CF43318FAE1B2F810A837019D847EBD80627FE2BEF2EB26AC7F8F43430F649",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "tests/BridgeVulkanPassProbe.def",
+      "sourceSha256": "19391BB27471EE9BF7A33E19DBC008F84E627B48CD1620290AABE3CDA76EF876",
+      "sha256": "19391BB27471EE9BF7A33E19DBC008F84E627B48CD1620290AABE3CDA76EF876",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "tests/BridgeVulkanPassProbe.vcxproj",
+      "sourceSha256": "1B9E7B508AC8278D561814C51FA8EAAB226E32F0F6D4FE25108FC4C265B11012",
+      "sha256": "323F428D894FC26A39D394276F0146EEC01C5FCF719C1DD1BFD0E8B3BA04E73A",
+      "normalization": "utf8-bomless-crlf",
+      "transformations": [
+        {
+          "kind": "build-include-relocation",
+          "from": "$(ProjectDir)..\\..\\dxvk\\dxvk-3.0.1-bridge\\include\\vulkan\\include",
+          "to": "$(ProjectDir)..\\..\\..\\..\\backend\\dxvk\\include\\vulkan\\include"
+        }
+      ]
+    },
+    {
+      "path": "tests/GtaSaCompatApi3Smoke.cpp",
+      "sourceSha256": "AFF96C658187605AF70DAAB29DB6532F9F59205F8D9F164E3774DE5E5FB7D356",
+      "sha256": "AFF96C658187605AF70DAAB29DB6532F9F59205F8D9F164E3774DE5E5FB7D356",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "tests/GtaSaCompatApi3Smoke.vcxproj",
+      "sourceSha256": "8B513E56B5A4578868023F46BBBFEC3B0E47A6F4AEA0271ABFE2D4AF75145D95",
+      "sha256": "BAA891F40DC83CFCF134D83CFCB7D7B4B073C3FB1AC0348A11214E3AFF2426E1",
+      "normalization": "utf8-bomless-crlf",
+      "transformations": [
+        {
+          "kind": "build-include-relocation",
+          "from": "$(ProjectDir)..\\..\\dxvk\\dxvk-3.0.1-bridge\\include\\vulkan\\include",
+          "to": "$(ProjectDir)..\\..\\..\\..\\backend\\dxvk\\include\\vulkan\\include"
+        }
+      ]
+    },
+    {
+      "path": "tests/PerformanceAdapterConfigTests.cpp",
+      "sourceSha256": "5EB765B9471E9BE4C73C2CAD46A34B00189D3C54BCC2C415B68733C968B862CB",
+      "sha256": "5EB765B9471E9BE4C73C2CAD46A34B00189D3C54BCC2C415B68733C968B862CB",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "tests/PerformanceAdapterConfigTests.vcxproj",
+      "sourceSha256": "8194813D77623466965A9CF9CF126171FC9E65C6AE2AC7B582BE835E8A52CDC8",
+      "sha256": "3B055B72D36467CED1BC4A0FA20DA42F4B044F70D8974EBC94F16E0CF64AB606",
+      "normalization": "utf8-bomless-crlf",
+      "transformations": []
+    },
+    {
+      "path": "tests/PerformanceAdaptersTests.cpp",
+      "sourceSha256": "22DFAD687F85EDED8F7F2041D24527D6AC965CE7DAB4178381D02EDD97F382E3",
+      "sha256": "22DFAD687F85EDED8F7F2041D24527D6AC965CE7DAB4178381D02EDD97F382E3",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "tests/PerformanceAdaptersTests.vcxproj",
+      "sourceSha256": "113A977BB13884E6AF1B395790A00BEA4E5F2F08FF8857E67E79ED5360C481A3",
+      "sha256": "440F98265A2F734D6C369462FE990A16DBC0D100DD12D44BCB983E56981EFCED",
+      "normalization": "utf8-bomless-crlf",
+      "transformations": []
+    },
+    {
+      "path": "tests/ProperShadersBatchPolicyTests.cpp",
+      "sourceSha256": "0843AC9C3DF2584E32DDC5FCF9393A8D5580813E613D410E46BCA49DDC6D3983",
+      "sha256": "0843AC9C3DF2584E32DDC5FCF9393A8D5580813E613D410E46BCA49DDC6D3983",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "tests/ProperShadersBatchPolicyTests.vcxproj",
+      "sourceSha256": "2F4D0D38FD74EAF05CBAE03EE40FFB68BD3BEE2BC0E1888FB787EC4E06F6A693",
+      "sha256": "BCC1FA6185F8F14618C070AA9FE09F130D8CF69113ADDB198708C35D370A70D6",
+      "normalization": "utf8-bomless-crlf",
+      "transformations": []
+    },
+    {
+      "path": "tests/ProperShadersStateJournalTests.cpp",
+      "sourceSha256": "B3C521012579E3837B18750C43ACF3F4C7EB8B5EE8BE761831D2FB4DE89512D1",
+      "sha256": "B3C521012579E3837B18750C43ACF3F4C7EB8B5EE8BE761831D2FB4DE89512D1",
+      "normalization": "utf8-bomless-lf",
+      "transformations": []
+    },
+    {
+      "path": "tests/ProperShadersStateJournalTests.vcxproj",
+      "sourceSha256": "9E406EF79C26E51541A9767635000638FFC752F2CCA3DDA51D734693182811EF",
+      "sha256": "FB9B98377D0772ECCBA97E72B3527C19262482A99859755CD670E7EFE0D8A71D",
+      "normalization": "utf8-bomless-crlf",
+      "transformations": [
+        {
+          "kind": "build-include-relocation",
+          "from": "$(ProjectDir)..\\..\\dxvk\\dxvk-3.0.1-bridge\\include\\vulkan\\include",
+          "to": "$(ProjectDir)..\\..\\..\\..\\backend\\dxvk\\include\\vulkan\\include"
+        }
+      ]
+    }
+  ]
+}
