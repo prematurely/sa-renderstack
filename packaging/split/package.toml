@@ -1,0 +1,31 @@
+[[file]]
+source = "out/build/bridge/d3d9.dll"
+destination = "d3d9.dll"
+
+[[file]]
+source = "config/SA.RenderStack.ini"
+destination = "SA.RenderStack.ini"
+
+[[file]]
+source = "config/SA.RenderStack.ini"
+destination = "scripts/BridgeD3D9.ini"
+
+[[file]]
+source = "config/dxvk.conf"
+destination = "dxvk.conf"
+
+[[file]]
+source = "out/build/dxvk-x86/src/d3d9/d3d9.dll"
+destination = "backend/dxvk-gta/d3d9.dll"
+
+[[file]]
+source = "README.md"
+destination = "docs/README.md"
+
+[[file]]
+source = "LICENSE"
+destination = "docs/LICENSE"
+
+[[file]]
+source = "backend/dxvk/LICENSE"
+destination = "docs/LICENSE-DXVK"
