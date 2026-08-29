@@ -55,7 +55,8 @@ the audited release baseline; CI may use the runner's supported Visual Studio
 
 The workflow installs Python 3.12 with `actions/setup-python`, obtains Meson
 and the D3DX headers through the existing preparation scripts, and installs
-Ninja and glslang through MSYS2. It downloads the official
+Ninja and glslang through MSYS2. The workflow uses the action's reported
+`msys2-location` output rather than assuming a fixed `C:\\msys64` path. It downloads the official
 `mstorsjo/llvm-mingw` `20260602` `msvcrt-i686` archive, verifies its SHA-256
 digest, extracts it below the workspace, and passes its `bin` directory to
 `build.ps1` and `test.ps1`.

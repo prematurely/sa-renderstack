@@ -212,8 +212,8 @@ The repository includes a custom Windows workflow at
 `.github/workflows/windows-ci.yml`. It runs on pull requests, pushes to
 `main`, and manual dispatches. The workflow bootstraps the pinned x86
 LLVM-MinGW toolchain, uses the hosted Visual Studio MSBuild installation, and
-executes the same build, test, package, and package-layout stages used by the
-local workflow.
+the action-provided MSYS2 path, and executes the same build, test, package,
+and package-layout stages used by the local workflow.
 
 Hosted CI passes the explicit `-SkipLocalBridgeEvidence` option because a
 runner does not contain the user's pre-installation GTA Bridge reference. The

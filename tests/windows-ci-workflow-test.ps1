@@ -47,6 +47,7 @@ foreach ($token in @(
         'actions/setup-python@v5',
         'microsoft/setup-msbuild@v2',
         'msys2/setup-msys2@v2',
+        'msys2-location',
         'actions/cache@v4',
         'actions/upload-artifact@v4',
         'if-no-files-found:\s*error')) {
@@ -58,6 +59,9 @@ if ($workflow -match '(?i)release-gate\.ps1|gh\s+release\s+create|softprops/acti
 }
 if ($workflow -match '(?i)D:\\GTA San Andreas|game-root|game directory') {
     throw 'Windows CI workflow refers to the local GTA game installation'
+}
+if ($workflow.Contains('C:\\msys64\\mingw64\\bin', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Windows CI workflow must use the MSYS2 action output path instead of a fixed C:\\msys64 path'
 }
 if ($workflow -match '(?i)out[/\\]reports[/\\]phase-1-release-gate\.md') {
     throw 'Windows CI workflow must not upload the local release-gate report'
