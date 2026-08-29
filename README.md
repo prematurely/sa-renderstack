@@ -53,8 +53,9 @@ dependencies.
 ```
 
 The archive also includes `manifest.json`, `docs\INSTALL.md`,
-`docs\README.md`, and the required project and DXVK licenses. These files do
-not participate in the D3D9 load chain.
+`docs\README.md`, `docs\LICENSE-SA-RENDERSTACK`, `docs\LICENSE-DXVK`, and
+`docs\THIRD_PARTY_NOTICES.md`. These files do not participate in the D3D9 load
+chain.
 
 ## Architecture
 
@@ -272,9 +273,12 @@ Pinned upstream and dependency commits are recorded in
 `backend/dxvk/SA_RENDERSTACK_UPSTREAM.toml` and
 `backend/dxvk/SA_RENDERSTACK_DEPENDENCIES.toml`.
 
-Project and DXVK license files are included in the runtime package. The source
-manifest records the exact source file hashes, dependency provenance, build
-options, and toolchain metadata for each generated release candidate.
+The root `LICENSE` covers only SA RenderStack-specific code. Vendored DXVK and
+its dependencies retain their own license files, indexed by
+`THIRD_PARTY_NOTICES.md` and copied into the binary package's `docs/` directory.
+The source manifest records the exact source file hashes, dependency
+provenance, build options, and toolchain metadata for each generated release
+candidate.
 
 ## Further Reading
 

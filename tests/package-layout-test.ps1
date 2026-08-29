@@ -185,8 +185,21 @@ try {
         'backend/dxvk-gta/d3d9.dll',
         'docs/README.md',
         'docs/INSTALL.md',
-        'docs/LICENSE',
+        'docs/LICENSE-SA-RENDERSTACK',
+        'docs/THIRD_PARTY_NOTICES.md',
         'docs/LICENSE-DXVK',
+        'docs/LICENSE-MINGW-W64-HEADERS',
+        'docs/LICENSE-VULKAN-HEADERS',
+        'docs/LICENSE-SPIRV-HEADERS',
+        'docs/LICENSE-SPIRV-MIT',
+        'docs/LICENSE-SPIRV-CC-BY-4.0',
+        'docs/LICENSE-OPENVR',
+        'docs/LICENSE-LIBDISPLAY-INFO',
+        'docs/LICENSE-DXBC-SPIRV',
+        'docs/LICENSE-SPIRV-HEADERS-NESTED',
+        'docs/LICENSE-MINGW-W64-RUNTIME',
+        'docs/LICENSE-WINPTHREADS',
+        'docs/LICENSE-WINSTORECOMPAT',
         'manifest.json'
     )
     foreach ($relative in $requiredSplit) {
@@ -256,6 +269,27 @@ try {
 
     Assert-File -Path (Join-Path $sdkRoot 'include/sa_renderstack/backend_api.h') `
         -Description 'SDK package header'
+    foreach ($relative in @(
+            'docs/README.md',
+            'docs/INSTALL.md',
+            'docs/LICENSE-SA-RENDERSTACK',
+            'docs/THIRD_PARTY_NOTICES.md',
+            'docs/LICENSE-DXVK',
+            'docs/LICENSE-MINGW-W64-HEADERS',
+            'docs/LICENSE-VULKAN-HEADERS',
+            'docs/LICENSE-SPIRV-HEADERS',
+            'docs/LICENSE-SPIRV-MIT',
+            'docs/LICENSE-SPIRV-CC-BY-4.0',
+            'docs/LICENSE-OPENVR',
+            'docs/LICENSE-LIBDISPLAY-INFO',
+            'docs/LICENSE-DXBC-SPIRV',
+            'docs/LICENSE-SPIRV-HEADERS-NESTED',
+            'docs/LICENSE-MINGW-W64-RUNTIME',
+            'docs/LICENSE-WINPTHREADS',
+            'docs/LICENSE-WINSTORECOMPAT')) {
+        Assert-File -Path (Join-Path $sdkRoot ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))) `
+            -Description 'SDK license/notice file'
+    }
     Assert-File -Path (Join-Path $symbolsRoot 'bridge/d3d9.pdb') -Description 'Bridge symbols'
     Assert-File -Path (Join-Path $symbolsRoot 'bridge/d3d9.map') -Description 'Bridge map symbols'
 

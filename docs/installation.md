@@ -39,9 +39,10 @@ The expected runtime layout is:
   scripts\BridgeD3D9.ini
 ```
 
-The package also contains `docs\INSTALL.md`, `docs\README.md`, the project
-license, the DXVK license, and `manifest.json`. The SDK and symbols archives
-are for development and diagnosis; they are not needed in the game root.
+The package also contains `docs\INSTALL.md`, `docs\README.md`, the
+SA RenderStack license, the DXVK license, third-party notices, and
+`manifest.json`. The SDK and symbols archives are for development and
+diagnosis; they are not needed in the game root.
 
 ## First Launch
 

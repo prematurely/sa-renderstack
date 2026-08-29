@@ -28,8 +28,60 @@ destination = "docs/INSTALL.md"
 
 [[file]]
 source = "LICENSE"
-destination = "docs/LICENSE"
+destination = "docs/LICENSE-SA-RENDERSTACK"
+
+[[file]]
+source = "THIRD_PARTY_NOTICES.md"
+destination = "docs/THIRD_PARTY_NOTICES.md"
 
 [[file]]
 source = "backend/dxvk/LICENSE"
 destination = "docs/LICENSE-DXVK"
+
+[[file]]
+source = "backend/dxvk/include/native/directx/COPYING.MinGW-w64.txt"
+destination = "docs/LICENSE-MINGW-W64-HEADERS"
+
+[[file]]
+source = "backend/dxvk/include/vulkan/LICENSE.md"
+destination = "docs/LICENSE-VULKAN-HEADERS"
+
+[[file]]
+source = "backend/dxvk/include/spirv/LICENSE"
+destination = "docs/LICENSE-SPIRV-HEADERS"
+
+[[file]]
+source = "backend/dxvk/include/spirv/LICENSES/MIT.txt"
+destination = "docs/LICENSE-SPIRV-MIT"
+
+[[file]]
+source = "backend/dxvk/include/spirv/LICENSES/CC-BY-4.0.txt"
+destination = "docs/LICENSE-SPIRV-CC-BY-4.0"
+
+[[file]]
+source = "backend/dxvk/include/openvr/LICENSE"
+destination = "docs/LICENSE-OPENVR"
+
+[[file]]
+source = "backend/dxvk/subprojects/libdisplay-info/LICENSE"
+destination = "docs/LICENSE-LIBDISPLAY-INFO"
+
+[[file]]
+source = "backend/dxvk/subprojects/dxbc-spirv/LICENSE"
+destination = "docs/LICENSE-DXBC-SPIRV"
+
+[[file]]
+source = "backend/dxvk/subprojects/dxbc-spirv/submodules/spirv_headers/LICENSE"
+destination = "docs/LICENSE-SPIRV-HEADERS-NESTED"
+
+[[file]]
+source = "third_party/licenses/mingw-w64/COPYING.MinGW-w64-runtime.txt"
+destination = "docs/LICENSE-MINGW-W64-RUNTIME"
+
+[[file]]
+source = "third_party/licenses/mingw-w64/COPYING.winpthreads.txt"
+destination = "docs/LICENSE-WINPTHREADS"
+
+[[file]]
+source = "third_party/licenses/mingw-w64/COPYING.winstorecompat.txt"
+destination = "docs/LICENSE-WINSTORECOMPAT"

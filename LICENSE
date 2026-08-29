@@ -1,9 +1,9 @@
-                  Copyright (c) 2017 Philip Rebohle
-                  Copyright (c) 2019 Joshua Ashton
-                  Copyright (c) 2019 Robin Kertels
-                  Copyright (c) 2023 Jeffrey Ellison
+Copyright (c) 2026 prematurely and SA RenderStack contributors
 
-                          zlib/libpng license
+SA RenderStack-specific source code in this repository is provided under the
+following zlib/libpng license. This license applies only to the
+SA RenderStack-specific files; it does not replace or relicense vendored DXVK
+or other third-party material. See THIRD_PARTY_NOTICES.md.
 
 This software is provided 'as-is', without any express or implied
 warranty. In no event will the authors be held liable for any damages

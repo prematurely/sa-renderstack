@@ -222,8 +222,22 @@ function Copy-SdkStage {
     $files = @(
         [pscustomobject]@{ Source = 'sdk/include/sa_renderstack/backend_api.h'; Destination = 'include/sa_renderstack/backend_api.h' },
         [pscustomobject]@{ Source = 'README.md'; Destination = 'docs/README.md' },
-        [pscustomobject]@{ Source = 'LICENSE'; Destination = 'docs/LICENSE' },
-        [pscustomobject]@{ Source = 'backend/dxvk/LICENSE'; Destination = 'docs/LICENSE-DXVK' }
+        [pscustomobject]@{ Source = 'docs/installation.md'; Destination = 'docs/INSTALL.md' },
+        [pscustomobject]@{ Source = 'LICENSE'; Destination = 'docs/LICENSE-SA-RENDERSTACK' },
+        [pscustomobject]@{ Source = 'THIRD_PARTY_NOTICES.md'; Destination = 'docs/THIRD_PARTY_NOTICES.md' },
+        [pscustomobject]@{ Source = 'backend/dxvk/LICENSE'; Destination = 'docs/LICENSE-DXVK' },
+        [pscustomobject]@{ Source = 'backend/dxvk/include/native/directx/COPYING.MinGW-w64.txt'; Destination = 'docs/LICENSE-MINGW-W64-HEADERS' },
+        [pscustomobject]@{ Source = 'backend/dxvk/include/vulkan/LICENSE.md'; Destination = 'docs/LICENSE-VULKAN-HEADERS' },
+        [pscustomobject]@{ Source = 'backend/dxvk/include/spirv/LICENSE'; Destination = 'docs/LICENSE-SPIRV-HEADERS' },
+        [pscustomobject]@{ Source = 'backend/dxvk/include/spirv/LICENSES/MIT.txt'; Destination = 'docs/LICENSE-SPIRV-MIT' },
+        [pscustomobject]@{ Source = 'backend/dxvk/include/spirv/LICENSES/CC-BY-4.0.txt'; Destination = 'docs/LICENSE-SPIRV-CC-BY-4.0' },
+        [pscustomobject]@{ Source = 'backend/dxvk/include/openvr/LICENSE'; Destination = 'docs/LICENSE-OPENVR' },
+        [pscustomobject]@{ Source = 'backend/dxvk/subprojects/libdisplay-info/LICENSE'; Destination = 'docs/LICENSE-LIBDISPLAY-INFO' },
+        [pscustomobject]@{ Source = 'backend/dxvk/subprojects/dxbc-spirv/LICENSE'; Destination = 'docs/LICENSE-DXBC-SPIRV' },
+        [pscustomobject]@{ Source = 'backend/dxvk/subprojects/dxbc-spirv/submodules/spirv_headers/LICENSE'; Destination = 'docs/LICENSE-SPIRV-HEADERS-NESTED' },
+        [pscustomobject]@{ Source = 'third_party/licenses/mingw-w64/COPYING.MinGW-w64-runtime.txt'; Destination = 'docs/LICENSE-MINGW-W64-RUNTIME' },
+        [pscustomobject]@{ Source = 'third_party/licenses/mingw-w64/COPYING.winpthreads.txt'; Destination = 'docs/LICENSE-WINPTHREADS' },
+        [pscustomobject]@{ Source = 'third_party/licenses/mingw-w64/COPYING.winstorecompat.txt'; Destination = 'docs/LICENSE-WINSTORECOMPAT' }
     )
     foreach ($file in $files) {
         $source = Assert-PathUnder -Path (Join-Path $Root $file.Source) -Base $Root `
@@ -345,8 +359,21 @@ try {
         'out/build/dxvk-x86/src/d3d9/d3d9.dll|backend/dxvk-gta/d3d9.dll',
         'README.md|docs/README.md',
         'docs/installation.md|docs/INSTALL.md',
-        'LICENSE|docs/LICENSE',
-        'backend/dxvk/LICENSE|docs/LICENSE-DXVK'
+        'LICENSE|docs/LICENSE-SA-RENDERSTACK',
+        'THIRD_PARTY_NOTICES.md|docs/THIRD_PARTY_NOTICES.md',
+        'backend/dxvk/LICENSE|docs/LICENSE-DXVK',
+        'backend/dxvk/include/native/directx/COPYING.MinGW-w64.txt|docs/LICENSE-MINGW-W64-HEADERS',
+        'backend/dxvk/include/vulkan/LICENSE.md|docs/LICENSE-VULKAN-HEADERS',
+        'backend/dxvk/include/spirv/LICENSE|docs/LICENSE-SPIRV-HEADERS',
+        'backend/dxvk/include/spirv/LICENSES/MIT.txt|docs/LICENSE-SPIRV-MIT',
+        'backend/dxvk/include/spirv/LICENSES/CC-BY-4.0.txt|docs/LICENSE-SPIRV-CC-BY-4.0',
+        'backend/dxvk/include/openvr/LICENSE|docs/LICENSE-OPENVR',
+        'backend/dxvk/subprojects/libdisplay-info/LICENSE|docs/LICENSE-LIBDISPLAY-INFO',
+        'backend/dxvk/subprojects/dxbc-spirv/LICENSE|docs/LICENSE-DXBC-SPIRV',
+        'backend/dxvk/subprojects/dxbc-spirv/submodules/spirv_headers/LICENSE|docs/LICENSE-SPIRV-HEADERS-NESTED',
+        'third_party/licenses/mingw-w64/COPYING.MinGW-w64-runtime.txt|docs/LICENSE-MINGW-W64-RUNTIME',
+        'third_party/licenses/mingw-w64/COPYING.winpthreads.txt|docs/LICENSE-WINPTHREADS',
+        'third_party/licenses/mingw-w64/COPYING.winstorecompat.txt|docs/LICENSE-WINSTORECOMPAT'
     )
     $actualMappings = @($mappings | ForEach-Object {
         "$(([string]$_.Source).Replace('\', '/'))|$(([string]$_.Destination).Replace('\', '/'))"
