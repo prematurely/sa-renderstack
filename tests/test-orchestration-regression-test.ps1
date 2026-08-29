@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('All', 'Help', 'Runner', 'Schema')]
+    [ValidateSet('All', 'Help', 'Runner', 'Schema', 'Gate')]
     [string]$Case = 'All'
 )
 
@@ -118,7 +118,8 @@ function Assert-Schema {
     }
     foreach ($token in @('DXVK_CONFIG_FILE', 'renderstack-gta-sa-compat-probe',
             'renderstack-stateblock-prefilter-probe', '--force', '--no-rebuild', 'intro-targets.json',
-            "'status', '--porcelain', '--untracked-files=all'")) {
+            "'status', '--porcelain', '--untracked-files=all'", 'hosted-ci-boundary-regression',
+            'SkipGpuRuntimeProbes', 'SkipEnvironmentSensitiveBridgeTests')) {
         if (-not $source.Contains($token, [StringComparison]::Ordinal)) {
             throw "Runtime orchestration token is missing: $token"
         }
@@ -136,7 +137,8 @@ function Assert-Schema {
         throw 'Test orchestration does not disable Python bytecode generation'
     }
     foreach ($token in @('$mesonTestDirectory', '-WorkingDirectory $mesonTestDirectory', 'MaxAttempts',
-            '$exportArguments', 'LlvmMingwBin', 'Reset-TestRunRoot')) {
+            '$exportArguments', 'LlvmMingwBin', 'Ninja', 'Glslang', 'Reset-TestRunRoot',
+            '$normalizedArguments = [Collections.Generic.List[string]]::new()')) {
         if (-not $source.Contains($token, [StringComparison]::Ordinal)) {
             throw "Test isolation/retry token is missing: $token"
         }
@@ -160,11 +162,52 @@ function Assert-Schema {
     Write-Output 'PASS test result and runtime orchestration schema'
 }
 
+function Assert-GateNullArguments {
+    $gateRoot = $root
+    $gateLogs = Join-Path $fixtureRoot 'gate-logs'
+    $child = Join-Path $fixtureRoot 'gate-child.ps1'
+    [IO.File]::WriteAllText($child, "Write-Output 'PASS gate child'`n")
+
+    $script:root = $gateRoot
+    $script:logsRoot = $gateLogs
+    $script:results = [Collections.Generic.List[object]]::new()
+    $script:firstExitCode = 0
+    $script:overallStatus = 'passed'
+    . (Join-Path $root 'tools/lib/process-runner.ps1')
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $root 'tools/test.ps1'), [ref]$tokens, [ref]$parseErrors)
+    foreach ($functionName in @('Get-RelativePath', 'New-TestLogPaths', 'New-Result', 'Invoke-Gate', 'Invoke-ScriptGate')) {
+        $function = $ast.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq $functionName
+            }, $true) | Select-Object -First 1
+        if ($null -eq $function) { throw "Could not load test gate function: $functionName" }
+        Invoke-Expression $function.Extent.Text
+    }
+
+    try {
+        $record = Invoke-ScriptGate -Name 'null-arguments' -ScriptPath $child `
+            -Arguments $null -Category 'regression'
+        if ($record.status -cne 'passed' -or @($record.command | Where-Object { $null -eq $_ -or $_ -eq '' }).Count -ne 0) {
+            throw 'Invoke-Gate did not normalize a null argument list into a valid command record'
+        }
+    } finally {
+        if (Test-Path -LiteralPath $gateLogs) {
+            Remove-Item -LiteralPath $gateLogs -Recurse -Force
+        }
+    }
+    Write-Output 'PASS test gate null-argument contract'
+}
+
 try {
     [IO.Directory]::CreateDirectory($fixtureRoot) | Out-Null
     if ($Case -in @('All', 'Help')) { Assert-Help }
     if ($Case -in @('All', 'Runner')) { Assert-Runner }
     if ($Case -in @('All', 'Schema')) { Assert-Schema }
+    if ($Case -in @('All', 'Gate')) { Assert-GateNullArguments }
 } finally {
     if (Test-Path -LiteralPath $fixtureRoot) {
         Remove-Item -LiteralPath $fixtureRoot -Recurse -Force

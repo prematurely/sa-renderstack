@@ -12,7 +12,9 @@ param(
     [string]$Ninja,
     [string]$Glslang,
     [switch]$AllowNonV18MsBuild,
-    [switch]$SkipLocalBridgeEvidence
+    [switch]$SkipLocalBridgeEvidence,
+    [switch]$SkipGpuRuntimeProbes,
+    [switch]$SkipEnvironmentSensitiveBridgeTests
 )
 
 if ($Help) {
@@ -22,7 +24,8 @@ Usage: test.ps1 [-Help] [-Configuration Release] [-Architecture x86]
        [-ActiveBridgeConfig <path>] [-ActiveDxvkConfig <path>]
        [-MSBuild <path>] [-Python <path>] [-LlvmMingwBin <path>]
        [-Ninja <path>] [-Glslang <path>] [-AllowNonV18MsBuild]
-       [-SkipLocalBridgeEvidence]
+       [-SkipLocalBridgeEvidence] [-SkipGpuRuntimeProbes]
+       [-SkipEnvironmentSensitiveBridgeTests]
 
 Runs the reproducible source, build, runtime, Bridge, and export gates and
 publishes out/test-results.json with durable per-test logs.
@@ -119,6 +122,14 @@ function Invoke-Gate {
         [string[]]$EnvironmentRemovals = @(),
         [ValidateRange(1, 5)] [int]$MaxAttempts = 1
     )
+    # Optional argument arrays can contain a null element when an absent switch is expanded.
+    $normalizedArguments = [Collections.Generic.List[string]]::new()
+    foreach ($argument in @($Arguments)) {
+        if ($null -ne $argument) {
+            [void]$normalizedArguments.Add([string]$argument)
+        }
+    }
+    $Arguments = $normalizedArguments.ToArray()
     $paths = New-TestLogPaths -Name $Name
     foreach ($path in $paths.Values) {
         [IO.File]::WriteAllText($path, '', [Text.UTF8Encoding]::new($false))
@@ -211,8 +222,14 @@ function Invoke-ScriptGate {
         [hashtable]$EnvironmentOverrides = @{},
         [string[]]$EnvironmentRemovals = @()
     )
+    $gateArguments = [Collections.Generic.List[string]]::new()
+    foreach ($argument in @('-NoProfile', '-File', $ScriptPath) + @($Arguments)) {
+        if ($null -ne $argument) {
+            [void]$gateArguments.Add([string]$argument)
+        }
+    }
     return Invoke-Gate -Name $Name -Category $Category -FilePath (Get-Command pwsh).Source `
-        -Arguments (@('-NoProfile', '-File', $ScriptPath) + @($Arguments)) -Required $Required `
+        -Arguments $gateArguments.ToArray() -Required $Required `
         -WorkingDirectory $WorkingDirectory `
         -EnvironmentOverrides $EnvironmentOverrides -EnvironmentRemovals $EnvironmentRemovals
 }
@@ -361,7 +378,14 @@ function Add-TargetAndRegistrationGates {
 
 function Add-RuntimeProbeGates {
     param([Parameter(Mandatory)] [string]$Backend, [Parameter(Mandatory)] [string]$CompatProbe,
-        [Parameter(Mandatory)] [string]$StateProbe)
+        [Parameter(Mandatory)] [string]$StateProbe, [switch]$SkipGpuRuntimeProbes)
+    if ($SkipGpuRuntimeProbes) {
+        [void](Add-SkippedGate -Name 'runtime-compatibility-probe' -Category 'runtime' -Required $false `
+            -Reason 'Vulkan runtime probing is unavailable on the hosted Windows runner')
+        [void](Add-SkippedGate -Name 'runtime-stateblock-prefilter-probe' -Category 'runtime' -Required $false `
+            -Reason 'Vulkan runtime probing is unavailable on the hosted Windows runner')
+        return
+    }
     $compatDir = Join-Path $runRoot 'no-dxvk.conf-compat'
     $stateDir = Join-Path $runRoot 'no-dxvk.conf-stateblock'
     foreach ($directory in @($compatDir, $stateDir)) {
@@ -379,7 +403,11 @@ function Add-RuntimeProbeGates {
 }
 
 function Add-BridgeRuntimeGates {
-    param([Parameter(Mandatory)] [string]$Backend)
+    param(
+        [Parameter(Mandatory)] [string]$Backend,
+        [switch]$SkipGpuRuntimeProbes,
+        [switch]$SkipEnvironmentSensitiveBridgeTests
+    )
     $bridgeTests = Join-Path $root 'out/build/bridge-tests'
     $runs = @(
         @{ Name = 'bridge-statejournal-local'; File = 'ProperShadersStateJournalTests.exe'; Args = @('--local', $Backend) },
@@ -389,7 +417,18 @@ function Add-BridgeRuntimeGates {
         @{ Name = 'bridge-adapters'; File = 'PerformanceAdaptersTests.exe'; Args = @() },
         @{ Name = 'bridge-api-smoke'; File = 'GtaSaCompatApi3Smoke.exe'; Args = @($Backend) }
     )
+    $gpuRuntimeNames = @('bridge-statejournal-local', 'bridge-statejournal-native', 'bridge-api-smoke')
     foreach ($run in $runs) {
+        if ($SkipGpuRuntimeProbes -and $gpuRuntimeNames -contains $run.Name) {
+            [void](Add-SkippedGate -Name $run.Name -Category 'bridge-runtime' -Required $false `
+                -Reason 'Vulkan runtime probing is unavailable on the hosted Windows runner')
+            continue
+        }
+        if ($SkipEnvironmentSensitiveBridgeTests -and $run.Name -eq 'bridge-adapter-config') {
+            [void](Add-SkippedGate -Name $run.Name -Category 'bridge-runtime' -Required $false `
+                -Reason 'Bridge config fixtures require the local game-root test environment')
+            continue
+        }
         $runDirectory = New-TestRunDirectory -Name $run.Name
         $result = Invoke-Gate -Name $run.Name -Category 'bridge-runtime' `
             -FilePath (Join-Path $bridgeTests $run.File) -Arguments $run.Args -Required $true `
@@ -440,6 +479,7 @@ try {
     $scriptsRoot = Join-Path $root 'tests'
     $layout = Invoke-ScriptGate -Name 'repository-layout' -ScriptPath (Join-Path $scriptsRoot 'repository-layout-test.ps1') -Category 'layout'
     [void](Invoke-ScriptGate -Name 'windows-ci-workflow' -ScriptPath (Join-Path $scriptsRoot 'windows-ci-workflow-test.ps1') -Category 'automation')
+    [void](Invoke-ScriptGate -Name 'hosted-ci-boundary-regression' -ScriptPath (Join-Path $scriptsRoot 'hosted-ci-boundary-regression-test.ps1') -Category 'automation')
     [void](Invoke-ScriptGate -Name 'package-manifest-regression' -ScriptPath (Join-Path $scriptsRoot 'package-manifest-regression-test.ps1') -Category 'packaging')
     $msbuildCompatibilityArguments = if ($AllowNonV18MsBuild) { @('-AllowNonV18MsBuild') } else { @() }
     [void](Invoke-ScriptGate -Name 'msbuild-compatibility' -ScriptPath (Join-Path $scriptsRoot 'msbuild-compatibility-regression-test.ps1') `
@@ -492,7 +532,8 @@ try {
     [void](Invoke-ScriptGate -Name 'backend-api-source' -ScriptPath (Join-Path $scriptsRoot 'backend-api-source-test.ps1') -Category 'api')
 
     $toolchain = Get-RenderStackToolchain -RepoRoot $root -Component Dxvk -MSBuildPath $MSBuild -PythonPath $Python `
-        -LlvmMingwBin $LlvmMingwBin -NinjaPath $Ninja -GlslangPath $Glslang
+        -LlvmMingwBin $LlvmMingwBin -NinjaPath $Ninja -GlslangPath $Glslang `
+        -AllowNonV18MsBuild:$AllowNonV18MsBuild
     $pythonPath = $toolchain.Python.Path
     $buildCurrent = Test-BuildIsCurrent -Toolchain $toolchain
     if (-not $buildCurrent) {
@@ -532,8 +573,11 @@ try {
 
     $compatProbe = (Get-Content -LiteralPath (Join-Path $root 'out/build/dxvk-x86/meson-info/intro-targets.json') -Raw | ConvertFrom-Json | Where-Object name -eq 'renderstack-gta-sa-compat-probe').filename[0]
     $stateProbe = (Get-Content -LiteralPath (Join-Path $root 'out/build/dxvk-x86/meson-info/intro-targets.json') -Raw | ConvertFrom-Json | Where-Object name -eq 'renderstack-stateblock-prefilter-probe').filename[0]
-    Add-RuntimeProbeGates -Backend (Get-OutputPath -RelativePath 'out/build/dxvk-x86/src/d3d9/d3d9.dll') -CompatProbe $compatProbe -StateProbe $stateProbe
-    Add-BridgeRuntimeGates -Backend (Get-OutputPath -RelativePath 'out/build/dxvk-x86/src/d3d9/d3d9.dll')
+    Add-RuntimeProbeGates -Backend (Get-OutputPath -RelativePath 'out/build/dxvk-x86/src/d3d9/d3d9.dll') -CompatProbe $compatProbe -StateProbe $stateProbe `
+        -SkipGpuRuntimeProbes:$SkipGpuRuntimeProbes
+    Add-BridgeRuntimeGates -Backend (Get-OutputPath -RelativePath 'out/build/dxvk-x86/src/d3d9/d3d9.dll') `
+        -SkipGpuRuntimeProbes:$SkipGpuRuntimeProbes `
+        -SkipEnvironmentSensitiveBridgeTests:$SkipEnvironmentSensitiveBridgeTests
 
     $exportArguments = [Collections.Generic.List[string]]::new()
     foreach ($argument in @(
@@ -546,6 +590,14 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($LlvmMingwBin)) {
         [void]$exportArguments.Add('-LlvmMingwBin')
         [void]$exportArguments.Add($LlvmMingwBin)
+    }
+    foreach ($entry in @(
+            [pscustomobject]@{ Name = '-Ninja'; Value = $Ninja },
+            [pscustomobject]@{ Name = '-Glslang'; Value = $Glslang })) {
+        if (-not [string]::IsNullOrWhiteSpace($entry.Value)) {
+            [void]$exportArguments.Add($entry.Name)
+            [void]$exportArguments.Add($entry.Value)
+        }
     }
     [void](Invoke-ScriptGate -Name 'export-verification' -ScriptPath (Join-Path $root 'tools/verify-exports.ps1') `
         -Arguments $exportArguments.ToArray() -Category 'exports')

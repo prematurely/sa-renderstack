@@ -4,6 +4,53 @@ $canonicalRelative = 'sdk/include/sa_renderstack/backend_api.h'
 $canonical = Join-Path $root $canonicalRelative
 $expectedHash = '98A18E993376E911FD7297772C2BDE6E95DA6D8AB6091E9608DDCE3694AE3F79'
 
+function Invoke-BackendSourceSearch {
+    param(
+        [Parameter(Mandatory)] [string]$Pattern,
+        [Parameter(Mandatory)] [string[]]$Paths,
+        [Parameter(Mandatory)] [string]$Filter,
+        [Parameter(Mandatory)] [bool]$ListFiles
+    )
+
+    $rg = Get-Command rg.exe -ErrorAction SilentlyContinue
+    if ($null -ne $rg) {
+        $arguments = [Collections.Generic.List[string]]::new()
+        if ($ListFiles) {
+            [void]$arguments.Add('-l')
+        } else {
+            [void]$arguments.Add('-n')
+        }
+        [void]$arguments.Add('-g')
+        [void]$arguments.Add($Filter)
+        [void]$arguments.Add('--')
+        [void]$arguments.Add($Pattern)
+        foreach ($path in $Paths) { [void]$arguments.Add($path) }
+        $lines = @(& $rg.Source @($arguments) 2>&1 | ForEach-Object { [string]$_ })
+        return [pscustomobject]@{ ExitCode = [int]$LASTEXITCODE; Lines = $lines }
+    }
+
+    $lines = [Collections.Generic.List[string]]::new()
+    foreach ($path in $Paths) {
+        $files = @(Get-ChildItem -LiteralPath $path -Filter $Filter -File -Recurse -ErrorAction Stop)
+        foreach ($file in $files) {
+            $matches = @(Select-String -LiteralPath $file.FullName -Pattern $Pattern)
+            if ($matches.Count -eq 0) { continue }
+            $relative = [IO.Path]::GetRelativePath($root, $file.FullName).Replace('\', '/')
+            if ($ListFiles) {
+                [void]$lines.Add($relative)
+                continue
+            }
+            foreach ($match in $matches) {
+                [void]$lines.Add("${relative}:$($match.LineNumber):$($match.Line)")
+            }
+        }
+    }
+    return [pscustomobject]@{
+        ExitCode = if ($lines.Count -eq 0) { 1 } else { 0 }
+        Lines = @($lines)
+    }
+}
+
 $actualHash = (Get-FileHash -LiteralPath $canonical -Algorithm SHA256).Hash
 if ($actualHash -ne $expectedHash) {
     throw "Canonical backend API hash mismatch: expected $expectedHash, got $actualHash"
@@ -48,9 +95,10 @@ if ($uuidCount -ne 7) {
 Push-Location $root
 try {
     $macroPattern = '^\s*#\s*define\s+D3D9_GTA_SA_COMPAT_API_VERSION\b'
-    $macroMatches = @(& rg -l -g '*.h' -- $macroPattern `
-        'sdk/include' 'backend/dxvk/include' 'src/bridge/legacy' 2>&1)
-    $macroExit = $LASTEXITCODE
+    $macroSearch = Invoke-BackendSourceSearch -Pattern $macroPattern `
+        -Paths @('sdk/include', 'backend/dxvk/include', 'src/bridge/legacy') -Filter '*.h' -ListFiles $true
+    $macroMatches = @($macroSearch.Lines)
+    $macroExit = $macroSearch.ExitCode
     if ($macroExit -gt 1) {
         throw "rg API-version search failed with exit ${macroExit}: $($macroMatches -join [Environment]::NewLine)"
     }
@@ -64,9 +112,10 @@ try {
     }
 
     $legacyBodyPattern = '^\s*ID3D9GtaSaCompatDevice[0-6]?\s*:\s*public\b'
-    $legacyBodyMatches = @(& rg -n -g 'd3d9_gta_sa_api.h' -- $legacyBodyPattern `
-        'backend/dxvk/include' 'src/bridge/legacy' 2>&1)
-    $legacyBodyExit = $LASTEXITCODE
+    $legacySearch = Invoke-BackendSourceSearch -Pattern $legacyBodyPattern `
+        -Paths @('backend/dxvk/include', 'src/bridge/legacy') -Filter 'd3d9_gta_sa_api.h' -ListFiles $false
+    $legacyBodyMatches = @($legacySearch.Lines)
+    $legacyBodyExit = $legacySearch.ExitCode
     if ($legacyBodyExit -gt 1) {
         throw "rg legacy interface-body search failed with exit ${legacyBodyExit}: $($legacyBodyMatches -join [Environment]::NewLine)"
     }

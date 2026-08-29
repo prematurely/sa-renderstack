@@ -42,7 +42,11 @@ foreach ($token in @(
         'tests/package-layout-test\.ps1',
         '-AllowNonV18MsBuild',
         '-SkipLocalBridgeEvidence',
+        '-SkipGpuRuntimeProbes',
+        '-SkipEnvironmentSensitiveBridgeTests',
         '-AllowMissingBridgeEvidence',
+        '-Ninja',
+        '-Glslang',
         'actions/checkout@v4',
         'actions/setup-python@v5',
         'microsoft/setup-msbuild@v2',
@@ -51,6 +55,7 @@ foreach ($token in @(
         'actions/cache@v4',
         'actions/upload-artifact@v4',
         'MSBuild.exe',
+        'fetch-depth:\s*0',
         'if-no-files-found:\s*error')) {
     Assert-Contains -Text $workflow -Pattern $token -Description "required token '$token'"
 }

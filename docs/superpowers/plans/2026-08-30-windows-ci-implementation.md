@@ -125,6 +125,29 @@
 - [x] **Step 6: Run the workflow contract test.**
   Run `pwsh -NoProfile -File tests/windows-ci-workflow-test.ps1` and verify all required tokens and forbidden-operation checks pass.
 
+### Task 3A: Hosted Failure Boundary Regression
+
+**Files:**
+- Modify: `tools/test.ps1`
+- Modify: `tools/verify-exports.ps1`
+- Modify: `tests/backend-api-source-test.ps1`
+- Create: `tests/hosted-ci-boundary-regression-test.ps1`
+- Modify: `tests/test-orchestration-regression-test.ps1`
+- Modify: `.github/workflows/windows-ci.yml`
+
+The first hosted run exposed five environment/tooling assumptions that are
+invalid on a clean runner: shallow history, unavailable Vulkan, a local Bridge
+fixture path, missing Ninja/glslang forwarding to export verification, and an
+unconditional `rg` dependency. The fixes are deliberately explicit:
+
+- [x] Use `fetch-depth: 0` for historical provenance tests.
+- [x] Add `-SkipGpuRuntimeProbes` and
+  `-SkipEnvironmentSensitiveBridgeTests`; record each skipped gate with
+  `required=false` and a reason while preserving pure required tests.
+- [x] Forward Ninja and glslang paths into `verify-exports.ps1`.
+- [x] Add a PowerShell source-search fallback when `rg.exe` is unavailable.
+- [x] Add and run `tests/hosted-ci-boundary-regression-test.ps1`.
+
 ### Task 4: Full Local Verification
 
 **Files:**

@@ -220,6 +220,17 @@ runner does not contain the user's pre-installation GTA Bridge reference. The
 two affected evidence checks are recorded as non-required skips; local runs
 and the release gate keep the original game-root checks.
 
+Hosted runners also do not provide the Vulkan device and local fixture paths
+needed by the runtime-only probes. CI therefore passes
+`-SkipGpuRuntimeProbes` and `-SkipEnvironmentSensitiveBridgeTests`; every
+skipped check is written to `out/test-results.json` with `required=false` and a
+reason. The pure Meson, ABI, source, adapter-policy, packaging, and export
+checks remain required. The workflow checks out full Git history because the
+historical provenance tests compare against pinned commits. It passes the
+action-resolved Ninja and `glslangValidator` paths through every tool-discovery
+layer, and the backend API source test has a PowerShell fallback when
+`ripgrep` is unavailable.
+
 Each run uploads commit-scoped artifacts containing the split, SDK, and
 symbols archives, the source manifest, build metadata, test results, and
 diagnostic logs. CI does not install the runtime into GTA San Andreas, does

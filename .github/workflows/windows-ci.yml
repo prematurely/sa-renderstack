@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         id: python
@@ -174,6 +176,8 @@ jobs:
             -Architecture x86 `
             -AllowNonV18MsBuild `
             -SkipLocalBridgeEvidence `
+            -SkipGpuRuntimeProbes `
+            -SkipEnvironmentSensitiveBridgeTests `
             -MSBuild '${{ steps.tools.outputs.msbuild }}' `
             -Python '${{ steps.python.outputs.python-path }}' `
             -LlvmMingwBin $env:SA_RENDERSTACK_LLVM_MINGW_BIN `

@@ -102,6 +102,28 @@ installation, ignoring stale or absent local game-root evidence. The default
 packaging path remains strict and still requires the existing Bridge evidence
 record.
 
+### Hosted runtime boundaries
+
+Hosted Windows runners are suitable for source, build, static, and packaging
+validation but are not a reliable source of the local Vulkan runtime or the
+game-root fixture layout used by every Bridge executable. Add two explicit
+`tools/test.ps1` switches:
+
+- `-SkipGpuRuntimeProbes` records the DXVK device probes and Bridge tests that
+  create a Vulkan-backed D3D9 device as non-required skips;
+- `-SkipEnvironmentSensitiveBridgeTests` records Bridge config fixture tests
+  that require the local game-root test layout as non-required skips.
+
+The default local invocation does not set either switch. A hosted run must
+show each skipped test and reason in `out/test-results.json`; an unavailable
+GPU must never be converted into a passing runtime result. The workflow passes
+both switches explicitly.
+
+The export verifier accepts explicit `-Ninja` and `-Glslang` paths and the test
+orchestrator forwards them. Source-only checks must not require `rg`; the
+backend API source test uses `Get-Command rg.exe` when available and a
+`Select-String` fallback otherwise.
+
 ## Artifacts
 
 On success, upload these paths with `actions/upload-artifact`:
@@ -134,7 +156,13 @@ Add `tests/windows-ci-workflow-test.ps1` as a static contract test. It checks:
   upload path outside `out/`;
 - the workflow passes `-SkipLocalBridgeEvidence` to avoid requiring a local
   GTA installation;
+- the workflow passes the explicit GPU and environment-sensitive test boundary
+  switches and checks out full history with `fetch-depth: 0`;
 - required artifact upload entries use `if-no-files-found: error`.
+
+`tests/hosted-ci-boundary-regression-test.ps1` covers the switch forwarding,
+export-tool forwarding, full-history checkout, and no-`rg` source-search
+fallback contracts.
 
 Run the contract test locally before and after implementation. Add it to the
 normal PowerShell test orchestration so future workflow edits are covered by
@@ -161,8 +189,9 @@ The change is accepted when:
 1. The workflow contract test passes locally.
 2. The normal source/test orchestration passes locally.
 3. A GitHub Actions run can bootstrap the pinned x86 toolchain, build Bridge
-   and DXVK, run the required tests, package the three archives and source
-   manifest, and upload them.
+   and DXVK, run the required tests while explicitly reporting any hosted
+   runtime skips, package the three archives and source manifest, and upload
+   them.
 4. The workflow never runs the local game-root release gate or creates a
    GitHub Release.
 5. The local release gate behavior remains unchanged when invoked without the

@@ -4,13 +4,16 @@ param(
     [ValidateSet('x86')] [string]$Architecture = 'x86',
     [string]$BridgePath,
     [string]$DxvkPath,
-    [string]$LlvmMingwBin
+    [string]$LlvmMingwBin,
+    [string]$Ninja,
+    [string]$Glslang
 )
 
 if ($Help) {
     @'
 Usage: verify-exports.ps1 [-Help] [-Configuration Release] [-Architecture x86]
        [-BridgePath <path>] [-DxvkPath <path>] [-LlvmMingwBin <path>]
+       [-Ninja <path>] [-Glslang <path>]
 
 Verifies the PE32/x86 Bridge and merged DXVK export sets and publishes an
 atomic report to out/reports/task-6/exports.json.
@@ -121,7 +124,8 @@ function Verify-ExportFile {
     }
 }
 
-$toolchain = Get-RenderStackToolchain -RepoRoot $root -Component Dxvk -LlvmMingwBin $LlvmMingwBin
+$toolchain = Get-RenderStackToolchain -RepoRoot $root -Component Dxvk -LlvmMingwBin $LlvmMingwBin `
+    -NinjaPath $Ninja -GlslangPath $Glslang
 $report = [ordered]@{
     schemaVersion = 1
     repositoryCommit = ((Invoke-RenderStackProcess -FilePath (Get-Command git.exe).Source -ArgumentList @('rev-parse', 'HEAD') `
