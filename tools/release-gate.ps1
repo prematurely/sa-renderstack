@@ -100,7 +100,8 @@ function Invoke-ReleaseProcess {
             -StandardErrorLogPath $paths.stderr -CombinedLogPath $paths.combined -Label $Name
         $stopwatch.Stop()
         $status = if ($result.ExitCode -eq 0) { 'PASS' } else { 'FAIL' }
-        Add-Step -Name $Name -Status $status -Details (if ($status -eq 'PASS') { 'Command exited successfully' } else { 'Command failed' }) `
+        $commandDetails = if ($status -eq 'PASS') { 'Command exited successfully' } else { 'Command failed' }
+        Add-Step -Name $Name -Status $status -Details $commandDetails `
             -Command $result.Command -LogPath (Get-RelativePath -Path $paths.combined) `
             -ExitCode $result.ExitCode -DurationMs $stopwatch.Elapsed.TotalMilliseconds
         return $result
@@ -287,7 +288,8 @@ try {
     }
 } finally {
     try {
-        Write-ReleaseReport -Verdict (if ($overallStatus -eq 'passed') { 'PASS' } else { 'FAIL' })
+        $releaseVerdict = if ($overallStatus -eq 'passed') { 'PASS' } else { 'FAIL' }
+        Write-ReleaseReport -Verdict $releaseVerdict
     } catch {
         if ($firstExitCode -eq 0) { $firstExitCode = 1 }
         $overallStatus = 'failed'
