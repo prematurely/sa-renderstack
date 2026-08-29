@@ -77,7 +77,7 @@ Add an explicit `-AllowNonV18MsBuild` switch to `tools/build.ps1` and
 `tools/test.ps1`. Pass it through `Get-RenderStackToolchain` to
 `Find-RenderStackMSBuild`. When the switch is absent, existing Visual Studio 18
 validation is unchanged. When present, discovery accepts the canonical
-canonical HostX64 MSBuild executable from a Visual Studio 17 or 18 installation and
+HostX64 MSBuild executable from a Visual Studio 17 or 18 installation and
 still records its exact product/version information. The switch is for
 hosted CI only and is never used by `tools/release-gate.ps1`.
 
@@ -88,6 +88,13 @@ Add an explicit `-SkipLocalBridgeEvidence` switch to `tools/test.ps1`. When
 used by hosted CI it records the two game-root Bridge evidence checks as
 optional skips because the runner has no user's GTA installation. Without the
 switch, local test behavior remains unchanged.
+
+Add an explicit `-AllowMissingBridgeEvidence` switch to `tools/package.ps1`
+and `tools/write-manifest.ps1`. In hosted CI this derives current Bridge
+toolchain evidence from `out/build-metadata.json` and the selected MSVC
+installation, ignoring stale or absent local game-root evidence. The default
+packaging path remains strict and still requires the existing Bridge evidence
+record.
 
 ## Artifacts
 

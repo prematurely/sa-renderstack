@@ -440,6 +440,7 @@ try {
     $scriptsRoot = Join-Path $root 'tests'
     $layout = Invoke-ScriptGate -Name 'repository-layout' -ScriptPath (Join-Path $scriptsRoot 'repository-layout-test.ps1') -Category 'layout'
     [void](Invoke-ScriptGate -Name 'windows-ci-workflow' -ScriptPath (Join-Path $scriptsRoot 'windows-ci-workflow-test.ps1') -Category 'automation')
+    [void](Invoke-ScriptGate -Name 'package-manifest-regression' -ScriptPath (Join-Path $scriptsRoot 'package-manifest-regression-test.ps1') -Category 'packaging')
     $msbuildCompatibilityArguments = if ($AllowNonV18MsBuild) { @('-AllowNonV18MsBuild') } else { @() }
     [void](Invoke-ScriptGate -Name 'msbuild-compatibility' -ScriptPath (Join-Path $scriptsRoot 'msbuild-compatibility-regression-test.ps1') `
         -Arguments $msbuildCompatibilityArguments -Category 'build')

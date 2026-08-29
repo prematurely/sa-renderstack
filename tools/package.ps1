@@ -2,7 +2,8 @@ param(
     [switch]$Help,
     [string]$Version = '0.1.0-alpha.1',
     [string]$Configuration = 'Release',
-    [switch]$NoArchive
+    [switch]$NoArchive,
+    [switch]$AllowMissingBridgeEvidence
 )
 
 $env:GIT_CONFIG_GLOBAL = 'NUL'
@@ -11,6 +12,7 @@ if ($Help) {
     @'
 Usage: pwsh -NoProfile -File tools/package.ps1 [-Help]
        [-Version 0.1.0-alpha.1] [-Configuration Release] [-NoArchive]
+       [-AllowMissingBridgeEvidence]
 
 Builds split, SDK, and symbols staging under out/stage and writes release
 manifests under out/packages. Archives are created unless -NoArchive is set.
@@ -389,7 +391,8 @@ try {
     $sourceManifestPath = Join-Path $packagesRoot "SA-RenderStack-v$Version-source-manifest.json"
     $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
     $manifestOutput = @(& $pwsh -NoProfile -File $manifestScript -Version $Version `
-        -Configuration $Configuration -StagePath $splitRoot -SourceManifestPath $sourceManifestPath 2>&1)
+        -Configuration $Configuration -StagePath $splitRoot -SourceManifestPath $sourceManifestPath `
+        -AllowMissingBridgeEvidence:$AllowMissingBridgeEvidence 2>&1)
     $manifestExitCode = $LASTEXITCODE
     if ($manifestExitCode -ne 0) {
         throw "Manifest writer failed with exit $manifestExitCode`n$($manifestOutput -join [Environment]::NewLine)"

@@ -177,7 +177,8 @@ jobs:
         run: |
           pwsh -NoProfile -File tools/package.ps1 `
             -Version '${{ steps.version.outputs.value }}' `
-            -Configuration Release
+            -Configuration Release `
+            -AllowMissingBridgeEvidence
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify package layout

@@ -83,6 +83,25 @@
 - [x] **Step 3: Verify both modes.**
   Run `tools/test.ps1` with the switch after the local alpha installation and verify it no longer expects the old game-root Bridge hash; run the existing local evidence test separately where its reference is available.
 
+### Task 2B: Hosted Package Evidence Boundary
+
+**Files:**
+- Modify: `tools/package.ps1`
+- Modify: `tools/write-manifest.ps1`
+- Create: `tests/package-manifest-regression-test.ps1`
+- Modify: `.github/workflows/windows-ci.yml`
+
+**Interfaces:**
+- Consumes: current Bridge build metadata and the strict local Bridge evidence path.
+- Produces: `-AllowMissingBridgeEvidence`, which derives current MSVC toolchain evidence for hosted packaging while preserving strict local packaging by default.
+
+- [x] **Step 1: Require the package evidence switch in the workflow contract.**
+  The workflow contract test requires `-AllowMissingBridgeEvidence` in the package invocation.
+- [x] **Step 2: Implement and test the split behavior.**
+  The package scripts expose the switch. In CI mode, the manifest writer derives the candidate hash, toolset directory, and compiler version from current build metadata and the MSVC installation; in default mode, it requires the existing evidence JSON.
+- [x] **Step 3: Run the focused package-manifest test.**
+  `pwsh -NoProfile -File tests/package-manifest-regression-test.ps1` passes its help, forwarding, and strict/default contract checks.
+
 ### Task 3: Hosted Windows Workflow
 
 **Files:**

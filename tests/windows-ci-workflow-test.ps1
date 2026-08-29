@@ -42,6 +42,7 @@ foreach ($token in @(
         'tests/package-layout-test\.ps1',
         '-AllowNonV18MsBuild',
         '-SkipLocalBridgeEvidence',
+        '-AllowMissingBridgeEvidence',
         'actions/checkout@v4',
         'actions/setup-python@v5',
         'microsoft/setup-msbuild@v2',

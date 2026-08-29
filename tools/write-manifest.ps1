@@ -1,9 +1,25 @@
 param(
+    [switch]$Help,
     [string]$Version = '0.1.0-alpha.1',
     [string]$Configuration = 'Release',
     [string]$StagePath,
-    [string]$SourceManifestPath
+    [string]$SourceManifestPath,
+    [switch]$AllowMissingBridgeEvidence
 )
+
+if ($Help) {
+    @'
+Usage: pwsh -NoProfile -File tools/write-manifest.ps1 [-Help]
+       [-Version 0.1.0-alpha.1] [-Configuration Release]
+       [-StagePath <path>] [-SourceManifestPath <path>]
+       [-AllowMissingBridgeEvidence]
+
+Writes the split and source manifests. The CI-only evidence switch derives
+Bridge toolchain evidence from the current build metadata when no local GTA
+reference evidence is available.
+'@ | Write-Output
+    exit 0
+}
 
 $env:GIT_CONFIG_GLOBAL = 'NUL'
 $ErrorActionPreference = 'Stop'
@@ -182,6 +198,63 @@ function Get-FileRecord {
         path = [IO.Path]::GetRelativePath($Base, $safePath.FullName).Replace('\', '/')
         size = [long]$safePath.Length
         sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $safePath.FullName).Hash.ToUpperInvariant()
+    }
+}
+
+function Get-BridgeEvidenceFromBuildMetadata {
+    param(
+        [Parameter(Mandatory)] [object]$Metadata,
+        [Parameter(Mandatory)] [object]$BridgeOutput
+    )
+
+    if ($null -eq $Metadata.tools -or $null -eq $Metadata.tools.msbuild) {
+        throw 'Build metadata does not contain MSBuild information for CI Bridge evidence'
+    }
+    $installationPath = [string]$Metadata.tools.msbuild.InstallationPath
+    if ([string]::IsNullOrWhiteSpace($installationPath)) {
+        throw 'Build metadata MSBuild InstallationPath is empty'
+    }
+    $vcToolsRoot = Assert-PathUnder -Path (Join-Path $installationPath 'VC/Tools/MSVC') `
+        -Base $installationPath -Description 'MSVC toolset root'
+    if (-not (Test-Path -LiteralPath $vcToolsRoot -PathType Container)) {
+        throw "MSVC toolset root is missing: $vcToolsRoot"
+    }
+
+    $compilerCandidates = @(Get-ChildItem -LiteralPath $vcToolsRoot -Directory -Force |
+        Sort-Object Name -Descending | ForEach-Object {
+            $candidate = Join-Path $_.FullName 'bin/HostX64/x86/cl.exe'
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                Get-Item -LiteralPath $candidate -Force
+            }
+        })
+    if ($compilerCandidates.Count -eq 0) {
+        throw "No HostX64/x86 MSVC compiler found below: $vcToolsRoot"
+    }
+    $compiler = $compilerCandidates[0]
+    $compilerVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($compiler.FullName).FileVersion
+    if ([string]::IsNullOrWhiteSpace($compilerVersion)) {
+        throw "MSVC compiler version is empty: $($compiler.FullName)"
+    }
+    $toolsetVersion = $compiler.Directory.Parent.Parent.Parent.Name
+    if ([string]::IsNullOrWhiteSpace($toolsetVersion)) {
+        throw "MSVC toolset version is empty: $($compiler.FullName)"
+    }
+
+    return [ordered]@{
+        schemaVersion = 1
+        evidenceSource = 'current-build-metadata'
+        candidate = [ordered]@{
+            label = 'monorepo-bridge-candidate'
+            sha256 = [string]$BridgeOutput.sha256
+            machine = 'I386'
+            exportCount = 0
+            exportSetSha256 = 'unverified'
+        }
+        exportsEqual = $null
+        msbuildVersion = [string]$Metadata.tools.msbuild.Version
+        toolsetVersion = [string]$toolsetVersion
+        compilerVersion = [string]$compilerVersion
+        binaryHashExpectedToDiffer = $null
     }
 }
 
@@ -368,12 +441,16 @@ try {
         }
     }
 
+    $bridgeOutput = $outputMap['out/build/bridge/d3d9.dll']
     $bridgeEvidencePath = Join-Path $root 'out/reports/task-6/bridge-build-evidence.json'
-    if (-not (Test-Path -LiteralPath $bridgeEvidencePath -PathType Leaf)) {
+    if ($AllowMissingBridgeEvidence) {
+        $bridgeEvidence = Get-BridgeEvidenceFromBuildMetadata -Metadata $metadata -BridgeOutput $bridgeOutput
+        Write-RenderStackAtomicJson -Path $bridgeEvidencePath -Value $bridgeEvidence
+    } elseif (Test-Path -LiteralPath $bridgeEvidencePath -PathType Leaf) {
+        $bridgeEvidence = Get-Content -LiteralPath $bridgeEvidencePath -Raw | ConvertFrom-Json
+    } else {
         throw "Bridge build evidence is missing: $bridgeEvidencePath"
     }
-    $bridgeEvidence = Get-Content -LiteralPath $bridgeEvidencePath -Raw | ConvertFrom-Json
-    $bridgeOutput = $outputMap['out/build/bridge/d3d9.dll']
     if ([string]$bridgeEvidence.candidate.sha256 -cne [string]$bridgeOutput.sha256 -or
         [string]::IsNullOrWhiteSpace([string]$bridgeEvidence.toolsetVersion) -or
         [string]::IsNullOrWhiteSpace([string]$bridgeEvidence.compilerVersion)) {
