@@ -152,7 +152,7 @@ function Assert-Schema {
             throw "Test orchestration integrity token is missing: $token"
         }
     }
-    foreach ($token in @('$commandDetails = if', '$releaseVerdict = if')) {
+    foreach ($token in @('$commandDetails = if', '$releaseVerdict = if', '$missing = @(')) {
         if (-not $releaseSource.Contains($token, [StringComparison]::Ordinal)) {
             throw "Release gate expression token is missing: $token"
         }

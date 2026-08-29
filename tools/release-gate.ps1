@@ -197,7 +197,7 @@ try {
 
     $packageScript = Join-Path $root 'tools/package.ps1'
     $packageTest = Join-Path $root 'tests/package-layout-test.ps1'
-    $missing = @($packageScript, $packageTest) | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }
+    $missing = @(@($packageScript, $packageTest) | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
     if ($missing.Count -ne 0) {
         Add-Step -Name 'package-preflight' -Status 'FAIL' `
             -Details "Task 7 dependency missing; no build deletion performed: $($missing -join ', ')"
