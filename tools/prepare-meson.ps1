@@ -171,11 +171,200 @@ function Expand-ValidatedMesonWheel {
     Assert-RenderStackNoReparseTree -Path $Destination -Anchor $Cache -Description 'Extracted Meson tree' | Out-Null
 }
 
+function Get-MesonStreamSha256Base64Url {
+    param([Parameter(Mandatory)] [IO.Stream]$Stream)
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha256.ComputeHash($Stream)
+    } finally {
+        $sha256.Dispose()
+    }
+    return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+function Get-MesonWheelManifest {
+    param(
+        [Parameter(Mandatory)] [string]$WheelPath,
+        [Parameter(Mandatory)] [string]$Cache
+    )
+
+    $safeWheel = Assert-RenderStackNoReparsePath -Path $WheelPath -Anchor $Cache `
+        -Description 'Pinned Meson wheel'
+    if ((Get-MesonFileSha256 -Path $safeWheel) -cne $expectedWheelSha256) {
+        throw "Pinned Meson wheel SHA-256 mismatch: $safeWheel"
+    }
+
+    $archive = $null
+    try {
+        $archive = [IO.Compression.ZipFile]::OpenRead($safeWheel)
+        $archiveEntries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($entry in $archive.Entries) {
+            if ($entry.FullName.EndsWith('/') -or $entry.FullName.EndsWith('\')) {
+                continue
+            }
+            $canonical = Assert-SafeMesonZipEntry -Path $entry.FullName.Replace('\', '/')
+            if (-not $archiveEntries.TryAdd($canonical, $entry)) {
+                throw "Duplicate Meson wheel file path (case-insensitive): $canonical"
+            }
+        }
+        $recordPaths = @($archiveEntries.Keys | Where-Object { $_ -match '(?i)\.dist-info/RECORD$' })
+        if ($recordPaths.Count -ne 1) {
+            throw "Meson wheel must contain exactly one dist-info/RECORD file; found $($recordPaths.Count)"
+        }
+        $recordPath = $recordPaths[0]
+        $recordEntry = $archiveEntries[$recordPath]
+        $recordStream = $recordEntry.Open()
+        try {
+            $memory = [IO.MemoryStream]::new()
+            try {
+                $recordStream.CopyTo($memory)
+                $recordBytes = $memory.ToArray()
+            } finally {
+                $memory.Dispose()
+            }
+        } finally {
+            $recordStream.Dispose()
+        }
+        $recordText = [Text.Encoding]::UTF8.GetString($recordBytes)
+        $records = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($row in @($recordText | ConvertFrom-Csv -Header Path, Hash, Size)) {
+            if ([string]::IsNullOrWhiteSpace($row.Path)) {
+                continue
+            }
+            $path = Assert-SafeMesonZipEntry -Path ([string]$row.Path).Replace('\', '/')
+            if (-not $records.TryAdd($path, $row)) {
+                throw "Duplicate Meson RECORD path (case-insensitive): $path"
+            }
+        }
+        $missingRecords = @($archiveEntries.Keys | Where-Object { -not $records.ContainsKey($_) })
+        $extraRecords = @($records.Keys | Where-Object { -not $archiveEntries.ContainsKey($_) })
+        if ($missingRecords.Count -ne 0 -or $extraRecords.Count -ne 0) {
+            throw "Meson wheel RECORD file set mismatch: missing=$($missingRecords -join ', ') extra=$($extraRecords -join ', ')"
+        }
+
+        $manifest = [Collections.Generic.List[object]]::new()
+        foreach ($path in @($records.Keys | Sort-Object)) {
+            $row = $records[$path]
+            $entry = $archiveEntries[$path]
+            $isRecord = $path.Equals($recordPath, [StringComparison]::OrdinalIgnoreCase)
+            if ($isRecord) {
+                if (-not [string]::IsNullOrEmpty($row.Hash) -or -not [string]::IsNullOrEmpty($row.Size)) {
+                    throw 'Meson RECORD self-entry must omit hash and size'
+                }
+                $stream = $entry.Open()
+                try {
+                    $hash = Get-MesonStreamSha256Base64Url -Stream $stream
+                } finally {
+                    $stream.Dispose()
+                }
+                $size = [long]$entry.Length
+            } else {
+                if ([string]::IsNullOrWhiteSpace($row.Hash) -or [string]::IsNullOrWhiteSpace($row.Size)) {
+                    throw "Meson RECORD entry must provide hash and size: $path"
+                }
+                if ($row.Hash -notmatch '^sha256=(?<hash>[A-Za-z0-9_-]+)$') {
+                    throw "Meson RECORD entry uses an unsupported hash: $path"
+                }
+                $hash = $Matches.hash
+                $size = [long]$row.Size
+                if ($size -ne [long]$entry.Length) {
+                    throw "Meson wheel RECORD size mismatch for $path"
+                }
+                $stream = $entry.Open()
+                try {
+                    $actualHash = Get-MesonStreamSha256Base64Url -Stream $stream
+                } finally {
+                    $stream.Dispose()
+                }
+                if ($actualHash -cne $hash) {
+                    throw "Meson wheel RECORD SHA-256 mismatch for $path"
+                }
+            }
+            [void]$manifest.Add([pscustomobject]@{ Path = $path; Hash = $hash; Size = $size })
+        }
+        return [pscustomobject]@{ RecordPath = $recordPath; Files = $manifest.ToArray() }
+    } finally {
+        if ($null -ne $archive) {
+            $archive.Dispose()
+        }
+    }
+}
+
+function Assert-PublishedMesonManifest {
+    param(
+        [Parameter(Mandatory)] [string]$ModuleDirectory,
+        [Parameter(Mandatory)] [string]$Cache,
+        [Parameter(Mandatory)] [object]$Manifest
+    )
+
+    Assert-RenderStackNoReparseTree -Path $ModuleDirectory -Anchor $Cache `
+        -Description 'Published Meson module tree' | Out-Null
+    $expected = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in $Manifest.Files) {
+        $expected.Add([string]$file.Path, $file)
+    }
+    $actual = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in [IO.Directory]::EnumerateFiles($ModuleDirectory, '*', [IO.SearchOption]::AllDirectories)) {
+        $safeFile = Assert-RenderStackNoReparsePath -Path $file -Anchor $ModuleDirectory `
+            -Description 'Published Meson file'
+        $relative = [IO.Path]::GetRelativePath($ModuleDirectory, $safeFile).Replace('\', '/')
+        if (-not $actual.TryAdd($relative, $safeFile)) {
+            throw "Published Meson cache is invalid: duplicate file path: $relative"
+        }
+    }
+    $missing = @($expected.Keys | Where-Object { -not $actual.ContainsKey($_) })
+    $extra = @($actual.Keys | Where-Object { -not $expected.ContainsKey($_) })
+    if ($missing.Count -ne 0 -or $extra.Count -ne 0) {
+        throw "Published Meson cache is invalid: file set mismatch: missing=$($missing -join ', ') extra=$($extra -join ', ')"
+    }
+    foreach ($path in $expected.Keys) {
+        $expectedFile = $expected[$path]
+        $actualPath = $actual[$path]
+        $item = Get-Item -LiteralPath $actualPath -ErrorAction Stop
+        if ([long]$item.Length -ne [long]$expectedFile.Size) {
+            throw "Published Meson cache is invalid: size mismatch for $path"
+        }
+        $stream = [IO.File]::Open($actualPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            $actualHash = Get-MesonStreamSha256Base64Url -Stream $stream
+        } finally {
+            $stream.Dispose()
+        }
+        if ($actualHash -cne [string]$expectedFile.Hash) {
+            throw "Published Meson cache is invalid: SHA-256 mismatch for $path"
+        }
+    }
+}
+
+function Wait-MesonTestPublicationBarrier {
+    param([Parameter(Mandatory)] [ValidateSet('wheel', 'module')] [string]$Phase)
+
+    $barrier = [Environment]::GetEnvironmentVariable('SA_RENDERSTACK_TEST_PREPARE_MESON_BARRIER', 'Process')
+    if ([string]::IsNullOrWhiteSpace($barrier)) {
+        return
+    }
+    $barrier = Get-RenderStackFullPath -Path $barrier
+    if (-not (Test-Path -LiteralPath $barrier -PathType Container)) {
+        throw "Meson test publication barrier does not exist: $barrier"
+    }
+    [IO.File]::WriteAllText((Join-Path $barrier "$Phase-$PID.ready"), 'ready')
+    $go = Join-Path $barrier "$Phase.go"
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $go -PathType Leaf)) {
+        if ([DateTime]::UtcNow -ge $deadline) {
+            throw "Timed out waiting for Meson test publication barrier: $Phase"
+        }
+        Start-Sleep -Milliseconds 25
+    }
+}
+
 function Test-PublishedMeson {
     param(
         [Parameter(Mandatory)] [string]$ModuleDirectory,
         [Parameter(Mandatory)] [string]$Cache,
-        [Parameter(Mandatory)] [string]$PythonPath
+        [Parameter(Mandatory)] [string]$PythonPath,
+        [Parameter(Mandatory)] [object]$Manifest
     )
 
     $safeModuleDirectory = Assert-RenderStackNoReparsePath -Path $ModuleDirectory -Anchor $Cache `
@@ -187,15 +376,13 @@ function Test-PublishedMeson {
     if (($state.Attributes -band [IO.FileAttributes]::Directory) -eq 0) {
         throw "Published Meson cache is invalid: module path is not a directory: $safeModuleDirectory"
     }
-    Assert-RenderStackNoReparseTree -Path $safeModuleDirectory -Anchor $Cache `
-        -Description 'Published Meson module tree' | Out-Null
-    $main = Join-Path $safeModuleDirectory 'mesonbuild/mesonmain.py'
-    if (-not (Test-Path -LiteralPath $main -PathType Leaf)) {
-        throw "Published Meson cache is invalid: required module is missing: $main"
-    }
+    Assert-PublishedMesonManifest -ModuleDirectory $safeModuleDirectory -Cache $Cache -Manifest $Manifest
     $result = Invoke-RenderStackProcess -FilePath $PythonPath -ArgumentList @(
         '-m', 'mesonbuild.mesonmain', '--version'
-    ) -WorkingDirectory $Cache -EnvironmentOverrides @{ PYTHONPATH = $safeModuleDirectory } `
+    ) -WorkingDirectory $Cache -EnvironmentOverrides @{
+        PYTHONPATH = $safeModuleDirectory
+        PYTHONDONTWRITEBYTECODE = '1'
+    } `
         -Label 'meson-published-version'
     if ($result.ExitCode -ne 0 -or $result.StandardOutput.Trim() -cne $mesonVersion) {
         throw "Published Meson cache is invalid: expected version $mesonVersion, got '$($result.StandardOutput.Trim())'"
@@ -243,13 +430,24 @@ try {
         Assert-RenderStackNoReparsePath -Path $cache -Anchor $root -Description 'Meson cache directory' | Out-Null
     }
 
+    $wheelPath = Assert-RenderStackPathUnder -Path (Join-Path $cache $wheelName) `
+        -Base $cache -Description 'Meson wheel cache path'
     $moduleDirectory = Assert-RenderStackPathUnder -Path (Join-Path $cache 'site-packages') `
         -Base $cache -Description 'Meson module directory'
-    if (Test-PublishedMeson -ModuleDirectory $moduleDirectory -Cache $cache -PythonPath $pythonInfo.Path) {
+    $moduleState = Get-RenderStackPathState -Path $moduleDirectory
+    if ($moduleState.Exists -and -not (Test-Path -LiteralPath $wheelPath -PathType Leaf)) {
+        throw "Published Meson cache is invalid: pinned wheel is missing: $wheelPath"
+    }
+    $manifest = if (Test-Path -LiteralPath $wheelPath -PathType Leaf) {
+        Get-MesonWheelManifest -WheelPath $wheelPath -Cache $cache
+    } else {
+        $null
+    }
+    if ($null -ne $manifest -and
+        (Test-PublishedMeson -ModuleDirectory $moduleDirectory -Cache $cache `
+            -PythonPath $pythonInfo.Path -Manifest $manifest)) {
         Write-Output "Using verified published Meson: $moduleDirectory"
     } else {
-        $wheelPath = Assert-RenderStackPathUnder -Path (Join-Path $cache $wheelName) `
-            -Base $cache -Description 'Meson wheel cache path'
         Assert-RenderStackNoReparsePath -Path $wheelPath -Anchor $cache -Description 'Meson wheel cache path' | Out-Null
         if (Test-Path -LiteralPath $wheelPath) {
             $cachedHash = Get-MesonFileSha256 -Path $wheelPath
@@ -264,20 +462,38 @@ try {
             if ($downloadHash -cne $expectedWheelSha256) {
                 throw "Downloaded Meson wheel SHA-256 mismatch: expected $expectedWheelSha256, got $downloadHash"
             }
-            [IO.File]::Move($downloadTemporary, $wheelPath)
-            $downloadTemporary = $null
+            Wait-MesonTestPublicationBarrier -Phase wheel
+            try {
+                [IO.File]::Move($downloadTemporary, $wheelPath)
+                $downloadTemporary = $null
+            } catch {
+                $moveError = $_.Exception.Message
+                if (-not (Test-Path -LiteralPath $wheelPath -PathType Leaf)) {
+                    throw "Meson wheel publication failed: $moveError"
+                }
+                $winnerHash = Get-MesonFileSha256 -Path $wheelPath
+                if ($winnerHash -cne $expectedWheelSha256) {
+                    throw "Concurrent Meson wheel publication produced an invalid winner: $winnerHash"
+                }
+                Write-Output "Using concurrently published Meson wheel: $wheelPath"
+            }
             if ((Get-MesonFileSha256 -Path $wheelPath) -cne $expectedWheelSha256) {
                 throw "Cached Meson wheel changed during publication: $wheelPath"
             }
             Write-Output "Cached verified Meson wheel: $wheelPath"
         }
 
+        $manifest = Get-MesonWheelManifest -WheelPath $wheelPath -Cache $cache
+
         $extractTemporary = New-MesonTemporaryPath -Cache $cache -Prefix 'meson-extract-' -Extension ''
         Expand-ValidatedMesonWheel -ArchivePath $wheelPath -Destination $extractTemporary -Cache $cache
-        if (-not (Test-PublishedMeson -ModuleDirectory $extractTemporary -Cache $cache -PythonPath $pythonInfo.Path)) {
+        if (-not (Test-PublishedMeson -ModuleDirectory $extractTemporary -Cache $cache `
+                -PythonPath $pythonInfo.Path -Manifest $manifest)) {
             throw "Extracted Meson module tree disappeared: $extractTemporary"
         }
-        if (Test-PublishedMeson -ModuleDirectory $moduleDirectory -Cache $cache -PythonPath $pythonInfo.Path) {
+        Wait-MesonTestPublicationBarrier -Phase module
+        if (Test-PublishedMeson -ModuleDirectory $moduleDirectory -Cache $cache `
+                -PythonPath $pythonInfo.Path -Manifest $manifest) {
             Write-Output "Using concurrently published Meson: $moduleDirectory"
         } else {
             Assert-RenderStackNoReparseTree -Path $extractTemporary -Anchor $cache `
@@ -286,14 +502,14 @@ try {
                 [IO.Directory]::Move($extractTemporary, $moduleDirectory)
                 $extractTemporary = $null
                 if (-not (Test-PublishedMeson -ModuleDirectory $moduleDirectory -Cache $cache `
-                        -PythonPath $pythonInfo.Path)) {
+                        -PythonPath $pythonInfo.Path -Manifest $manifest)) {
                     throw "Published Meson module tree disappeared: $moduleDirectory"
                 }
                 Write-Output "Published verified Meson: $moduleDirectory"
             } catch {
                 $publishError = $_.Exception.Message
                 if (-not (Test-PublishedMeson -ModuleDirectory $moduleDirectory -Cache $cache `
-                        -PythonPath $pythonInfo.Path)) {
+                        -PythonPath $pythonInfo.Path -Manifest $manifest)) {
                     throw "Meson publication failed: $publishError"
                 }
                 Write-Output "Using concurrently published Meson: $moduleDirectory"

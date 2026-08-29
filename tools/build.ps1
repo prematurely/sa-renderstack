@@ -172,7 +172,7 @@ try {
     if ($Clean) {
         foreach ($name in $cleanNames) {
             Remove-RenderStackBuildPath -Path (Join-Path $buildRoot $name) `
-                -BuildRoot $buildRoot -AllowedName $cleanNames.ToArray()
+                -RepoRoot $root -BuildRoot $buildRoot -AllowedName $cleanNames.ToArray()
         }
     }
     New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null

@@ -283,11 +283,18 @@ function Invoke-RenderStackProcess {
 function Remove-RenderStackBuildPath {
     param(
         [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string]$RepoRoot,
         [Parameter(Mandatory)] [string]$BuildRoot,
         [Parameter(Mandatory)] [string[]]$AllowedName
     )
 
+    $fullRepoRoot = Get-RenderStackFullPath -Path $RepoRoot
+    $expectedOutRoot = Join-Path $fullRepoRoot 'out'
+    $expectedBuildRoot = Join-Path $expectedOutRoot 'build'
     $fullBuildRoot = Get-RenderStackFullPath -Path $BuildRoot
+    if (-not $fullBuildRoot.Equals($expectedBuildRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Build root is not the canonical repository out/build directory: $fullBuildRoot"
+    }
     $fullPath = Assert-RenderStackPathUnder -Path $Path -Base $fullBuildRoot -Description 'Build clean path'
     $relative = [IO.Path]::GetRelativePath($fullBuildRoot, $fullPath)
     if ($relative.Contains([IO.Path]::DirectorySeparatorChar) -or
@@ -295,6 +302,16 @@ function Remove-RenderStackBuildPath {
         $relative -eq '.' -or $relative -notin $AllowedName) {
         throw "Build clean path is not an allowlisted direct child: $fullPath"
     }
+
+    Assert-RenderStackNoReparsePath -Path $fullRepoRoot -Anchor $fullRepoRoot `
+        -Description 'Repository clean root' | Out-Null
+    Assert-RenderStackNoReparsePath -Path $expectedOutRoot -Anchor $fullRepoRoot `
+        -Description 'Repository out directory' | Out-Null
+    Assert-RenderStackNoReparsePath -Path $fullBuildRoot -Anchor $fullRepoRoot `
+        -Description 'Repository build directory' | Out-Null
+    Assert-RenderStackNoReparsePath -Path $fullPath -Anchor $fullRepoRoot `
+        -Description 'Selected build clean path' | Out-Null
+
     $state = Get-RenderStackPathState -Path $fullPath
     if (-not $state.Exists) {
         return

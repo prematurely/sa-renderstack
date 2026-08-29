@@ -151,36 +151,77 @@ function Find-RenderStackMSBuild {
         [Parameter(Mandatory)] [string]$RepoRoot
     )
 
+    $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
+        throw "vswhere is required to prove Visual Studio 18 BuildTools identity: $vswhere"
+    }
+    $result = Invoke-RenderStackProcess -FilePath $vswhere -ArgumentList @(
+        '-all', '-products', 'Microsoft.VisualStudio.Product.BuildTools',
+        '-version', '[18.0,19.0)', '-requires', 'Microsoft.Component.MSBuild',
+        '-format', 'json'
+    ) -WorkingDirectory $RepoRoot -Label 'vswhere-vs18-buildtools'
+    if ($result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.StandardOutput)) {
+        throw 'Visual Studio 18 BuildTools with MSBuild was not found'
+    }
+    try {
+        $instances = @($result.StandardOutput | ConvertFrom-Json -ErrorAction Stop | Where-Object {
+            $_.productId -ceq 'Microsoft.VisualStudio.Product.BuildTools' -and
+            ([version]$_.installationVersion).Major -eq 18
+        })
+    } catch {
+        throw "vswhere returned invalid Visual Studio instance JSON: $($_.Exception.Message)"
+    }
+    if ($instances.Count -eq 0) {
+        throw 'vswhere returned no Visual Studio 18 BuildTools instances'
+    }
+
     $override = Get-RenderStackOverride -ParameterValue $MsBuildPath -EnvironmentName 'SA_RENDERSTACK_MSBUILD'
-    $source = $null
     if ($null -ne $override) {
         $path = Resolve-RenderStackExecutable -Path $override.Value -Description 'MSBuild executable'
+        $matchingInstances = @($instances | Where-Object {
+            $expected = Get-RenderStackFullPath -Path (
+                Join-Path ([string]$_.installationPath) 'MSBuild/Current/Bin/amd64/MSBuild.exe')
+            $path.Equals($expected, [StringComparison]::OrdinalIgnoreCase)
+        })
+        if ($matchingInstances.Count -ne 1) {
+            throw "MSBuild override must be the canonical Visual Studio 18 BuildTools HostX64 amd64 executable: $path"
+        }
+        $instance = $matchingInstances[0]
         $source = $override.Source
     } else {
-        $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
-        if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
-            throw "vswhere is required to discover Visual Studio 18 BuildTools: $vswhere"
-        }
-        $result = Invoke-RenderStackProcess -FilePath $vswhere -ArgumentList @(
-            '-latest', '-products', 'Microsoft.VisualStudio.Product.BuildTools',
-            '-version', '[18.0,19.0)', '-requires', 'Microsoft.Component.MSBuild',
-            '-property', 'installationPath'
-        ) -WorkingDirectory $RepoRoot -Label 'vswhere'
-        if ($result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.StandardOutput)) {
-            throw 'Visual Studio 18 BuildTools with MSBuild was not found'
-        }
-        $installation = ($result.StandardOutput -split '\r?\n' | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_)
-        } | Select-Object -First 1).Trim()
-        $path = Resolve-RenderStackExecutable `
-            -Path (Join-Path $installation 'MSBuild/Current/Bin/amd64/MSBuild.exe') `
-            -Description 'HostX64 MSBuild executable'
+        $instance = $instances | Sort-Object { [version]$_.installationVersion } -Descending | Select-Object -First 1
+        $path = Resolve-RenderStackExecutable -Path (
+            Join-Path ([string]$instance.installationPath) 'MSBuild/Current/Bin/amd64/MSBuild.exe') `
+            -Description 'Visual Studio 18 BuildTools HostX64 MSBuild executable'
         $source = 'vswhere-vs18-buildtools'
+    }
+
+    $fileVersion = (Get-Item -LiteralPath $path -ErrorAction Stop).VersionInfo
+    if ([string]::IsNullOrWhiteSpace($fileVersion.ProductVersion) -or
+        $fileVersion.ProductVersion -notmatch '^(?<major>\d+)\.') {
+        throw "MSBuild product version is unavailable: $path"
+    }
+    $productMajor = [int]$Matches.major
+    if ($productMajor -ne 18) {
+        throw "MSBuild product major 18 is required; found $($fileVersion.ProductVersion) at $path"
     }
     $versionOutput = Invoke-RenderStackVersionProbe -FilePath $path -ArgumentList @('-version', '-nologo') `
         -WorkingDirectory $RepoRoot -Description 'MSBuild'
     $version = ($versionOutput -split '\r?\n' | Where-Object { $_ -match '^\d+\.\d+' } | Select-Object -Last 1).Trim()
-    return [pscustomobject]@{ Path = $path; Version = $version; Source = $source; Host = 'HostX64' }
+    if ($version -notmatch '^(?<major>\d+)\.' -or [int]$Matches.major -ne 18) {
+        throw "MSBuild command version must have major 18; found '$version' at $path"
+    }
+    return [pscustomobject]@{
+        Path = $path
+        Version = $version
+        ProductVersion = $fileVersion.ProductVersion
+        ProductMajor = $productMajor
+        InstallationPath = Get-RenderStackFullPath -Path ([string]$instance.installationPath)
+        InstallationVersion = [string]$instance.installationVersion
+        Source = $source
+        Host = 'HostX64'
+        HostArchitecture = 'amd64'
+    }
 }
 
 function Find-RenderStackLlvmMingw {

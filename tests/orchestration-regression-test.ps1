@@ -1,7 +1,10 @@
 param(
-    [ValidateSet('All', 'Help', 'Validation', 'Discovery', 'SafeClean', 'MesonCache')]
+    [ValidateSet('All', 'Help', 'Validation', 'Discovery', 'SafeClean', 'MesonCache', 'MesonConcurrency')]
     [string]$Case = 'All',
-    [string]$ValidWheelPath
+    [string]$ValidWheelPath,
+    [string]$PythonPath,
+    [string]$MSBuildPath,
+    [string]$LlvmMingwBin
 )
 
 $ErrorActionPreference = 'Stop'
@@ -152,18 +155,32 @@ function Assert-DiscoveryCase {
     . $processRunnerScript
     . $toolchainDiscoveryScript
 
-    $msbuild = Get-KnownToolPath -Candidates @(
-        'C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\amd64\MSBuild.exe',
-        'C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\MSBuild\Current\Bin\MSBuild.exe'
-    )
-    $python = Get-KnownToolPath -Candidates @(
-        (Join-Path $env:USERPROFILE '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe')
-    )
-    $llvmBin = 'D:\GTA San Andreas\.codex-tools\llvm-mingw-20260602-msvcrt-i686\bin'
+    $msbuildInfo = Find-RenderStackMSBuild -MsBuildPath $MSBuildPath -RepoRoot $root
+    $msbuild = $msbuildInfo.Path
+    $python = if (-not [string]::IsNullOrWhiteSpace($PythonPath)) {
+        Get-KnownToolPath -Candidates @($PythonPath)
+    } else {
+        (Find-RenderStackPython -RepoRoot $root).Path
+    }
+    $llvmInfo = Find-RenderStackLlvmMingw -LlvmMingwBin $LlvmMingwBin -RepoRoot $root
+    $llvmBin = $llvmInfo.BinPath
     $ninja = Get-KnownToolPath -Candidates @('C:\msys64\mingw32\bin\ninja.exe')
     $glslang = Get-KnownToolPath -Candidates @('C:\msys64\mingw64\bin\glslangValidator.exe')
-    if (-not (Test-Path -LiteralPath $llvmBin -PathType Container)) {
-        throw "LLVM-MinGW regression fixture is unavailable: $llvmBin"
+    if ($msbuildInfo.ProductMajor -ne 18 -or $msbuildInfo.HostArchitecture -cne 'amd64' -or
+        $msbuildInfo.Path -notmatch '(?i)[\\/]MSBuild[\\/]Current[\\/]Bin[\\/]amd64[\\/]MSBuild\.exe$') {
+        throw "MSBuild discovery did not prove VS18 HostX64: $($msbuildInfo | ConvertTo-Json -Compress)"
+    }
+    if ($llvmInfo.Source -notin @('parameter', 'environment:SA_RENDERSTACK_LLVM_MINGW_BIN', 'local-workspace-fallback')) {
+        throw "LLVM-MinGW discovery returned an unexpected source: $($llvmInfo.Source)"
+    }
+    $relocatedRepository = Join-Path $fixtureRoot 'relocated-workspace/repository'
+    $relocatedToolchains = Join-Path $relocatedRepository 'toolchains'
+    New-Item -ItemType Directory -Path $relocatedToolchains -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $root 'toolchains/llvm-mingw-i686.ini') `
+        -Destination (Join-Path $relocatedToolchains 'llvm-mingw-i686.ini')
+    $relocatedLlvm = Find-RenderStackLlvmMingw -LlvmMingwBin $llvmBin -RepoRoot $relocatedRepository
+    if ($relocatedLlvm.BinPath -cne $llvmBin -or $relocatedLlvm.Source -cne 'parameter') {
+        throw 'Relocated repository did not honor the explicit LLVM-MinGW override'
     }
 
     $missing = Join-Path $fixtureRoot 'unrelated-tool-must-not-be-read'
@@ -188,12 +205,62 @@ function Assert-DiscoveryCase {
         if ($bridge.MSBuild.Path -cne $msbuild -or $null -ne $bridge.Python -or $null -ne $bridge.LlvmMingw) {
             throw 'Bridge discovery probed or returned unrelated DXVK tools'
         }
+
+        $nonAmd64 = Join-Path (Split-Path -Parent (Split-Path -Parent $msbuild)) 'MSBuild.exe'
+        if (Test-Path -LiteralPath $nonAmd64 -PathType Leaf) {
+            $rejected = $false
+            try {
+                Find-RenderStackMSBuild -MsBuildPath $nonAmd64 -RepoRoot $root | Out-Null
+            } catch {
+                $rejected = $_.Exception.Message -match 'amd64|HostX64|Visual Studio 18 BuildTools'
+            }
+            if (-not $rejected) {
+                throw "Non-amd64 MSBuild override was accepted: $nonAmd64"
+            }
+        }
+
+        $fakeVs17 = Join-Path $fixtureRoot 'Microsoft Visual Studio/17/BuildTools/MSBuild/Current/Bin/amd64/MSBuild.exe'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $fakeVs17) -Force | Out-Null
+        [IO.File]::WriteAllText($fakeVs17, 'not-msbuild')
+        $vs17Rejected = $false
+        try {
+            Find-RenderStackMSBuild -MsBuildPath $fakeVs17 -RepoRoot $root | Out-Null
+        } catch {
+            $vs17Rejected = $_.Exception.Message -match 'Visual Studio 18 BuildTools|product major 18|amd64'
+        }
+        if (-not $vs17Rejected) {
+            throw 'VS17-shaped MSBuild override was accepted'
+        }
+
+        $missingLlvm = Join-Path $fixtureRoot 'missing-llvm/bin'
+        $missingRejected = $false
+        try {
+            Find-RenderStackLlvmMingw -LlvmMingwBin $missingLlvm -RepoRoot $root | Out-Null
+        } catch {
+            $missingRejected = $_.Exception.Message -match 'does not exist'
+        }
+        if (-not $missingRejected) {
+            throw 'Missing LLVM-MinGW override was accepted'
+        }
+
+        $invalidLlvm = Join-Path $fixtureRoot 'invalid-llvm/bin'
+        New-Item -ItemType Directory -Path $invalidLlvm -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $invalidLlvm 'i686-w64-mingw32-clang++.exe'), 'incomplete')
+        $invalidRejected = $false
+        try {
+            Find-RenderStackLlvmMingw -LlvmMingwBin $invalidLlvm -RepoRoot $root | Out-Null
+        } catch {
+            $invalidRejected = $_.Exception.Message -match 'incomplete'
+        }
+        if (-not $invalidRejected) {
+            throw 'Incomplete LLVM-MinGW override was accepted'
+        }
     } finally {
         foreach ($name in $saved.Keys) {
             [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process')
         }
     }
-    Write-Output 'PASS component discovery ignores intentionally missing unrelated tools'
+    Write-Output 'PASS discovery enforces VS18 HostX64, portable LLVM overrides, and component isolation'
 }
 
 function Assert-SafeCleanCase {
@@ -209,14 +276,14 @@ function Assert-SafeCleanCase {
     [IO.File]::WriteAllText((Join-Path $selected 'remove.txt'), 'remove')
     [IO.File]::WriteAllText($sentinel, 'keep')
 
-    Remove-RenderStackBuildPath -Path $selected -BuildRoot $buildRoot -AllowedName 'dxvk-x86'
+    Remove-RenderStackBuildPath -Path $selected -RepoRoot $repository -BuildRoot $buildRoot -AllowedName 'dxvk-x86'
     if (Test-Path -LiteralPath $selected) {
         throw 'Selected clean directory remains'
     }
 
     $outsideRejected = $false
     try {
-        Remove-RenderStackBuildPath -Path $outside -BuildRoot $buildRoot -AllowedName 'dxvk-x86'
+        Remove-RenderStackBuildPath -Path $outside -RepoRoot $repository -BuildRoot $buildRoot -AllowedName 'dxvk-x86'
     } catch {
         $outsideRejected = $_.Exception.Message -match 'outside|allowlist'
     }
@@ -233,7 +300,7 @@ function Assert-SafeCleanCase {
     try {
         $junctionRejected = $false
         try {
-            Remove-RenderStackBuildPath -Path $junction -BuildRoot $buildRoot -AllowedName 'dxvk-x86'
+            Remove-RenderStackBuildPath -Path $junction -RepoRoot $repository -BuildRoot $buildRoot -AllowedName 'dxvk-x86'
         } catch {
             $junctionRejected = $_.Exception.Message -match 'reparse'
         }
@@ -245,7 +312,43 @@ function Assert-SafeCleanCase {
             [IO.Directory]::Delete($junction)
         }
     }
-    Write-Output 'PASS safe clean removes only allowlisted non-reparse build descendants'
+
+    foreach ($ancestorCase in @('out', 'out-build')) {
+        $caseRepository = Join-Path $fixtureRoot "safe-clean-$ancestorCase"
+        $caseOutside = Join-Path $fixtureRoot "safe-clean-$ancestorCase-outside"
+        $caseSentinel = Join-Path $caseOutside 'sentinel.txt'
+        New-Item -ItemType Directory -Path $caseRepository -Force | Out-Null
+        New-Item -ItemType Directory -Path $caseOutside -Force | Out-Null
+        [IO.File]::WriteAllText($caseSentinel, "keep-$ancestorCase")
+        if ($ancestorCase -ceq 'out') {
+            $caseJunction = Join-Path $caseRepository 'out'
+            New-Item -ItemType Junction -Path $caseJunction -Target $caseOutside | Out-Null
+            $caseBuildRoot = Join-Path $caseJunction 'build'
+        } else {
+            $caseOut = Join-Path $caseRepository 'out'
+            New-Item -ItemType Directory -Path $caseOut -Force | Out-Null
+            $caseJunction = Join-Path $caseOut 'build'
+            New-Item -ItemType Junction -Path $caseJunction -Target $caseOutside | Out-Null
+            $caseBuildRoot = $caseJunction
+        }
+        try {
+            $ancestorRejected = $false
+            try {
+                Remove-RenderStackBuildPath -Path (Join-Path $caseBuildRoot 'dxvk-x86') `
+                    -RepoRoot $caseRepository -BuildRoot $caseBuildRoot -AllowedName 'dxvk-x86'
+            } catch {
+                $ancestorRejected = $_.Exception.Message -match 'reparse'
+            }
+            if (-not $ancestorRejected -or [IO.File]::ReadAllText($caseSentinel) -cne "keep-$ancestorCase") {
+                throw "Safe clean did not reject the $ancestorCase ancestor junction"
+            }
+        } finally {
+            if (Test-Path -LiteralPath $caseJunction) {
+                [IO.Directory]::Delete($caseJunction)
+            }
+        }
+    }
+    Write-Output 'PASS safe clean validates repository, out, build, and selected-child reparse boundaries'
 }
 
 function New-IsolatedRepository {
@@ -286,9 +389,13 @@ function Assert-NoMesonTemporaryPublication {
 }
 
 function Assert-MesonCacheCase {
-    $python = Get-KnownToolPath -Candidates @(
-        (Join-Path $env:USERPROFILE '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe')
-    )
+    . $processRunnerScript
+    . $toolchainDiscoveryScript
+    $python = if (-not [string]::IsNullOrWhiteSpace($PythonPath)) {
+        Get-KnownToolPath -Candidates @($PythonPath)
+    } else {
+        (Find-RenderStackPython -RepoRoot $root).Path
+    }
     if ([string]::IsNullOrWhiteSpace($ValidWheelPath) -or
         -not (Test-Path -LiteralPath $ValidWheelPath -PathType Leaf)) {
         throw 'MesonCache requires -ValidWheelPath pointing to the pinned wheel'
@@ -357,20 +464,200 @@ function Assert-MesonCacheCase {
     }
     $moduleTimestamp = (Get-Item -LiteralPath $moduleDirectory).LastWriteTimeUtc
     $archive = Join-Path $validRepository 'out/deps/meson/1.11.1/meson-1.11.1-py3-none-any.whl'
-    if (Test-Path -LiteralPath $archive) {
-        [IO.File]::Delete($archive)
-    }
     $second = Invoke-IsolatedMesonPrepare -Repository $validRepository -Python $python -PackageSource $corruptWheel
     if ($second.ExitCode -ne 0 -or $second.Output -notmatch 'Using verified published Meson') {
         throw "Valid Meson publication was not reused: $($second.Output)"
     }
     $moduleChanged = (Get-Item -LiteralPath $moduleDirectory).LastWriteTimeUtc -ne $moduleTimestamp
-    $archiveRecreated = Test-Path -LiteralPath $archive
-    if ($moduleChanged -or $archiveRecreated) {
-        throw 'Meson published cache reuse modified the cache or consulted the source'
+    if ($moduleChanged -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToUpperInvariant() -cne $expectedWheelSha256) {
+        throw 'Meson published cache reuse modified the authenticated cache'
     }
     Assert-NoMesonTemporaryPublication -Cache (Split-Path -Parent $moduleDirectory)
-    Write-Output 'PASS Meson cache rejects corrupt/reparse/invalid fixtures and reuses valid publication'
+
+    $corruptionCases = @(
+        @{ Name = 'mesonmain-corrupt'; Relative = 'mesonbuild/mesonmain.py'; Action = 'corrupt' },
+        @{ Name = 'module-corrupt'; Relative = 'mesonbuild/build.py'; Action = 'corrupt' },
+        @{ Name = 'module-extra'; Relative = 'mesonbuild/extra.py'; Action = 'extra' },
+        @{ Name = 'module-missing'; Relative = 'mesonbuild/build.py'; Action = 'missing' }
+    )
+    foreach ($corruptionCase in $corruptionCases) {
+        $repository = New-IsolatedRepository -Name $corruptionCase.Name
+        $initial = Invoke-IsolatedMesonPrepare -Repository $repository -Python $python -PackageSource $ValidWheelPath
+        if ($initial.ExitCode -ne 0) {
+            throw "Meson integrity fixture publication failed: $($initial.Output)"
+        }
+        $published = Join-Path $repository 'out/deps/meson/1.11.1/site-packages'
+        $target = Join-Path $published $corruptionCase.Relative
+        switch ($corruptionCase.Action) {
+            'corrupt' { [IO.File]::AppendAllText($target, "`n# corrupted") }
+            'extra' { [IO.File]::WriteAllText($target, 'extra') }
+            'missing' { [IO.File]::Delete($target) }
+        }
+        $result = Invoke-IsolatedMesonPrepare -Repository $repository -Python $python -PackageSource $ValidWheelPath
+        if ($result.ExitCode -eq 0 -or $result.Output -notmatch 'Published Meson cache is invalid') {
+            throw "Published Meson $($corruptionCase.Name) fixture was not rejected: $($result.Output)"
+        }
+    }
+    Write-Output 'PASS Meson cache authenticates RECORD hashes, sizes, and exact file set on reuse'
+}
+
+function Start-CapturedProcess {
+    param(
+        [Parameter(Mandatory)] [string]$FilePath,
+        [Parameter(Mandatory)] [string[]]$ArgumentList,
+        [Parameter(Mandatory)] [string]$WorkingDirectory,
+        [hashtable]$Environment = @{}
+    )
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+    foreach ($argument in $ArgumentList) { [void]$startInfo.ArgumentList.Add($argument) }
+    $startInfo.Environment['GIT_CONFIG_GLOBAL'] = 'NUL'
+    foreach ($entry in $Environment.GetEnumerator()) {
+        $startInfo.Environment[[string]$entry.Key] = [string]$entry.Value
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) { throw "Failed to start process: $FilePath" }
+    return [pscustomobject]@{
+        Process = $process
+        StdOutTask = $process.StandardOutput.ReadToEndAsync()
+        StdErrTask = $process.StandardError.ReadToEndAsync()
+    }
+}
+
+function Complete-CapturedProcess {
+    param([Parameter(Mandatory)] [object]$Capture)
+
+    try {
+        $Capture.Process.WaitForExit()
+        $stdout = $Capture.StdOutTask.GetAwaiter().GetResult()
+        $stderr = $Capture.StdErrTask.GetAwaiter().GetResult()
+        return [pscustomobject]@{
+            ExitCode = $Capture.Process.ExitCode
+            StdOut = $stdout
+            StdErr = $stderr
+            Output = $stdout + $stderr
+        }
+    } finally {
+        $Capture.Process.Dispose()
+    }
+}
+
+function Wait-ForBarrierReady {
+    param(
+        [Parameter(Mandatory)] [string]$Barrier,
+        [Parameter(Mandatory)] [string]$Phase,
+        [int]$Expected = 2
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $ready = @(Get-ChildItem -LiteralPath $Barrier -Filter "$Phase-*.ready" -File -ErrorAction SilentlyContinue)
+        if ($ready.Count -eq $Expected) { return }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Timed out waiting for $Expected '$Phase' barrier participants"
+}
+
+function Assert-MesonConcurrencyCase {
+    . $processRunnerScript
+    . $toolchainDiscoveryScript
+    $python = if (-not [string]::IsNullOrWhiteSpace($PythonPath)) {
+        Get-KnownToolPath -Candidates @($PythonPath)
+    } else {
+        (Find-RenderStackPython -RepoRoot $root).Path
+    }
+    if ([string]::IsNullOrWhiteSpace($ValidWheelPath) -or
+        -not (Test-Path -LiteralPath $ValidWheelPath -PathType Leaf)) {
+        throw 'MesonConcurrency requires -ValidWheelPath pointing to the pinned wheel'
+    }
+    $wheel = [IO.Path]::GetFullPath($ValidWheelPath)
+    $repository = New-IsolatedRepository -Name 'meson-concurrent'
+    $barrier = Join-Path $fixtureRoot 'meson-concurrent-barrier'
+    New-Item -ItemType Directory -Path $barrier -Force | Out-Null
+    $arguments = @('-NoProfile', '-File', (Join-Path $repository 'tools/prepare-meson.ps1'),
+        '-Python', $python, '-PackageUrl', $wheel)
+    $environment = @{ SA_RENDERSTACK_TEST_PREPARE_MESON_BARRIER = $barrier }
+    $first = Start-CapturedProcess -FilePath (Get-Command pwsh).Source -ArgumentList $arguments `
+        -WorkingDirectory $fixtureRoot -Environment $environment
+    $second = Start-CapturedProcess -FilePath (Get-Command pwsh).Source -ArgumentList $arguments `
+        -WorkingDirectory $fixtureRoot -Environment $environment
+    try {
+        Wait-ForBarrierReady -Barrier $barrier -Phase 'wheel'
+        [IO.File]::WriteAllText((Join-Path $barrier 'wheel.go'), 'go')
+        Wait-ForBarrierReady -Barrier $barrier -Phase 'module'
+        [IO.File]::WriteAllText((Join-Path $barrier 'module.go'), 'go')
+        $firstResult = Complete-CapturedProcess -Capture $first
+        $first = $null
+        $secondResult = Complete-CapturedProcess -Capture $second
+        $second = $null
+    } finally {
+        foreach ($capture in @($first, $second)) {
+            if ($null -ne $capture) {
+                try { $capture.Process.Kill($true) } catch {}
+                $capture.Process.Dispose()
+            }
+        }
+    }
+    if ($firstResult.ExitCode -ne 0 -or $secondResult.ExitCode -ne 0) {
+        throw "Concurrent Meson preparation failed: first=$($firstResult.Output) second=$($secondResult.Output)"
+    }
+    $moduleDirectory = Join-Path $repository 'out/deps/meson/1.11.1/site-packages'
+    foreach ($result in @($firstResult, $secondResult)) {
+        if ($result.StdOut.TrimEnd() -notmatch [regex]::Escape($moduleDirectory) + '$') {
+            throw "Concurrent Meson preparation returned a different module path: $($result.Output)"
+        }
+    }
+    $archive = Join-Path $repository 'out/deps/meson/1.11.1/meson-1.11.1-py3-none-any.whl'
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToUpperInvariant() -cne $expectedWheelSha256) {
+        throw 'Concurrent Meson wheel publication hash differs'
+    }
+    Assert-NoMesonTemporaryPublication -Cache (Split-Path -Parent $moduleDirectory)
+
+    $reuse = Invoke-IsolatedMesonPrepare -Repository $repository -Python $python -PackageSource $wheel
+    if ($reuse.ExitCode -ne 0 -or $reuse.Output -notmatch 'Using verified published Meson') {
+        throw "Concurrent Meson result did not pass authenticated reuse: $($reuse.Output)"
+    }
+
+    $invalidRepository = New-IsolatedRepository -Name 'meson-concurrent-invalid-winner'
+    $invalidBarrier = Join-Path $fixtureRoot 'meson-concurrent-invalid-barrier'
+    New-Item -ItemType Directory -Path $invalidBarrier -Force | Out-Null
+    $invalidArguments = @('-NoProfile', '-File', (Join-Path $invalidRepository 'tools/prepare-meson.ps1'),
+        '-Python', $python, '-PackageUrl', $wheel)
+    $invalidCapture = Start-CapturedProcess -FilePath (Get-Command pwsh).Source `
+        -ArgumentList $invalidArguments -WorkingDirectory $fixtureRoot `
+        -Environment @{ SA_RENDERSTACK_TEST_PREPARE_MESON_BARRIER = $invalidBarrier }
+    try {
+        Wait-ForBarrierReady -Barrier $invalidBarrier -Phase 'wheel' -Expected 1
+        $invalidCache = Join-Path $invalidRepository 'out/deps/meson/1.11.1'
+        $invalidWinner = Join-Path $invalidCache 'meson-1.11.1-py3-none-any.whl'
+        [IO.File]::WriteAllBytes($invalidWinner, [byte[]](0..31))
+        [IO.File]::WriteAllText((Join-Path $invalidBarrier 'wheel.go'), 'go')
+        $invalidResult = Complete-CapturedProcess -Capture $invalidCapture
+        $invalidCapture = $null
+    } finally {
+        if ($null -ne $invalidCapture) {
+            try { $invalidCapture.Process.Kill($true) } catch {}
+            $invalidCapture.Process.Dispose()
+        }
+    }
+    if ($invalidResult.ExitCode -eq 0 -or
+        $invalidResult.Output -notmatch 'invalid winner|SHA-256 mismatch') {
+        throw "Invalid concurrent Meson wheel winner did not fail closed: $($invalidResult.Output)"
+    }
+    if (Test-Path -LiteralPath (Join-Path $invalidCache 'site-packages')) {
+        throw 'Invalid concurrent Meson wheel winner produced a module tree'
+    }
+    Assert-NoMesonTemporaryPublication -Cache $invalidCache
+    Write-Output 'PASS simultaneous Meson wheel and module publishers converge without residue'
+    Write-Output 'PASS invalid concurrent Meson wheel winner fails closed without publication'
 }
 
 try {
@@ -380,6 +667,7 @@ try {
     if ($Case -in @('All', 'Discovery')) { Assert-DiscoveryCase }
     if ($Case -in @('All', 'SafeClean')) { Assert-SafeCleanCase }
     if ($Case -in @('All', 'MesonCache')) { Assert-MesonCacheCase }
+    if ($Case -in @('All', 'MesonConcurrency')) { Assert-MesonConcurrencyCase }
 } finally {
     if (Test-Path -LiteralPath $fixtureRoot) {
         [IO.Directory]::Delete($fixtureRoot, $true)
