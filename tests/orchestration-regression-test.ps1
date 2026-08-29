@@ -1,5 +1,6 @@
 param(
-    [ValidateSet('All', 'Help', 'Validation', 'Discovery', 'SafeClean', 'MesonCache', 'MesonConcurrency')]
+    [ValidateSet('All', 'Help', 'Validation', 'Discovery', 'SafeClean', 'MesonCache', 'MesonConcurrency',
+        'MesonPublishedReparse', 'MesonAdversarialContender')]
     [string]$Case = 'All',
     [string]$ValidWheelPath,
     [string]$PythonPath,
@@ -502,6 +503,74 @@ function Assert-MesonCacheCase {
     Write-Output 'PASS Meson cache authenticates RECORD hashes, sizes, and exact file set on reuse'
 }
 
+function Assert-MesonPublishedReparseCase {
+    . $processRunnerScript
+    . $toolchainDiscoveryScript
+    $python = if (-not [string]::IsNullOrWhiteSpace($PythonPath)) {
+        Get-KnownToolPath -Candidates @($PythonPath)
+    } else {
+        (Find-RenderStackPython -RepoRoot $root).Path
+    }
+    if ([string]::IsNullOrWhiteSpace($ValidWheelPath) -or
+        -not (Test-Path -LiteralPath $ValidWheelPath -PathType Leaf)) {
+        throw 'MesonPublishedReparse requires -ValidWheelPath pointing to the pinned wheel'
+    }
+    $wheel = [IO.Path]::GetFullPath($ValidWheelPath)
+    $repository = New-IsolatedRepository -Name 'meson-published-reparse'
+    $initial = Invoke-IsolatedMesonPrepare -Repository $repository -Python $python -PackageSource $wheel
+    if ($initial.ExitCode -ne 0) {
+        throw "Meson reparse fixture publication failed: $($initial.Output)"
+    }
+
+    $published = Join-Path $repository 'out/deps/meson/1.11.1/site-packages'
+    $junction = Join-Path $published 'mesonbuild/templates'
+    $outside = Join-Path $fixtureRoot 'meson-published-reparse-outside'
+    $outsideSentinel = Join-Path $outside 'sentinel.txt'
+    New-Item -ItemType Directory -Path $outside -Force | Out-Null
+    [IO.File]::WriteAllText($outsideSentinel, 'outside-reparse-sentinel')
+    $sentinelBefore = [IO.File]::ReadAllBytes($outsideSentinel)
+    $junctionParent = Split-Path -Parent $junction
+    $junctionAttributes = [IO.File]::GetAttributes($junction)
+    if (($junctionAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Meson reparse fixture target is already a reparse point: $junction"
+    }
+    [IO.Directory]::Delete($junction, $true)
+    New-Item -ItemType Junction -Path $junction -Target $outside | Out-Null
+
+    try {
+        $result = Invoke-IsolatedMesonPrepare -Repository $repository -Python $python -PackageSource $wheel
+        if ($result.ExitCode -eq 0 -or $result.Output -notmatch 'reparse point') {
+            throw "Published Meson tree reparse was not rejected specifically: $($result.Output)"
+        }
+        if ($result.Output -match 'Using verified published Meson') {
+            throw 'Published Meson tree reparse reached successful reuse'
+        }
+        if (-not [Linq.Enumerable]::SequenceEqual(
+                [byte[]]$sentinelBefore,
+                [byte[]][IO.File]::ReadAllBytes($outsideSentinel))) {
+            throw 'Published Meson tree reparse changed the outside sentinel'
+        }
+        Assert-NoMesonTemporaryPublication -Cache (Join-Path $repository 'out/deps/meson/1.11.1')
+    } finally {
+        if (Test-Path -LiteralPath $junction) {
+            $attributes = [IO.File]::GetAttributes($junction)
+            if (($attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+                throw "Meson fixture junction lost its reparse attribute: $junction"
+            }
+            [IO.Directory]::Delete($junction)
+        }
+    }
+    if (-not [Linq.Enumerable]::SequenceEqual(
+            [byte[]]$sentinelBefore,
+            [byte[]][IO.File]::ReadAllBytes($outsideSentinel))) {
+        throw 'Meson reparse cleanup traversed or deleted the outside sentinel'
+    }
+    if (-not (Test-Path -LiteralPath $junctionParent -PathType Container)) {
+        throw 'Meson reparse cleanup removed the published tree parent'
+    }
+    Write-Output 'PASS published Meson tree reparse rejected before reuse without touching outside state'
+}
+
 function Start-CapturedProcess {
     param(
         [Parameter(Mandatory)] [string]$FilePath,
@@ -626,38 +695,151 @@ function Assert-MesonConcurrencyCase {
         throw "Concurrent Meson result did not pass authenticated reuse: $($reuse.Output)"
     }
 
-    $invalidRepository = New-IsolatedRepository -Name 'meson-concurrent-invalid-winner'
-    $invalidBarrier = Join-Path $fixtureRoot 'meson-concurrent-invalid-barrier'
-    New-Item -ItemType Directory -Path $invalidBarrier -Force | Out-Null
-    $invalidArguments = @('-NoProfile', '-File', (Join-Path $invalidRepository 'tools/prepare-meson.ps1'),
-        '-Python', $python, '-PackageUrl', $wheel)
-    $invalidCapture = Start-CapturedProcess -FilePath (Get-Command pwsh).Source `
-        -ArgumentList $invalidArguments -WorkingDirectory $fixtureRoot `
-        -Environment @{ SA_RENDERSTACK_TEST_PREPARE_MESON_BARRIER = $invalidBarrier }
+    Write-Output 'PASS simultaneous Meson wheel and module publishers converge without residue'
+}
+
+function Assert-MesonAdversarialContenderCase {
+    . $processRunnerScript
+    . $toolchainDiscoveryScript
+    $python = if (-not [string]::IsNullOrWhiteSpace($PythonPath)) {
+        Get-KnownToolPath -Candidates @($PythonPath)
+    } else {
+        (Find-RenderStackPython -RepoRoot $root).Path
+    }
+    if ([string]::IsNullOrWhiteSpace($ValidWheelPath) -or
+        -not (Test-Path -LiteralPath $ValidWheelPath -PathType Leaf)) {
+        throw 'MesonAdversarialContender requires -ValidWheelPath pointing to the pinned wheel'
+    }
+    $wheel = [IO.Path]::GetFullPath($ValidWheelPath)
+    $repository = New-IsolatedRepository -Name 'meson-adversarial-contender'
+    $cache = Join-Path $repository 'out/deps/meson/1.11.1'
+    New-Item -ItemType Directory -Path $cache -Force | Out-Null
+    $archive = Join-Path $cache 'meson-1.11.1-py3-none-any.whl'
+    $moduleDirectory = Join-Path $cache 'site-packages'
+    $barrier = Join-Path $fixtureRoot 'meson-adversarial-contender-barrier'
+    New-Item -ItemType Directory -Path $barrier -Force | Out-Null
+    $outside = Join-Path $fixtureRoot 'meson-adversarial-contender-outside'
+    New-Item -ItemType Directory -Path $outside -Force | Out-Null
+    $outsideSentinel = Join-Path $outside 'sentinel.txt'
+    [IO.File]::WriteAllText($outsideSentinel, 'outside-contender-sentinel')
+    $outsideBefore = [IO.File]::ReadAllBytes($outsideSentinel)
+    $versionPath = Join-Path $repository 'VERSION'
+    $versionBefore = [IO.File]::ReadAllBytes($versionPath)
+
+    $helper = Join-Path $fixtureRoot 'adversarial-meson-publisher.ps1'
+    $helperSource = @'
+param(
+    [Parameter(Mandatory)] [string]$Destination,
+    [Parameter(Mandatory)] [string]$Barrier,
+    [Parameter(Mandatory)] [string]$ExpectedValidSha256
+)
+$ErrorActionPreference = 'Stop'
+$env:GIT_CONFIG_GLOBAL = 'NUL'
+$source = Join-Path (Split-Path -Parent $Destination) "adversary-invalid-$PID.tmp"
+$outcome = 'unknown'
+try {
+    [IO.File]::WriteAllBytes($source, [byte[]](0..31))
+    [IO.File]::WriteAllText((Join-Path $Barrier "wheel-$PID.ready"), 'ready')
+    $go = Join-Path $Barrier 'wheel.go'
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $go -PathType Leaf)) {
+        if ([DateTime]::UtcNow -ge $deadline) { throw 'Adversary barrier timeout' }
+        Start-Sleep -Milliseconds 25
+    }
     try {
-        Wait-ForBarrierReady -Barrier $invalidBarrier -Phase 'wheel' -Expected 1
-        $invalidCache = Join-Path $invalidRepository 'out/deps/meson/1.11.1'
-        $invalidWinner = Join-Path $invalidCache 'meson-1.11.1-py3-none-any.whl'
-        [IO.File]::WriteAllBytes($invalidWinner, [byte[]](0..31))
-        [IO.File]::WriteAllText((Join-Path $invalidBarrier 'wheel.go'), 'go')
-        $invalidResult = Complete-CapturedProcess -Capture $invalidCapture
-        $invalidCapture = $null
+        [IO.File]::Move($source, $Destination)
+        $source = $null
+        $outcome = 'invalid-winner'
+        Write-Output "ADVERSARY_OUTCOME=$outcome"
+        exit 0
+    } catch {
+        if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) { throw }
+        $winner = (Get-FileHash -Algorithm SHA256 -LiteralPath $Destination).Hash.ToUpperInvariant()
+        if ($winner -cne $ExpectedValidSha256) {
+            throw "Adversary lost to an unexpected winner hash: $winner"
+        }
+        $outcome = 'valid-winner'
+        Write-Output "ADVERSARY_OUTCOME=$outcome"
+        exit 3
+    }
+} finally {
+    if ($null -ne $source -and (Test-Path -LiteralPath $source -PathType Leaf)) {
+        [IO.File]::Delete($source)
+    }
+}
+'@
+    [IO.File]::WriteAllText($helper, $helperSource, [Text.UTF8Encoding]::new($false))
+
+    $prepareArguments = @('-NoProfile', '-File', (Join-Path $repository 'tools/prepare-meson.ps1'),
+        '-Python', $python, '-PackageUrl', $wheel)
+    $helperArguments = @('-NoProfile', '-File', $helper,
+        '-Destination', $archive, '-Barrier', $barrier,
+        '-ExpectedValidSha256', $expectedWheelSha256)
+    $environment = @{ SA_RENDERSTACK_TEST_PREPARE_MESON_BARRIER = $barrier }
+    $prepareCapture = Start-CapturedProcess -FilePath (Get-Command pwsh).Source `
+        -ArgumentList $prepareArguments -WorkingDirectory $fixtureRoot -Environment $environment
+    $adversaryCapture = Start-CapturedProcess -FilePath (Get-Command pwsh).Source `
+        -ArgumentList $helperArguments -WorkingDirectory $fixtureRoot
+    try {
+        Wait-ForBarrierReady -Barrier $barrier -Phase 'wheel'
+        [IO.File]::WriteAllText((Join-Path $barrier 'wheel.go'), 'go')
+        [IO.File]::WriteAllText((Join-Path $barrier 'module.go'), 'go')
+        $prepareResult = Complete-CapturedProcess -Capture $prepareCapture
+        $prepareCapture = $null
+        $adversaryResult = Complete-CapturedProcess -Capture $adversaryCapture
+        $adversaryCapture = $null
     } finally {
-        if ($null -ne $invalidCapture) {
-            try { $invalidCapture.Process.Kill($true) } catch {}
-            $invalidCapture.Process.Dispose()
+        foreach ($capture in @($prepareCapture, $adversaryCapture)) {
+            if ($null -ne $capture) {
+                try { $capture.Process.Kill($true) } catch {}
+                $capture.Process.Dispose()
+            }
         }
     }
-    if ($invalidResult.ExitCode -eq 0 -or
-        $invalidResult.Output -notmatch 'invalid winner|SHA-256 mismatch') {
-        throw "Invalid concurrent Meson wheel winner did not fail closed: $($invalidResult.Output)"
+
+    if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+        throw 'Adversarial Meson contender race produced no archive winner'
     }
-    if (Test-Path -LiteralPath (Join-Path $invalidCache 'site-packages')) {
-        throw 'Invalid concurrent Meson wheel winner produced a module tree'
+    $winnerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToUpperInvariant()
+    $invalidHash = ([Security.Cryptography.SHA256]::HashData([byte[]](0..31)) |
+        ForEach-Object { $_.ToString('X2') }) -join ''
+    if ($winnerHash -ceq $expectedWheelSha256) {
+        if ($prepareResult.ExitCode -ne 0 -or $adversaryResult.ExitCode -ne 3 -or
+            $adversaryResult.Output -notmatch 'ADVERSARY_OUTCOME=valid-winner') {
+            throw "Valid contender winner outcome is inconsistent: prepare=$($prepareResult.ExitCode) adversary=$($adversaryResult.ExitCode)"
+        }
+        if (-not (Test-Path -LiteralPath $moduleDirectory -PathType Container)) {
+            throw 'Valid contender winner did not publish the module tree'
+        }
+        $reuse = Invoke-IsolatedMesonPrepare -Repository $repository -Python $python -PackageSource $wheel
+        if ($reuse.ExitCode -ne 0 -or $reuse.Output -notmatch 'Using verified published Meson') {
+            throw "Valid contender winner did not pass authenticated reuse: $($reuse.Output)"
+        }
+        $outcome = 'valid-winner'
+    } elseif ($winnerHash -ceq $invalidHash) {
+        if ($prepareResult.ExitCode -eq 0 -or $adversaryResult.ExitCode -ne 0 -or
+            $adversaryResult.Output -notmatch 'ADVERSARY_OUTCOME=invalid-winner') {
+            throw "Invalid contender winner outcome is inconsistent: prepare=$($prepareResult.ExitCode) adversary=$($adversaryResult.ExitCode)"
+        }
+        if (Test-Path -LiteralPath $moduleDirectory) {
+            throw 'Invalid contender winner produced a partial module publication'
+        }
+        $outcome = 'invalid-winner'
+    } else {
+        throw "Adversarial Meson contender produced an unexpected winner hash: $winnerHash"
     }
-    Assert-NoMesonTemporaryPublication -Cache $invalidCache
-    Write-Output 'PASS simultaneous Meson wheel and module publishers converge without residue'
-    Write-Output 'PASS invalid concurrent Meson wheel winner fails closed without publication'
+
+    Assert-NoMesonTemporaryPublication -Cache $cache
+    $adversaryResidue = @(Get-ChildItem -LiteralPath $cache -Filter 'adversary-invalid-*.tmp' -File `
+        -ErrorAction SilentlyContinue)
+    if ($adversaryResidue.Count -ne 0) {
+        throw "Adversarial Meson contender left temporary residue: $($adversaryResidue.Name -join ', ')"
+    }
+    if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$versionBefore, [byte[]][IO.File]::ReadAllBytes($versionPath)) -or
+        -not [Linq.Enumerable]::SequenceEqual([byte[]]$outsideBefore, [byte[]][IO.File]::ReadAllBytes($outsideSentinel))) {
+        throw 'Adversarial Meson contender changed repository-root or outside sentinel state'
+    }
+    Write-Output "PASS adversarial Meson contender outcome=$outcome prepareExit=$($prepareResult.ExitCode) adversaryExit=$($adversaryResult.ExitCode) winnerHash=$winnerHash"
 }
 
 try {
@@ -668,6 +850,8 @@ try {
     if ($Case -in @('All', 'SafeClean')) { Assert-SafeCleanCase }
     if ($Case -in @('All', 'MesonCache')) { Assert-MesonCacheCase }
     if ($Case -in @('All', 'MesonConcurrency')) { Assert-MesonConcurrencyCase }
+    if ($Case -in @('All', 'MesonPublishedReparse')) { Assert-MesonPublishedReparseCase }
+    if ($Case -in @('All', 'MesonAdversarialContender')) { Assert-MesonAdversarialContenderCase }
 } finally {
     if (Test-Path -LiteralPath $fixtureRoot) {
         [IO.Directory]::Delete($fixtureRoot, $true)
