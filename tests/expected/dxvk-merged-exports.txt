@@ -1,0 +1,25 @@
+16
+20 Direct3DCreate9On12
+21 Direct3DCreate9On12Ex
+24 Direct3DShaderValidatorCreate9
+25 PSGPError
+26 PSGPSampleTexture
+27 D3DPERF_BeginEvent
+28 D3DPERF_EndEvent
+29 D3DPERF_GetStatus
+30 D3DPERF_QueryRepeatFrame
+31 D3DPERF_SetMarker
+32 D3DPERF_SetOptions
+33 D3DPERF_SetRegion
+34 DebugSetLevel
+35 DebugSetMute
+36 Direct3D9EnableMaximizedWindowedModeShim
+37 Direct3DCreate9
+38 Direct3DCreate9Ex
+28257
+28258
+28259 CreateDXGIFactory
+28260 CreateDXGIFactory1
+28261 CreateDXGIFactory2
+28262 DXGIDeclareAdapterRemovalSupport
+28263 DXGIGetDebugInterface1

@@ -206,6 +206,7 @@ try {
         $dxvkEnvironment = @{
             PATH = ($pathDirectories -join [IO.Path]::PathSeparator)
             PYTHONPATH = $mesonModuleDirectory
+            PYTHONDONTWRITEBYTECODE = '1'
         }
         $dxvkBuild = Join-Path $buildRoot 'dxvk-x86'
         $dxvkSource = Join-Path $root 'backend/dxvk'

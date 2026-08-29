@@ -1,0 +1,11 @@
+1 Direct3DCreate9
+2 DebugSetLevel
+3 DebugSetMute
+4 Direct3DShaderValidatorCreate9
+5 PSGPError
+6 PSGPSampleTexture
+7 CreateDXGIFactory1
+8 CreateDXGIFactory2
+9 CreateDXGIFactory
+10 DXGIDeclareAdapterRemovalSupport
+11 DXGIGetDebugInterface1

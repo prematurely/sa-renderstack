@@ -18,6 +18,7 @@ under out/deps/meson/1.11.1/site-packages.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$env:PYTHONDONTWRITEBYTECODE = '1'
 
 . (Join-Path $PSScriptRoot 'lib/process-runner.ps1')
 . (Join-Path $PSScriptRoot 'lib/toolchain-discovery.ps1')
