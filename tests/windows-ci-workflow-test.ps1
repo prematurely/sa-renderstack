@@ -50,6 +50,7 @@ foreach ($token in @(
         'msys2-location',
         'actions/cache@v4',
         'actions/upload-artifact@v4',
+        'MSBuild.exe',
         'if-no-files-found:\s*error')) {
     Assert-Contains -Text $workflow -Pattern $token -Description "required token '$token'"
 }

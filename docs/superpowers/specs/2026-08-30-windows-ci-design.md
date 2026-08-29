@@ -72,6 +72,11 @@ The workflow must not use an unpinned `latest` URL for this compiler. The
 official release source and digest are visible in the build log and in the
 artifact's generated build metadata.
 
+The `setup-msbuild` output may be either the MSBuild executable or its
+containing directory. The workflow must normalize a directory output by
+appending `MSBuild.exe` before passing the canonical file path to the build
+scripts.
+
 ## CI-Only MSBuild Compatibility
 
 Add an explicit `-AllowNonV18MsBuild` switch to `tools/build.ps1` and

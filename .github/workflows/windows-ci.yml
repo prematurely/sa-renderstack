@@ -118,6 +118,9 @@ jobs:
           }
           if ($msbuildPath -is [array]) { $msbuildPath = $msbuildPath[0] }
           $msbuildPath = [string]$msbuildPath
+          if (Test-Path -LiteralPath $msbuildPath -PathType Container) {
+            $msbuildPath = Join-Path $msbuildPath 'MSBuild.exe'
+          }
           if (-not (Test-Path -LiteralPath $msbuildPath -PathType Leaf)) {
             throw "Canonical x64 MSBuild was not found: $msbuildPath"
           }
