@@ -1,10 +1,11 @@
 param(
-    [string]$Source
+    [string]$Source,
+    [string]$BaselineCommit = '07d715df896a1b54d8e08086435408b38f688fae'
 )
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'helpers/git-baseline.ps1')
-$DxvkBaselineCommit = '07d715df896a1b54d8e08086435408b38f688fae'
+$DxvkBaselineCommit = $BaselineCommit
 $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
 $utf8NoBom = [Text.UTF8Encoding]::new($false)
 $liveAudit = $PSBoundParameters.ContainsKey('Source')
@@ -13,6 +14,9 @@ $forbiddenPathPattern = '(^|/)build(/|$)|(^|/)\.wraplock$|\.bak$|\.log$|\.exe$|\
 
 if ($liveAudit -and [string]::IsNullOrWhiteSpace($Source)) {
     throw 'Live DXVK overlay audit requires a non-empty -Source path'
+}
+if ($DxvkBaselineCommit -cnotmatch '\A[0-9a-fA-F]{40}\z') {
+    throw 'DXVK baseline override must be a full 40-character hexadecimal Git commit'
 }
 
 Assert-GitFullHistory
