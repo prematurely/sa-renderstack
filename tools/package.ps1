@@ -344,6 +344,7 @@ try {
         'config/dxvk.conf|dxvk.conf',
         'out/build/dxvk-x86/src/d3d9/d3d9.dll|backend/dxvk-gta/d3d9.dll',
         'README.md|docs/README.md',
+        'docs/installation.md|docs/INSTALL.md',
         'LICENSE|docs/LICENSE',
         'backend/dxvk/LICENSE|docs/LICENSE-DXVK'
     )

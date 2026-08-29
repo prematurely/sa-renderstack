@@ -184,6 +184,7 @@ try {
         'scripts/BridgeD3D9.ini',
         'backend/dxvk-gta/d3d9.dll',
         'docs/README.md',
+        'docs/INSTALL.md',
         'docs/LICENSE',
         'docs/LICENSE-DXVK',
         'manifest.json'
