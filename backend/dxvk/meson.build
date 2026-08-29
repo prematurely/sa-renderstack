@@ -238,3 +238,16 @@ if platform != 'windows'
 endif
 
 subdir('src')
+
+if get_option('enable_renderstack_tests')
+  if platform != 'windows'
+    error('SA RenderStack probes require a Windows target')
+  endif
+  if cpu_family != 'x86'
+    error('SA RenderStack probes require an x86 target')
+  endif
+  if not get_option('enable_d3d9')
+    error('SA RenderStack probes require D3D9')
+  endif
+  subdir('tools')
+endif
