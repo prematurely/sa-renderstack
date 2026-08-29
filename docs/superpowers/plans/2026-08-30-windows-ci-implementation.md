@@ -6,7 +6,7 @@
 
 **Architecture:** Keep `tools/release-gate.ps1` as the local release authority because it checks protected game-root rollback files. Add a narrowly scoped CI-only MSBuild compatibility switch while preserving strict Visual Studio 18 behavior by default, then have the workflow bootstrap the remaining x86 toolchain and call the existing build/test/package scripts.
 
-**Tech Stack:** GitHub Actions, `windows-2025`, PowerShell 7, Visual Studio MSBuild, Python 3.12, MSYS2, LLVM-MinGW 20260826 msvcrt-i686, Meson, Ninja, glslang, ZIP artifacts.
+**Tech Stack:** GitHub Actions, `windows-2025`, PowerShell 7, Visual Studio MSBuild, Python 3.12, MSYS2, LLVM-MinGW 20260602 msvcrt-i686, Meson, Ninja, glslang, ZIP artifacts.
 
 **Spec:** `docs/superpowers/specs/2026-08-30-windows-ci-design.md`
 
@@ -14,7 +14,7 @@
 
 - CI triggers are `pull_request`, push to `main`, and `workflow_dispatch`.
 - CI uses `windows-2025`, `permissions: contents: read`, and a 60-minute timeout.
-- The pinned compiler archive is `llvm-mingw-20260826-msvcrt-i686.zip` with SHA-256 `8fb74ce85b94f225195113317fe1d6c3da605d6777b39e4ee6461d594fb07160`.
+- The pinned compiler archive is `llvm-mingw-20260602-msvcrt-i686.zip` with SHA-256 `2c2ced6587900fd0a4ea27d1215d5ae3176ef136da0287acae7f2881b5da4a3e`.
 - End users and hosted runners must not require the local GTA San Andreas installation.
 - `tools/release-gate.ps1` must remain strict and must not be called by CI.
 - No workflow step may create tags, GitHub Releases, or write outside the workspace and runner tool caches.
@@ -33,13 +33,13 @@
 - Consumes: `.github/workflows/windows-ci.yml` once created.
 - Produces: a deterministic static check for workflow triggers, runner policy, pinned toolchain, build commands, artifact policy, and release isolation.
 
-- [ ] **Step 1: Write the failing contract test.**
+- [x] **Step 1: Write the failing contract test.**
   Make the test require the workflow path and assert the literal contract: `pull_request`, push branch `main`, `workflow_dispatch`, `windows-2025`, `contents: read`, `timeout-minutes: 60`, `cancel-in-progress: true`, the pinned LLVM-MinGW URL/digest, `AllowNonV18MsBuild`, build/test/package/package-layout commands, `upload-artifact@v4`, `if-no-files-found: error`, and the absence of `release-gate.ps1` and `gh release create`.
-- [ ] **Step 2: Run the test before implementation.**
+- [x] **Step 2: Run the test before implementation.**
   Run `pwsh -NoProfile -File tests/windows-ci-workflow-test.ps1`. It must fail because `.github/workflows/windows-ci.yml` does not exist.
-- [ ] **Step 3: Add the test to normal orchestration.**
+- [x] **Step 3: Add the test to normal orchestration.**
   Register it as a required `windows-ci-workflow` layout/automation gate in `tools/test.ps1` beside the repository layout and source hygiene checks.
-- [ ] **Step 4: Keep the focused test independently runnable.**
+- [x] **Step 4: Keep the focused test independently runnable.**
   Run the test directly after workflow implementation and ensure its output reports PASS without reading `out/` or the game directory.
 
 ### Task 2: CI-Only MSBuild Discovery
@@ -52,18 +52,36 @@
 
 **Interfaces:**
 - Consumes: existing `Get-RenderStackToolchain`, `Find-RenderStackMSBuild`, and build/test tool parameters.
-- Produces: `-AllowNonV18MsBuild` on build/test, forwarded to discovery; default invocations still require Visual Studio major 18, while CI invocations accept canonical major 17 or 18 MSBuild and record the actual version.
+- Produces: `-AllowNonV18MsBuild` on build/test, forwarded to discovery; default invocations still require Visual Studio major 18, while CI invocations accept a canonical HostX64 MSBuild from a Visual Studio 17 or 18 installation and record the actual version.
 
-- [ ] **Step 1: Write the failing compatibility test.**
+- [x] **Step 1: Write the failing compatibility test.**
   Assert that build/test help advertises `-AllowNonV18MsBuild`, discovery exposes the switch, strict source validation still checks major 18, and the CI path includes the accepted major-17-or-18 branch. Also run local strict discovery and require the current local product major to remain 18.
-- [ ] **Step 2: Run the test before implementation.**
+- [x] **Step 2: Run the test before implementation.**
   Run `pwsh -NoProfile -File tests/msbuild-compatibility-regression-test.ps1`; it must fail because the new switch and forwarding path are absent.
-- [ ] **Step 3: Implement the switch with strict default behavior.**
-  Add the switch to build/test parameter blocks and help text, pass it through `Get-RenderStackToolchain`, and update `Find-RenderStackMSBuild` so the default query/range/filter remains `[18.0,19.0)` while the explicit switch uses `[17.0,19.0)` and accepts only product major 17 or 18. Keep `vswhere`, canonical HostX64 MSBuild path, C++ Build Tools requirement, file-version validation, and command version probing in both paths.
-- [ ] **Step 4: Pass the switch through test-triggered build refresh.**
+- [x] **Step 3: Implement the switch with strict default behavior.**
+  Add the switch to build/test parameter blocks and help text, pass it through `Get-RenderStackToolchain`, and update `Find-RenderStackMSBuild` so the default query/range/filter remains `[18.0,19.0)` while the explicit switch uses `[17.0,19.0)` and accepts only product major 17 or 18. Keep `vswhere`, canonical HostX64 MSBuild path, Visual Studio C++ requirement, file-version validation, and command version probing in both paths.
+- [x] **Step 4: Pass the switch through test-triggered build refresh.**
   When `tools/test.ps1` invokes `tools/build.ps1` for a stale build, include `-AllowNonV18MsBuild` only when the parent test invocation received it. Do not alter `tools/release-gate.ps1`.
-- [ ] **Step 5: Run the compatibility test after implementation.**
+- [x] **Step 5: Run the compatibility test after implementation.**
   Confirm the new test passes and the existing orchestration discovery test still proves strict Visual Studio 18 behavior.
+
+### Task 2A: Hosted Test Evidence Boundary
+
+**Files:**
+- Modify: `tools/test.ps1`
+- Modify: `tests/windows-ci-workflow-test.ps1`
+- Modify: `.github/workflows/windows-ci.yml`
+
+**Interfaces:**
+- Consumes: the local `current-bridge-evidence` and `bridge-evidence-types-regression` gates.
+- Produces: `-SkipLocalBridgeEvidence`, which records those two checks as optional skips when no user's GTA game-root reference exists.
+
+- [x] **Step 1: Require the explicit workflow boundary.**
+  The workflow contract test must require `-SkipLocalBridgeEvidence` in the `tools/test.ps1` invocation.
+- [x] **Step 2: Implement the test boundary.**
+  Add the switch and help text to `tools/test.ps1`; when present, add visible non-required skipped result records instead of reading the game root. Keep the default local path unchanged and do not modify `tools/release-gate.ps1`.
+- [x] **Step 3: Verify both modes.**
+  Run `tools/test.ps1` with the switch after the local alpha installation and verify it no longer expects the old game-root Bridge hash; run the existing local evidence test separately where its reference is available.
 
 ### Task 3: Hosted Windows Workflow
 
@@ -75,17 +93,17 @@
 - Consumes: build/test/package scripts, CI-only MSBuild switch, and the pinned toolchain contract.
 - Produces: commit-scoped Actions artifacts containing runtime ZIPs, SDK/symbol ZIPs, source manifest, test results, and optional logs.
 
-- [ ] **Step 1: Add workflow metadata and concurrency.**
+- [x] **Step 1: Add workflow metadata and concurrency.**
   Configure the three triggers, `windows-2025`, `permissions: contents: read`, `timeout-minutes: 60`, and a concurrency group keyed by workflow/ref with `cancel-in-progress: true`.
-- [ ] **Step 2: Bootstrap tools.**
+- [x] **Step 2: Bootstrap tools.**
   Use `actions/checkout@v4`, `actions/setup-python@v5` for Python 3.12, `microsoft/setup-msbuild@v2` with x64 MSBuild, `msys2/setup-msys2@v2` for Ninja and glslang, `actions/cache@v4` for `out/deps`, and a PowerShell step that downloads/verifies/extracts the pinned LLVM-MinGW archive and exports explicit tool paths through `GITHUB_ENV`.
-- [ ] **Step 3: Run the repository pipeline.**
+- [x] **Step 3: Run the repository pipeline.**
   Read and validate `VERSION`, then call `build.ps1 -Configuration Release -Architecture x86 -Component All -Clean -AllowNonV18MsBuild`, `test.ps1 -Configuration Release -Architecture x86 -AllowNonV18MsBuild`, `package.ps1 -Version <VERSION> -Configuration Release`, and `tests/package-layout-test.ps1 -Version <VERSION> -Configuration Release` with explicit discovered tool paths.
-- [ ] **Step 4: Upload only CI evidence.**
+- [x] **Step 4: Upload only CI evidence.**
   Upload required package ZIPs/source manifest and test results with `actions/upload-artifact@v4` and `if-no-files-found: error`; upload `out/logs/**` separately with `warn`. Name artifacts with `${{ github.sha }}`. Do not call `release-gate.ps1`, `gh release create`, or upload the game directory.
-- [ ] **Step 5: Document the workflow.**
+- [x] **Step 5: Document the workflow.**
   Add a README CI section explaining triggers, artifact behavior, and the distinction between hosted build validation and local game-root release validation. Do not claim that CI proves in-game FPS or mod compatibility.
-- [ ] **Step 6: Run the workflow contract test.**
+- [x] **Step 6: Run the workflow contract test.**
   Run `pwsh -NoProfile -File tests/windows-ci-workflow-test.ps1` and verify all required tokens and forbidden-operation checks pass.
 
 ### Task 4: Full Local Verification

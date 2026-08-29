@@ -148,31 +148,37 @@ function Find-RenderStackPython {
 function Find-RenderStackMSBuild {
     param(
         [string]$MsBuildPath,
-        [Parameter(Mandatory)] [string]$RepoRoot
+        [Parameter(Mandatory)] [string]$RepoRoot,
+        [switch]$AllowNonV18MsBuild
     )
 
+    $allowedProductMajors = if ($AllowNonV18MsBuild) { @(17, 18) } else { @(18) }
+    $versionRange = if ($AllowNonV18MsBuild) { '[17.0,19.0)' } else { '[18.0,19.0)' }
+    $discoveryLabel = if ($AllowNonV18MsBuild) { 'vs17-or-vs18' } else { 'vs18-buildtools' }
+    $versionRequirement = if ($AllowNonV18MsBuild) { 'Visual Studio 17 or 18' } else { 'Visual Studio 18' }
+    $productSelector = if ($AllowNonV18MsBuild) { '*' } else { 'Microsoft.VisualStudio.Product.BuildTools' }
     $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
-        throw "vswhere is required to prove Visual Studio 18 BuildTools identity: $vswhere"
+        throw "vswhere is required to prove $versionRequirement MSBuild identity: $vswhere"
     }
     $result = Invoke-RenderStackProcess -FilePath $vswhere -ArgumentList @(
-        '-all', '-products', 'Microsoft.VisualStudio.Product.BuildTools',
-        '-version', '[18.0,19.0)', '-requires', 'Microsoft.Component.MSBuild',
+        '-all', '-products', $productSelector,
+        '-version', $versionRange, '-requires', 'Microsoft.Component.MSBuild',
         '-format', 'json'
-    ) -WorkingDirectory $RepoRoot -Label 'vswhere-vs18-buildtools'
+    ) -WorkingDirectory $RepoRoot -Label $discoveryLabel
     if ($result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.StandardOutput)) {
-        throw 'Visual Studio 18 BuildTools with MSBuild was not found'
+        throw "$versionRequirement installation with MSBuild was not found"
     }
     try {
         $instances = @($result.StandardOutput | ConvertFrom-Json -ErrorAction Stop | Where-Object {
-            $_.productId -ceq 'Microsoft.VisualStudio.Product.BuildTools' -and
-            ([version]$_.installationVersion).Major -eq 18
+            ($AllowNonV18MsBuild -or $_.productId -ceq 'Microsoft.VisualStudio.Product.BuildTools') -and
+            $allowedProductMajors -contains ([version]$_.installationVersion).Major
         })
     } catch {
         throw "vswhere returned invalid Visual Studio instance JSON: $($_.Exception.Message)"
     }
     if ($instances.Count -eq 0) {
-        throw 'vswhere returned no Visual Studio 18 BuildTools instances'
+        throw "vswhere returned no $versionRequirement installations"
     }
 
     $override = Get-RenderStackOverride -ParameterValue $MsBuildPath -EnvironmentName 'SA_RENDERSTACK_MSBUILD'
@@ -184,7 +190,7 @@ function Find-RenderStackMSBuild {
             $path.Equals($expected, [StringComparison]::OrdinalIgnoreCase)
         })
         if ($matchingInstances.Count -ne 1) {
-            throw "MSBuild override must be the canonical Visual Studio 18 BuildTools HostX64 amd64 executable: $path"
+            throw "MSBuild override must be the canonical $versionRequirement HostX64 amd64 executable: $path"
         }
         $instance = $matchingInstances[0]
         $source = $override.Source
@@ -192,8 +198,8 @@ function Find-RenderStackMSBuild {
         $instance = $instances | Sort-Object { [version]$_.installationVersion } -Descending | Select-Object -First 1
         $path = Resolve-RenderStackExecutable -Path (
             Join-Path ([string]$instance.installationPath) 'MSBuild/Current/Bin/amd64/MSBuild.exe') `
-            -Description 'Visual Studio 18 BuildTools HostX64 MSBuild executable'
-        $source = 'vswhere-vs18-buildtools'
+            -Description "$versionRequirement HostX64 MSBuild executable"
+        $source = "vswhere-$discoveryLabel"
     }
 
     $fileVersion = (Get-Item -LiteralPath $path -ErrorAction Stop).VersionInfo
@@ -202,14 +208,14 @@ function Find-RenderStackMSBuild {
         throw "MSBuild product version is unavailable: $path"
     }
     $productMajor = [int]$Matches.major
-    if ($productMajor -ne 18) {
-        throw "MSBuild product major 18 is required; found $($fileVersion.ProductVersion) at $path"
+    if ($allowedProductMajors -notcontains $productMajor) {
+        throw "MSBuild product major $($allowedProductMajors -join ' or ') is required; found $($fileVersion.ProductVersion) at $path"
     }
     $versionOutput = Invoke-RenderStackVersionProbe -FilePath $path -ArgumentList @('-version', '-nologo') `
         -WorkingDirectory $RepoRoot -Description 'MSBuild'
     $version = ($versionOutput -split '\r?\n' | Where-Object { $_ -match '^\d+\.\d+' } | Select-Object -Last 1).Trim()
-    if ($version -notmatch '^(?<major>\d+)\.' -or [int]$Matches.major -ne 18) {
-        throw "MSBuild command version must have major 18; found '$version' at $path"
+    if ($version -notmatch '^(?<major>\d+)\.' -or $allowedProductMajors -notcontains [int]$Matches.major) {
+        throw "MSBuild command version must have major $($allowedProductMajors -join ' or '); found '$version' at $path"
     }
     return [pscustomobject]@{
         Path = $path
@@ -335,13 +341,17 @@ function Get-RenderStackToolchain {
         [string]$PythonPath,
         [string]$LlvmMingwBin,
         [string]$NinjaPath,
-        [string]$GlslangPath
+        [string]$GlslangPath,
+        [switch]$AllowNonV18MsBuild
     )
 
     $root = Get-RenderStackFullPath -Path $RepoRoot
     $needBridge = $Component -in @('All', 'Bridge')
     $needDxvk = $Component -in @('All', 'Dxvk')
-    $msbuild = if ($needBridge) { Find-RenderStackMSBuild -MsBuildPath $MsBuildPath -RepoRoot $root } else { $null }
+    $msbuild = if ($needBridge) {
+        Find-RenderStackMSBuild -MsBuildPath $MsBuildPath -RepoRoot $root `
+            -AllowNonV18MsBuild:$AllowNonV18MsBuild
+    } else { $null }
     $python = if ($needDxvk) { Find-RenderStackPython -PythonPath $PythonPath -RepoRoot $root } else { $null }
     $llvm = if ($needDxvk) { Find-RenderStackLlvmMingw -LlvmMingwBin $LlvmMingwBin -RepoRoot $root } else { $null }
     $ninja = if ($needDxvk) {

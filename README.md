@@ -206,6 +206,27 @@ tests, ABI and export sets, package layout, artifact hashes, and protected
 game-root rollback hashes. A release candidate is valid only when the report
 ends with `Verdict: PASS`.
 
+## GitHub Actions
+
+The repository includes a custom Windows workflow at
+`.github/workflows/windows-ci.yml`. It runs on pull requests, pushes to
+`main`, and manual dispatches. The workflow bootstraps the pinned x86
+LLVM-MinGW toolchain, uses the hosted Visual Studio MSBuild installation, and
+executes the same build, test, package, and package-layout stages used by the
+local workflow.
+
+Hosted CI passes the explicit `-SkipLocalBridgeEvidence` option because a
+runner does not contain the user's pre-installation GTA Bridge reference. The
+two affected evidence checks are recorded as non-required skips; local runs
+and the release gate keep the original game-root checks.
+
+Each run uploads commit-scoped artifacts containing the split, SDK, and
+symbols archives, the source manifest, build metadata, test results, and
+diagnostic logs. CI does not install the runtime into GTA San Andreas, does
+not inspect the local game directory, and does not create tags or GitHub
+Releases. The local release gate remains necessary for protected game-root
+rollback checks and final in-game workload validation.
+
 ## Why The DXVK DLL Is Not 20 MiB
 
 A full upstream DXVK distribution is a bundle, not one universal DLL. It can

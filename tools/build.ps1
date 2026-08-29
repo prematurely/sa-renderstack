@@ -8,7 +8,8 @@ param(
     [string]$Python,
     [string]$LlvmMingwBin,
     [string]$Ninja,
-    [string]$Glslang
+    [string]$Glslang,
+    [switch]$AllowNonV18MsBuild
 )
 
 $env:GIT_CONFIG_GLOBAL = 'NUL'
@@ -18,10 +19,11 @@ if ($Help) {
 Usage: pwsh -NoProfile -File tools/build.ps1 [-Help] [-Configuration Release] [-Architecture x86]
        [-Component All|Bridge|Dxvk] [-Clean]
        [-MSBuild <path>] [-Python <path>] [-LlvmMingwBin <path>]
-       [-Ninja <path>] [-Glslang <path>]
+       [-Ninja <path>] [-Glslang <path>] [-AllowNonV18MsBuild]
 
 Builds the x86 DXVK backend, five Meson probe targets, the Bridge DLLs, the
 seven Bridge test projects, and the backend ABI executable into out/build.
+The non-VS18 MSBuild switch is intended for hosted CI only.
 '@ | Write-Output
     exit 0
 }
@@ -154,7 +156,8 @@ try {
 
     $toolchain = Get-RenderStackToolchain -RepoRoot $root -Component $Component `
         -MsBuildPath $MSBuild -PythonPath $Python -LlvmMingwBin $LlvmMingwBin `
-        -NinjaPath $Ninja -GlslangPath $Glslang
+        -NinjaPath $Ninja -GlslangPath $Glslang `
+        -AllowNonV18MsBuild:$AllowNonV18MsBuild
 
     $cleanNames = [Collections.Generic.List[string]]::new()
     if ($Component -in @('All', 'Dxvk')) {
@@ -417,6 +420,7 @@ try {
                 mergeDxgiIntoD3d9 = $true
                 enableRenderStackTests = $true
                 renderStackSdkDir = (Join-Path $root 'sdk/include')
+                allowNonV18MsBuild = [bool]$AllowNonV18MsBuild
             }
         }
         tools = if ($null -ne $toolchain) { Get-ToolMetadata } else { [ordered]@{} }

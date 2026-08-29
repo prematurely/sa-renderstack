@@ -10,7 +10,9 @@ param(
     [string]$Python,
     [string]$LlvmMingwBin,
     [string]$Ninja,
-    [string]$Glslang
+    [string]$Glslang,
+    [switch]$AllowNonV18MsBuild,
+    [switch]$SkipLocalBridgeEvidence
 )
 
 if ($Help) {
@@ -19,7 +21,8 @@ Usage: test.ps1 [-Help] [-Configuration Release] [-Architecture x86]
        [-DxvkSource <path>] [-BridgeSource <path>]
        [-ActiveBridgeConfig <path>] [-ActiveDxvkConfig <path>]
        [-MSBuild <path>] [-Python <path>] [-LlvmMingwBin <path>]
-       [-Ninja <path>] [-Glslang <path>]
+       [-Ninja <path>] [-Glslang <path>] [-AllowNonV18MsBuild]
+       [-SkipLocalBridgeEvidence]
 
 Runs the reproducible source, build, runtime, Bridge, and export gates and
 publishes out/test-results.json with durable per-test logs.
@@ -436,6 +439,10 @@ try {
 
     $scriptsRoot = Join-Path $root 'tests'
     $layout = Invoke-ScriptGate -Name 'repository-layout' -ScriptPath (Join-Path $scriptsRoot 'repository-layout-test.ps1') -Category 'layout'
+    [void](Invoke-ScriptGate -Name 'windows-ci-workflow' -ScriptPath (Join-Path $scriptsRoot 'windows-ci-workflow-test.ps1') -Category 'automation')
+    $msbuildCompatibilityArguments = if ($AllowNonV18MsBuild) { @('-AllowNonV18MsBuild') } else { @() }
+    [void](Invoke-ScriptGate -Name 'msbuild-compatibility' -ScriptPath (Join-Path $scriptsRoot 'msbuild-compatibility-regression-test.ps1') `
+        -Arguments $msbuildCompatibilityArguments -Category 'build')
     $hygiene = Invoke-ScriptGate -Name 'source-hygiene-regression' -ScriptPath (Join-Path $scriptsRoot 'source-hygiene-regression-test.ps1') -Category 'hygiene'
     [void](Invoke-ScriptGate -Name 'dxvk-provenance' -ScriptPath (Join-Path $scriptsRoot 'dxvk-provenance-test.ps1') -Category 'provenance')
     [void](Invoke-ScriptGate -Name 'dxvk-dependency-provenance' -ScriptPath (Join-Path $scriptsRoot 'dxvk-dependency-provenance-test.ps1') -Category 'provenance')
@@ -467,13 +474,20 @@ try {
     [void](Invoke-ScriptGate -Name 'bridge-self-contained' -ScriptPath (Join-Path $scriptsRoot 'bridge-self-contained-source-test.ps1') -Category 'bridge-regression')
     $currentEvidence = Join-Path $root 'out/reports/task-6'
     New-Item -ItemType Directory -Path $currentEvidence -Force | Out-Null
-    [void](Invoke-ScriptGate -Name 'current-bridge-evidence' -ScriptPath (Join-Path $root 'tools/migration/verify-bridge-baseline.ps1') `
-        -Arguments @('-Reference', (Join-Path (Split-Path -Parent (Split-Path -Parent $root)) 'd3d9.dll'), '-Candidate', (Get-OutputPath -RelativePath 'out/build/bridge/d3d9.dll'),
-            '-ExportsOut', (Join-Path $currentEvidence 'bridge-exports.txt'), '-EvidenceOut', (Join-Path $currentEvidence 'bridge-build-evidence.json')) -Category 'evidence')
-    [void](Invoke-ScriptGate -Name 'bridge-evidence-types-regression' -ScriptPath (Join-Path $scriptsRoot 'bridge-build-evidence-types-regression-test.ps1') `
-        -Arguments @('-ExportsPath', (Join-Path $currentEvidence 'bridge-exports.txt'),
-            '-EvidencePath', (Join-Path $currentEvidence 'bridge-build-evidence.json'),
-            '-Candidate', (Get-OutputPath -RelativePath 'out/build/bridge/d3d9.dll')) -Category 'bridge-regression')
+    if ($SkipLocalBridgeEvidence) {
+        [void](Add-SkippedGate -Name 'current-bridge-evidence' -Category 'evidence' -Required $false `
+            -Reason 'Local GTA game-root Bridge reference was not supplied')
+        [void](Add-SkippedGate -Name 'bridge-evidence-types-regression' -Category 'bridge-regression' -Required $false `
+            -Reason 'Current Bridge evidence is unavailable without the local GTA game-root reference')
+    } else {
+        [void](Invoke-ScriptGate -Name 'current-bridge-evidence' -ScriptPath (Join-Path $root 'tools/migration/verify-bridge-baseline.ps1') `
+            -Arguments @('-Reference', (Join-Path (Split-Path -Parent (Split-Path -Parent $root)) 'd3d9.dll'), '-Candidate', (Get-OutputPath -RelativePath 'out/build/bridge/d3d9.dll'),
+                '-ExportsOut', (Join-Path $currentEvidence 'bridge-exports.txt'), '-EvidenceOut', (Join-Path $currentEvidence 'bridge-build-evidence.json')) -Category 'evidence')
+        [void](Invoke-ScriptGate -Name 'bridge-evidence-types-regression' -ScriptPath (Join-Path $scriptsRoot 'bridge-build-evidence-types-regression-test.ps1') `
+            -Arguments @('-ExportsPath', (Join-Path $currentEvidence 'bridge-exports.txt'),
+                '-EvidencePath', (Join-Path $currentEvidence 'bridge-build-evidence.json'),
+                '-Candidate', (Get-OutputPath -RelativePath 'out/build/bridge/d3d9.dll')) -Category 'bridge-regression')
+    }
     [void](Invoke-ScriptGate -Name 'backend-api-source' -ScriptPath (Join-Path $scriptsRoot 'backend-api-source-test.ps1') -Category 'api')
 
     $toolchain = Get-RenderStackToolchain -RepoRoot $root -Component Dxvk -MSBuildPath $MSBuild -PythonPath $Python `
@@ -495,13 +509,16 @@ try {
         }
         [void](Invoke-Gate -Name 'build-refresh' -Category 'build' -FilePath (Get-Command pwsh).Source `
             -Arguments (@('-NoProfile', '-File', (Join-Path $root 'tools/build.ps1'), '-Configuration', $Configuration,
-                '-Architecture', $Architecture, '-Component', 'All') + $buildArguments.ToArray()) `
+                '-Architecture', $Architecture, '-Component', 'All') +
+                $(if ($AllowNonV18MsBuild) { @('-AllowNonV18MsBuild') } else { @() }) +
+                $buildArguments.ToArray()) `
             -Required $true)
     } else {
         [void](Add-SkippedGate -Name 'build-refresh' -Category 'build' -Required $false -Reason 'Current Task 6A build metadata and output hashes are valid')
     }
     $toolchain = Get-RenderStackToolchain -RepoRoot $root -Component Dxvk -MSBuildPath $MSBuild -PythonPath $Python `
-        -LlvmMingwBin $LlvmMingwBin -NinjaPath $Ninja -GlslangPath $Glslang
+        -LlvmMingwBin $LlvmMingwBin -NinjaPath $Ninja -GlslangPath $Glslang `
+        -AllowNonV18MsBuild:$AllowNonV18MsBuild
     $metadata = Get-Content -LiteralPath (Join-Path $root 'out/build-metadata.json') -Raw | ConvertFrom-Json
     $moduleDirectory = [string]$metadata.tools.meson.moduleDirectory
     $mesonEnvironment = Get-MesonEnvironment -Toolchain $toolchain -PythonPath $pythonPath -ModuleDirectory $moduleDirectory

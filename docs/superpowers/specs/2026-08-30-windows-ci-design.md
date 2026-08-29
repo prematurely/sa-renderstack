@@ -46,8 +46,8 @@ artifact named with the commit SHA, not a release asset.
 
 ## Toolchain Bootstrap
 
-The runner provides Windows PowerShell 7 and Visual Studio Build Tools. The
-workflow uses `microsoft/setup-msbuild` to expose MSBuild and passes an
+The runner provides Windows PowerShell 7 and a Visual Studio installation with
+MSBuild and C++ support. The workflow uses `microsoft/setup-msbuild` to expose MSBuild and passes an
 explicit CI-only compatibility switch to the repository scripts. Local
 default behavior remains strict about the Visual Studio 18 toolchain used for
 the audited release baseline; CI may use the runner's supported Visual Studio
@@ -56,15 +56,15 @@ the audited release baseline; CI may use the runner's supported Visual Studio
 The workflow installs Python 3.12 with `actions/setup-python`, obtains Meson
 and the D3DX headers through the existing preparation scripts, and installs
 Ninja and glslang through MSYS2. It downloads the official
-`mstorsjo/llvm-mingw` `20260826` `msvcrt-i686` archive, verifies its SHA-256
+`mstorsjo/llvm-mingw` `20260602` `msvcrt-i686` archive, verifies its SHA-256
 digest, extracts it below the workspace, and passes its `bin` directory to
 `build.ps1` and `test.ps1`.
 
 The pinned LLVM-MinGW archive is:
 
 ```text
-https://github.com/mstorsjo/llvm-mingw/releases/download/20260826/llvm-mingw-20260826-msvcrt-i686.zip
-sha256: 8fb74ce85b94f225195113317fe1d6c3da605d6777b39e4ee6461d594fb07160
+https://github.com/mstorsjo/llvm-mingw/releases/download/20260602/llvm-mingw-20260602-msvcrt-i686.zip
+sha256: 2c2ced6587900fd0a4ea27d1215d5ae3176ef136da0287acae7f2881b5da4a3e
 ```
 
 The workflow must not use an unpinned `latest` URL for this compiler. The
@@ -77,12 +77,17 @@ Add an explicit `-AllowNonV18MsBuild` switch to `tools/build.ps1` and
 `tools/test.ps1`. Pass it through `Get-RenderStackToolchain` to
 `Find-RenderStackMSBuild`. When the switch is absent, existing Visual Studio 18
 validation is unchanged. When present, discovery accepts the canonical
-Visual Studio Build Tools MSBuild executable for major version 17 or 18 and
+canonical HostX64 MSBuild executable from a Visual Studio 17 or 18 installation and
 still records its exact product/version information. The switch is for
 hosted CI only and is never used by `tools/release-gate.ps1`.
 
 The CI switch must not bypass the requirement for `vswhere`, a canonical
-MSBuild path, a C++ Build Tools installation, or a successful version probe.
+MSBuild path, a Visual Studio C++ installation, or a successful version probe.
+
+Add an explicit `-SkipLocalBridgeEvidence` switch to `tools/test.ps1`. When
+used by hosted CI it records the two game-root Bridge evidence checks as
+optional skips because the runner has no user's GTA installation. Without the
+switch, local test behavior remains unchanged.
 
 ## Artifacts
 
@@ -95,8 +100,7 @@ On success, upload these paths with `actions/upload-artifact`:
 - `out/test-results.json`;
 - CI-generated `out/logs/**` only; a stale local
   `out/reports/phase-1-release-gate.md` must not be uploaded or treated as CI
-  evidence;
-- `out/logs/**`.
+  evidence.
 
 The workflow must use `if-no-files-found: error` for required package assets
 and `warn` for optional logs. It must not upload credentials, the full runner
@@ -115,6 +119,8 @@ Add `tests/windows-ci-workflow-test.ps1` as a static contract test. It checks:
 - the CI-only MSBuild switch is passed;
 - the workflow does not call `release-gate.ps1`, `gh release create`, or an
   upload path outside `out/`;
+- the workflow passes `-SkipLocalBridgeEvidence` to avoid requiring a local
+  GTA installation;
 - required artifact upload entries use `if-no-files-found: error`.
 
 Run the contract test locally before and after implementation. Add it to the

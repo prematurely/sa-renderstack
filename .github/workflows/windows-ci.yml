@@ -1,0 +1,218 @@
+name: Windows CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sa-renderstack-windows-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-package:
+    name: Build, test, and package
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up MSBuild
+        id: msbuild
+        uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
+
+      - name: Set up MSYS2 tools
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-glslang
+
+      - name: Cache prepared dependencies
+        uses: actions/cache@v4
+        with:
+          path: out/deps
+          key: sa-renderstack-deps-${{ runner.os }}-${{ hashFiles('tools/prepare-meson.ps1', 'tools/prepare-dxsdk.ps1') }}
+
+      - name: Bootstrap pinned LLVM-MinGW
+        id: llvm
+        env:
+          LLVM_MINGW_URL: https://github.com/mstorsjo/llvm-mingw/releases/download/20260602/llvm-mingw-20260602-msvcrt-i686.zip
+          LLVM_MINGW_SHA256: 2c2ced6587900fd0a4ea27d1215d5ae3176ef136da0287acae7f2881b5da4a3e
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolRoot = Join-Path $env:RUNNER_TEMP 'sa-renderstack-llvm-mingw-20260602-msvcrt-i686'
+          $archive = Join-Path $env:RUNNER_TEMP 'llvm-mingw-20260602-msvcrt-i686.zip'
+          $extractRoot = Join-Path $env:RUNNER_TEMP 'sa-renderstack-llvm-mingw-extract'
+          $compilerName = 'i686-w64-mingw32-clang++.exe'
+
+          New-Item -ItemType Directory -Path $toolRoot -Force | Out-Null
+          $compilerPath = Join-Path $toolRoot "bin\$compilerName"
+          if (-not (Test-Path -LiteralPath $compilerPath -PathType Leaf)) {
+            Invoke-WebRequest -Uri $env:LLVM_MINGW_URL -OutFile $archive
+            $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+            if ($actualHash -cne $env:LLVM_MINGW_SHA256) {
+              throw "LLVM-MinGW SHA-256 mismatch: expected $($env:LLVM_MINGW_SHA256), got $actualHash"
+            }
+            if (Test-Path -LiteralPath $extractRoot) {
+              Remove-Item -LiteralPath $extractRoot -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+            Expand-Archive -LiteralPath $archive -DestinationPath $extractRoot -Force
+            $candidate = @(
+              Get-ChildItem -LiteralPath $extractRoot -Directory -Recurse -Force |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "bin\$compilerName") -PathType Leaf }
+            ) | Select-Object -First 1
+            if ($null -eq $candidate -and (Test-Path -LiteralPath (Join-Path $extractRoot "bin\$compilerName") -PathType Leaf)) {
+              $candidate = Get-Item -LiteralPath $extractRoot
+            }
+            if ($null -eq $candidate) {
+              throw "LLVM-MinGW archive did not contain bin\$compilerName"
+            }
+            Copy-Item -Path (Join-Path $candidate.FullName '*') -Destination $toolRoot -Recurse -Force
+          }
+
+          if (-not (Test-Path -LiteralPath $compilerPath -PathType Leaf)) {
+            throw "LLVM-MinGW compiler is missing after bootstrap: $compilerPath"
+          }
+          $version = & $compilerPath --version 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            throw "LLVM-MinGW version probe failed: $version"
+          }
+          $llvmBin = Join-Path $toolRoot 'bin'
+          "SA_RENDERSTACK_LLVM_MINGW_BIN=$llvmBin" >> $env:GITHUB_ENV
+          "llvm-bin=$llvmBin" >> $env:GITHUB_OUTPUT
+          Write-Output $version.Trim()
+
+      - name: Resolve CI tool paths
+        id: tools
+        env:
+          MSBUILD_OUTPUT: ${{ steps.msbuild.outputs.msbuildPath }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msbuildPath = $env:MSBUILD_OUTPUT
+          if ([string]::IsNullOrWhiteSpace($msbuildPath)) {
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+            $msbuildPath = @(& $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild\Current\Bin\amd64\MSBuild.exe' 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+          }
+          if ($msbuildPath -is [array]) { $msbuildPath = $msbuildPath[0] }
+          $msbuildPath = [string]$msbuildPath
+          if (-not (Test-Path -LiteralPath $msbuildPath -PathType Leaf)) {
+            throw "Canonical x64 MSBuild was not found: $msbuildPath"
+          }
+
+          $msysBin = 'C:\msys64\mingw64\bin'
+          $ninjaPath = Join-Path $msysBin 'ninja.exe'
+          $glslangPath = Join-Path $msysBin 'glslangValidator.exe'
+          foreach ($path in @($ninjaPath, $glslangPath)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "MSYS2 tool is missing: $path"
+            }
+          }
+
+          "msbuild=$msbuildPath" >> $env:GITHUB_OUTPUT
+          "ninja=$ninjaPath" >> $env:GITHUB_OUTPUT
+          "glslang=$glslangPath" >> $env:GITHUB_OUTPUT
+
+      - name: Read release version
+        id: version
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($version) -or $version -match '[\\/:\x00]') {
+            throw "Invalid VERSION value: $version"
+          }
+          "value=$version" >> $env:GITHUB_OUTPUT
+          Write-Output "VERSION=$version"
+
+      - name: Build Release x86
+        run: |
+          pwsh -NoProfile -File tools/build.ps1 `
+            -Configuration Release `
+            -Architecture x86 `
+            -Component All `
+            -Clean `
+            -AllowNonV18MsBuild `
+            -MSBuild '${{ steps.tools.outputs.msbuild }}' `
+            -Python '${{ steps.python.outputs.python-path }}' `
+            -LlvmMingwBin $env:SA_RENDERSTACK_LLVM_MINGW_BIN `
+            -Ninja '${{ steps.tools.outputs.ninja }}' `
+            -Glslang '${{ steps.tools.outputs.glslang }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run tests
+        run: |
+          pwsh -NoProfile -File tools/test.ps1 `
+            -Configuration Release `
+            -Architecture x86 `
+            -AllowNonV18MsBuild `
+            -SkipLocalBridgeEvidence `
+            -MSBuild '${{ steps.tools.outputs.msbuild }}' `
+            -Python '${{ steps.python.outputs.python-path }}' `
+            -LlvmMingwBin $env:SA_RENDERSTACK_LLVM_MINGW_BIN `
+            -Ninja '${{ steps.tools.outputs.ninja }}' `
+            -Glslang '${{ steps.tools.outputs.glslang }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package release candidate
+        run: |
+          pwsh -NoProfile -File tools/package.ps1 `
+            -Version '${{ steps.version.outputs.value }}' `
+            -Configuration Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify package layout
+        run: |
+          pwsh -NoProfile -File tests/package-layout-test.ps1 `
+            -Version '${{ steps.version.outputs.value }}' `
+            -Configuration Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload packages and source manifest
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SA-RenderStack-ci-${{ github.sha }}-packages
+          if-no-files-found: error
+          path: |
+            out/packages/SA-RenderStack-v${{ steps.version.outputs.value }}-split.zip
+            out/packages/SA-RenderStack-v${{ steps.version.outputs.value }}-sdk.zip
+            out/packages/SA-RenderStack-v${{ steps.version.outputs.value }}-symbols.zip
+            out/packages/SA-RenderStack-v${{ steps.version.outputs.value }}-source-manifest.json
+
+      - name: Upload test results and build metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SA-RenderStack-ci-${{ github.sha }}-results
+          if-no-files-found: error
+          path: |
+            out/test-results.json
+            out/build-metadata.json
+
+      - name: Upload CI logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SA-RenderStack-ci-${{ github.sha }}-logs
+          if-no-files-found: warn
+          path: out/logs/**
