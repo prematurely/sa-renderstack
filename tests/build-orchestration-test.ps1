@@ -10,6 +10,7 @@ $env:GIT_CONFIG_GLOBAL = 'NUL'
 $root = Split-Path -Parent $PSScriptRoot
     $scripts = @(
         (Join-Path $root 'tools/build.ps1'),
+        (Join-Path $root 'tools/prepare-meson.ps1'),
         (Join-Path $root 'tools/test.ps1'),
         (Join-Path $root 'tools/verify-exports.ps1'),
         (Join-Path $root 'tools/release-gate.ps1')

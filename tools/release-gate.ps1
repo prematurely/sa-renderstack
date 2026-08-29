@@ -33,6 +33,7 @@ $startedUtc = [DateTime]::UtcNow
 $firstExitCode = 0
 $overallStatus = 'passed'
 $failureMessage = $null
+$repositoryCommit = 'unavailable'
 $steps = [Collections.Generic.List[object]]::new()
 
 function Get-RelativePath {
@@ -139,6 +140,7 @@ function Write-ReleaseReport {
     [void]$lines.Add("- Configuration: $Configuration")
     [void]$lines.Add("- Architecture: $Architecture")
     [void]$lines.Add("- Repository: $root")
+    [void]$lines.Add("- Repository commit: $repositoryCommit")
     [void]$lines.Add("- Game root: $GameRoot")
     [void]$lines.Add("- Started UTC: $($startedUtc.ToString('o'))")
     [void]$lines.Add("- Ended UTC: $([DateTime]::UtcNow.ToString('o'))")
@@ -179,6 +181,18 @@ try {
     if (-not (Test-Path -LiteralPath $GameRoot -PathType Container)) {
         throw "Game root does not exist: $GameRoot"
     }
+
+    $identity = Invoke-RenderStackProcess -FilePath (Get-Command git.exe -ErrorAction Stop).Source `
+        -ArgumentList @('rev-parse', 'HEAD') -WorkingDirectory $root -Label 'release-identity'
+    if ($identity.ExitCode -ne 0) {
+        throw "Unable to resolve repository commit: $($identity.StandardError)"
+    }
+    $repositoryCommit = $identity.StandardOutput.Trim()
+    if ($repositoryCommit -notmatch '^[0-9a-f]{40}$') {
+        throw "Git returned an invalid repository commit: $repositoryCommit"
+    }
+    Add-Step -Name 'release-identity' -Status 'PASS' -Details "Repository commit $repositoryCommit" `
+        -Command $identity.Command -ExitCode 0 -DurationMs $identity.DurationMilliseconds
 
     $packageScript = Join-Path $root 'tools/package.ps1'
     $packageTest = Join-Path $root 'tests/package-layout-test.ps1'
@@ -248,14 +262,21 @@ try {
         Add-Step -Name $item.Name -Status 'PASS' -Details "Rollback hash unchanged: $actual"
     }
 
-    $splitArchive = Join-Path $root "out/packages/SA-RenderStack-v$Version-split.zip"
-    $sourceManifest = Join-Path $root "out/packages/SA-RenderStack-v$Version-source-manifest.json"
-    foreach ($artifact in @($splitArchive, $sourceManifest, (Join-Path $root 'out/stage/split/manifest.json'))) {
-        if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
-            throw "Release artifact is missing: $artifact"
+    $artifactSpecs = @(
+        [pscustomobject]@{ Name = 'artifact-bridge-dll'; Path = Join-Path $root 'out/build/bridge/d3d9.dll' },
+        [pscustomobject]@{ Name = 'artifact-dxvk-dll'; Path = Join-Path $root 'out/build/dxvk-x86/src/d3d9/d3d9.dll' },
+        [pscustomobject]@{ Name = 'artifact-split-archive'; Path = Join-Path $root "out/packages/SA-RenderStack-v$Version-split.zip" },
+        [pscustomobject]@{ Name = 'artifact-sdk-archive'; Path = Join-Path $root "out/packages/SA-RenderStack-v$Version-sdk.zip" },
+        [pscustomobject]@{ Name = 'artifact-symbols-archive'; Path = Join-Path $root "out/packages/SA-RenderStack-v$Version-symbols.zip" },
+        [pscustomobject]@{ Name = 'artifact-source-manifest'; Path = Join-Path $root "out/packages/SA-RenderStack-v$Version-source-manifest.json" },
+        [pscustomobject]@{ Name = 'artifact-split-manifest'; Path = Join-Path $root 'out/stage/split/manifest.json' }
+    )
+    foreach ($artifact in $artifactSpecs) {
+        if (-not (Test-Path -LiteralPath $artifact.Path -PathType Leaf)) {
+            throw "Release artifact is missing: $($artifact.Path)"
         }
-        Add-Step -Name "artifact-$([IO.Path]::GetFileName($artifact))" -Status 'PASS' `
-            -Details "SHA-256 $((Get-FileSha256 -Path $artifact))"
+        Add-Step -Name $artifact.Name -Status 'PASS' `
+            -Details "SHA-256 $((Get-FileSha256 -Path $artifact.Path))"
     }
 } catch {
     $failureMessage = $_.Exception.Message

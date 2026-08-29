@@ -222,6 +222,7 @@ function Get-OutputPath {
 }
 
 function Test-BuildIsCurrent {
+    param([Parameter(Mandatory)] $Toolchain)
     $metadataPath = Join-Path $root 'out/build-metadata.json'
     if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { return $false }
     try {
@@ -237,6 +238,22 @@ function Test-BuildIsCurrent {
         if ($metadata.schema -ne 1 -or $metadata.commit -cne $commit -or
             $metadata.configuration -cne $Configuration -or $metadata.architecture -cne $Architecture -or
             $metadata.component -cne 'All' -or $metadata.exitCode -ne 0) { return $false }
+        foreach ($pair in @(
+                [pscustomobject]@{ Actual = $Toolchain.Python; Recorded = $metadata.tools.python; PathProperty = 'Path'; Name = 'python' },
+                [pscustomobject]@{ Actual = $Toolchain.LlvmMingw; Recorded = $metadata.tools.llvmMingw; PathProperty = 'BinPath'; Name = 'llvmMingw' },
+                [pscustomobject]@{ Actual = $Toolchain.Ninja; Recorded = $metadata.tools.ninja; PathProperty = 'Path'; Name = 'ninja' },
+                [pscustomobject]@{ Actual = $Toolchain.Glslang; Recorded = $metadata.tools.glslang; PathProperty = 'Path'; Name = 'glslang' })) {
+            if ($null -eq $pair.Actual -or $null -eq $pair.Recorded -or
+                [string]$pair.Actual.Version -cne [string]$pair.Recorded.Version -or
+                [string]$pair.Actual.($pair.PathProperty) -cne [string]$pair.Recorded.($pair.PathProperty)) {
+                return $false
+            }
+        }
+        if ($null -eq $metadata.tools.meson -or
+            [string]$metadata.tools.meson.version -cne '1.11.1' -or
+            -not (Test-Path -LiteralPath ([string]$metadata.tools.meson.moduleDirectory) -PathType Container)) {
+            return $false
+        }
         foreach ($output in @($metadata.outputs)) {
             $path = Join-Path $root ([string]$output.path)
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
@@ -354,8 +371,8 @@ function Add-RuntimeProbeGates {
         -Arguments @($Backend, '--force') -Required $true -WorkingDirectory $compatDir `
         -EnvironmentRemovals @('DXVK_CONFIG', 'DXVK_CONFIG_FILE'))
     [void](Invoke-Gate -Name 'runtime-stateblock-prefilter-probe' -Category 'runtime' -FilePath $StateProbe `
-        -Arguments @($Backend) -Required $true -EnvironmentOverrides @{ DXVK_CONFIG = $stateConfig } `
-        -WorkingDirectory $stateDir -EnvironmentRemovals @('DXVK_CONFIG_FILE'))
+        -Arguments @($Backend) -Required $true -EnvironmentOverrides @{ DXVK_CONFIG_FILE = $stateConfig } `
+        -WorkingDirectory $stateDir -EnvironmentRemovals @('DXVK_CONFIG'))
 }
 
 function Add-BridgeRuntimeGates {
@@ -462,7 +479,7 @@ try {
     $toolchain = Get-RenderStackToolchain -RepoRoot $root -Component Dxvk -MSBuildPath $MSBuild -PythonPath $Python `
         -LlvmMingwBin $LlvmMingwBin -NinjaPath $Ninja -GlslangPath $Glslang
     $pythonPath = $toolchain.Python.Path
-    $buildCurrent = Test-BuildIsCurrent
+    $buildCurrent = Test-BuildIsCurrent -Toolchain $toolchain
     if (-not $buildCurrent) {
         $buildArguments = [Collections.Generic.List[string]]::new()
         foreach ($entry in @(
@@ -537,7 +554,11 @@ try {
         overallStatus = $overallStatus
         results = @($results)
     }
-    try { Write-RenderStackAtomicJson -Path $reportPath -Value $report } catch { Write-Error "Test result publication failed: $($_.Exception.Message)"; if ($firstExitCode -eq 0) { $firstExitCode = 1 } }
+    try { Write-RenderStackAtomicJson -Path $reportPath -Value $report } catch {
+        $overallStatus = 'failed'
+        if ($firstExitCode -eq 0) { $firstExitCode = 1 }
+        Write-Error "Test result publication failed: $($_.Exception.Message)"
+    }
 }
 
 if ($overallStatus -eq 'failed') {

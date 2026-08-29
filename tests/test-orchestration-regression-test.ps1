@@ -108,6 +108,7 @@ $payload = [ordered]@{
 
 function Assert-Schema {
     $source = Get-Content -LiteralPath $testScript -Raw
+    $releaseSource = Get-Content -LiteralPath (Join-Path $root 'tools/release-gate.ps1') -Raw
     $buildSource = Get-Content -LiteralPath (Join-Path $root 'tools/build.ps1') -Raw
     foreach ($token in @('schemaVersion', 'repositoryCommit', 'overallStatus', 'skipReason',
             'stdoutLogPath', 'stderrLogPath', 'combinedLogPath', 'Write-RenderStackAtomicJson')) {
@@ -120,6 +121,12 @@ function Assert-Schema {
             "'status', '--porcelain', '--untracked-files=all'")) {
         if (-not $source.Contains($token, [StringComparison]::Ordinal)) {
             throw "Runtime orchestration token is missing: $token"
+        }
+    }
+    foreach ($token in @('out/build/bridge/d3d9.dll', 'out/build/dxvk-x86/src/d3d9/d3d9.dll',
+            'SA-RenderStack-v$Version-sdk.zip', 'SA-RenderStack-v$Version-symbols.zip')) {
+        if (-not $releaseSource.Contains($token, [StringComparison]::Ordinal)) {
+            throw "Release evidence token is missing: $token"
         }
     }
     if (-not $buildSource.Contains('PYTHONDONTWRITEBYTECODE', [StringComparison]::Ordinal)) {
@@ -136,6 +143,14 @@ function Assert-Schema {
     }
     if ($source -notmatch '(?s)Add-SkippedGate\s+-Name ''build-refresh''.*?-Required \$false') {
         throw 'Verified build-cache reuse must not be recorded as a required skip'
+    }
+    foreach ($token in @('DXVK_CONFIG_FILE', 'metadata.tools.llvmMingw',
+            'metadata.tools.ninja', 'metadata.tools.glslang', '$repositoryCommit',
+            "`$overallStatus = 'failed'")) {
+        $owner = if ($token -eq '$repositoryCommit') { $releaseSource } else { $source }
+        if (-not $owner.Contains($token, [StringComparison]::Ordinal)) {
+            throw "Test orchestration integrity token is missing: $token"
+        }
     }
     Write-Output 'PASS test result and runtime orchestration schema'
 }
