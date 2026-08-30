@@ -1,8 +1,22 @@
+param(
+    [string]$Source
+)
+
 $ErrorActionPreference = 'Stop'
 $env:GIT_CONFIG_GLOBAL = 'NUL'
 
 $root = Split-Path -Parent $PSScriptRoot
-$auditedSource = 'D:\GTA San Andreas\.codex-src\dxvk\dxvk-3.0.1-bridge'
+$liveAudit = $PSBoundParameters.ContainsKey('Source')
+$auditedSource = $null
+if ($liveAudit) {
+    if ([string]::IsNullOrWhiteSpace($Source)) {
+        throw 'Live DXVK regression requires a non-empty -Source path'
+    }
+    $auditedSource = [IO.Path]::GetFullPath($Source)
+    if (-not (Test-Path -LiteralPath $auditedSource -PathType Container)) {
+        throw "Live DXVK regression source directory does not exist: $auditedSource"
+    }
+}
 $baselineCommit = '07d715df896a1b54d8e08086435408b38f688fae'
 $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
 $utf8NoBom = [Text.UTF8Encoding]::new($false)
@@ -341,7 +355,9 @@ function Set-CoordinatedAllowlistSubstitution {
     $allowlist[0] = 'README.md'
     Write-Utf8File -Path $allowlistPath -Text (($allowlist -join "`n") + "`n")
 
-    $sourcePath = Join-Path $auditedSource 'README.md'
+    $sourcePath = Join-Path $Fixture 'fixture-source/README.md'
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $sourcePath)) | Out-Null
+    Write-Utf8File -Path $sourcePath -Text "portable regression fixture`n"
     $destinationPath = Join-Path $Fixture 'backend/dxvk/README.md'
     $destinationBytes = Get-NormalizedSourceBytes -Path $sourcePath
     [IO.File]::WriteAllBytes($destinationPath, $destinationBytes)
@@ -407,11 +423,13 @@ try {
         -ExpectedPattern 'canonical hash differs' `
         -HistoricalBlobs $historicalBlobs
 
-    Assert-Rejected -Name 'live coordinated destination tampering' `
-        -Arrange ${function:Set-CoordinatedDestinationTampering} `
-        -ExpectedPattern 'canonical hash differs|normalized audited source differs' `
-        -HistoricalBlobs $historicalBlobs `
-        -Live
+    if ($liveAudit) {
+        Assert-Rejected -Name 'live coordinated destination tampering' `
+            -Arrange ${function:Set-CoordinatedDestinationTampering} `
+            -ExpectedPattern 'canonical hash differs|normalized audited source differs' `
+            -HistoricalBlobs $historicalBlobs `
+            -Live
+    }
 
     Assert-Rejected -Name 'duplicate overlay-manifest property' -Arrange {
         param($fixture)

@@ -147,6 +147,9 @@ unconditional `rg` dependency. The fixes are deliberately explicit:
 - [x] Forward Ninja and glslang paths into `verify-exports.ps1`.
 - [x] Add a PowerShell source-search fallback when `rg.exe` is unavailable.
 - [x] Add and run `tests/hosted-ci-boundary-regression-test.ps1`.
+- [x] Remove the hard-coded local DXVK audited-source path from historical
+  regression coverage; use explicit `-Source` only for live auditing and keep
+  offline fixture checks self-contained.
 
 ### Task 4: Full Local Verification
 

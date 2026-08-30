@@ -124,6 +124,11 @@ orchestrator forwards them. Source-only checks must not require `rg`; the
 backend API source test uses `Get-Command rg.exe` when available and a
 `Select-String` fallback otherwise.
 
+Historical DXVK overlay regression coverage accepts an explicit `-Source`
+directory for live auditing. Without that option it uses only the temporary
+fixture data and does not assume a developer's absolute checkout path. This
+keeps offline historical checks required and reproducible on hosted runners.
+
 ## Artifacts
 
 On success, upload these paths with `actions/upload-artifact`:

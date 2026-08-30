@@ -7,6 +7,7 @@ $workflowPath = Join-Path $root '.github/workflows/windows-ci.yml'
 $testPath = Join-Path $root 'tools/test.ps1'
 $exportPath = Join-Path $root 'tools/verify-exports.ps1'
 $backendApiPath = Join-Path $root 'tests/backend-api-source-test.ps1'
+$dxvkRegressionPath = Join-Path $root 'tests/dxvk-overlay-regression-test.ps1'
 
 function Assert-Contains {
     param(
@@ -20,7 +21,7 @@ function Assert-Contains {
     }
 }
 
-foreach ($path in @($workflowPath, $testPath, $exportPath, $backendApiPath)) {
+foreach ($path in @($workflowPath, $testPath, $exportPath, $backendApiPath, $dxvkRegressionPath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Hosted CI boundary source is missing: $path"
     }
@@ -30,6 +31,7 @@ $workflow = Get-Content -LiteralPath $workflowPath -Raw
 $testSource = Get-Content -LiteralPath $testPath -Raw
 $exportSource = Get-Content -LiteralPath $exportPath -Raw
 $backendApiSource = Get-Content -LiteralPath $backendApiPath -Raw
+$dxvkRegressionSource = Get-Content -LiteralPath $dxvkRegressionPath -Raw
 
 foreach ($switchName in @('SkipGpuRuntimeProbes', 'SkipEnvironmentSensitiveBridgeTests')) {
     $declarationPattern = '\[switch\]' + [regex]::Escape("`$$switchName")
@@ -57,6 +59,14 @@ Assert-Contains -Text $workflow -Pattern '(?ms)uses:\s*actions/checkout@v4\s*\r?
 
 Assert-Contains -Text $backendApiSource -Pattern 'Get-Command\s+rg\.exe' -Description 'optional ripgrep discovery'
 Assert-Contains -Text $backendApiSource -Pattern 'Select-String' -Description 'PowerShell source-search fallback'
+
+Assert-Contains -Text $dxvkRegressionSource -Pattern '(?s)^param\([\s\S]*\[string\]\$Source' `
+    -Description 'DXVK regression source override parameter'
+Assert-Contains -Text $dxvkRegressionSource -Pattern 'backend/dxvk' `
+    -Description 'repository-local DXVK source fallback'
+if ($dxvkRegressionSource -match '(?i)[A-Za-z]:\\.*\\\.codex-src\\dxvk') {
+    throw 'DXVK regression test contains a machine-specific audited-source path'
+}
 
 Write-Output 'PASS hosted CI boundary regression contract'
 exit 0
