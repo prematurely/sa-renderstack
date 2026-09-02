@@ -22,12 +22,18 @@
 #include <cctype>
 #include <intrin.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <expected>
+#include <format>
+#include <fstream>
 #include <iterator>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <print>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -114,16 +120,16 @@ static void* g_getSystemDirectoryAAddress = nullptr;
 static uint8_t g_getSystemDirectoryAOriginal[5]{};
 static bool g_getSystemDirectoryAHookInstalled = false;
 
-typedef IDirect3D9* (__stdcall *PFN_Direct3DCreate9)(UINT SDKVersion);
-typedef int (__stdcall *PFN_DebugSetLevel)(void);
-typedef int (__stdcall *PFN_DebugSetMute)(void);
-typedef void* (__stdcall *PFN_Direct3DShaderValidatorCreate9)(void);
-typedef void* (__stdcall *PFN_PSGPError)(void);
-typedef void* (__stdcall *PFN_PSGPSampleTexture)(void);
-typedef HRESULT (__stdcall *PFN_CreateDXGIFactory)(REFIID riid, void** ppFactory);
-typedef HRESULT (__stdcall *PFN_CreateDXGIFactory2)(UINT flags, REFIID riid, void** ppFactory);
-typedef HRESULT (__stdcall *PFN_DXGIDeclareAdapterRemovalSupport)(void);
-typedef HRESULT (__stdcall *PFN_DXGIGetDebugInterface1)(UINT flags, REFIID riid, void** ppDebug);
+using PFN_Direct3DCreate9 = IDirect3D9* (__stdcall *)(UINT SDKVersion);
+using PFN_DebugSetLevel = int (__stdcall *)(void);
+using PFN_DebugSetMute = int (__stdcall *)(void);
+using PFN_Direct3DShaderValidatorCreate9 = void* (__stdcall *)(void);
+using PFN_PSGPError = void* (__stdcall *)(void);
+using PFN_PSGPSampleTexture = void* (__stdcall *)(void);
+using PFN_CreateDXGIFactory = HRESULT (__stdcall *)(REFIID riid, void** ppFactory);
+using PFN_CreateDXGIFactory2 = HRESULT (__stdcall *)(UINT flags, REFIID riid, void** ppFactory);
+using PFN_DXGIDeclareAdapterRemovalSupport = HRESULT (__stdcall *)(void);
+using PFN_DXGIGetDebugInterface1 = HRESULT (__stdcall *)(UINT flags, REFIID riid, void** ppDebug);
 
 static PFN_Direct3DCreate9 g_real_Direct3DCreate9 = nullptr;
 static PFN_Direct3DCreate9 g_ps_Direct3DCreate9 = nullptr;
@@ -220,7 +226,24 @@ static void RestoreSystemDirectoryHook();
 static bool FileExistsA(const char* path);
 static void EnsurePerformanceConfigLoaded();
 
-static void Log(const char* fmt, ...)
+// Truncating, null-terminated format into a fixed buffer: byte-identical to
+// snprintf for the same format string, but checked at compile time.
+template <class... Args>
+static void FormatTo(char* output, size_t outputSize,
+    std::format_string<Args...> fmt, Args&&... args)
+{
+    if (!output || !outputSize) return;
+    const std::string text = std::vformat(
+        fmt.get(), std::make_format_args(args...));
+    const size_t count = text.size() < outputSize
+        ? text.size()
+        : outputSize - 1;
+    std::memcpy(output, text.data(), count);
+    output[count] = '\0';
+}
+
+template <class... Args>
+static void Log(std::format_string<Args...> fmt, Args&&... args)
 {
     static FILE* f = nullptr;
     if (!f) {
@@ -231,13 +254,10 @@ static void Log(const char* fmt, ...)
     }
     SYSTEMTIME st;
     GetLocalTime(&st);
-    fprintf(f, "[%04d-%02d-%02d %02d:%02d:%02d.%03d] ",
+    std::print(f, "[{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}] ",
         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(f, fmt, ap);
-    va_end(ap);
-    fprintf(f, "\n");
+    std::vprint_nonunicode(f, fmt.get(), std::make_format_args(args...));
+    fputc('\n', f);
     fflush(f);
 }
 
@@ -683,11 +703,11 @@ static HRESULT WINAPI HookedProperShadersSetTexture(
 // seen shadow values afterwards because D3DX applies its own (stale) store.
 // Everything else forwards to the original D3DX methods unchanged.
 
-typedef HRESULT(WINAPI* ProperShadersSetMatrixRawFn)(void*, D3DXHANDLE, const void*);
-typedef HRESULT(WINAPI* ProperShadersSetVectorRawFn)(void*, D3DXHANDLE, const void*);
-typedef HRESULT(WINAPI* ProperShadersSetFloatArrayRawFn)(void*, D3DXHANDLE, const float*, UINT);
-typedef HRESULT(WINAPI* ProperShadersBeginPassRawFn)(void*, UINT);
-typedef HRESULT(WINAPI* ProperShadersCommitChangesRawFn)(void*);
+using ProperShadersSetMatrixRawFn = HRESULT(WINAPI*)(void*, D3DXHANDLE, const void*);
+using ProperShadersSetVectorRawFn = HRESULT(WINAPI*)(void*, D3DXHANDLE, const void*);
+using ProperShadersSetFloatArrayRawFn = HRESULT(WINAPI*)(void*, D3DXHANDLE, const float*, UINT);
+using ProperShadersBeginPassRawFn = HRESULT(WINAPI*)(void*, UINT);
+using ProperShadersCommitChangesRawFn = HRESULT(WINAPI*)(void*);
 
 static HRESULT RestartProperShadersBaselinePass(
     void* effect,
@@ -999,10 +1019,7 @@ static bool InstallProperShadersEffectVtableHooks(ProperShadersEffectBinding& bi
 
     binding.originalVtable = original;
     binding.hookedVtable = hooked;
-    Log("effectopt: vtable hooks attached effect=%p original=%p hooked=%p general=%d direct=%d",
-        binding.effect,
-        original,
-        hooked,
+    Log("effectopt: vtable hooks attached effect={:08X} original={:08X} hooked={:08X} general={} direct={}", reinterpret_cast<std::uintptr_t>(binding.effect), reinterpret_cast<std::uintptr_t>(original), reinterpret_cast<std::uintptr_t>(hooked),
         binding.genericJournalHooks ? 1 : 0,
         binding.directHooks && g_properShadersDirectConstants ? 1 : 0);
     return true;
@@ -1020,8 +1037,7 @@ static void RestoreProperShadersEffectVtable(ProperShadersEffectBinding& binding
             0,
             MEM_RELEASE);
     } else {
-        Log("effectdirect: vtable changed before restore effect=%p current=%p; storage retained",
-            binding.effect, current);
+        Log("effectdirect: vtable changed before restore effect={:08X} current={:08X}; storage retained", reinterpret_cast<std::uintptr_t>(binding.effect), reinterpret_cast<std::uintptr_t>(current));
     }
     binding.originalVtable = nullptr;
     binding.hookedVtable = nullptr;
@@ -1092,8 +1108,7 @@ static ProperShadersStateJournal* AcquireProperShadersStateJournal(
             return nullptr;
         }
         if (!InstallProperShadersEffectVtableHooks(*binding)) {
-            Log("effectopt: failed to extend vtable hooks effect=%p general=%d direct=%d",
-                effect,
+            Log("effectopt: failed to extend vtable hooks effect={:08X} general={} direct={}", reinterpret_cast<std::uintptr_t>(effect),
                 binding->genericJournalHooks ? 1 : 0,
                 binding->directHooks ? 1 : 0);
         }
@@ -1119,16 +1134,14 @@ static ProperShadersStateJournal* AcquireProperShadersStateJournal(
         if (FAILED(managerHr) || existing) {
             if (existing) existing->Release();
             binding->unsupported = true;
-            Log("effectopt: baseline retained effect=%p existingStateManager=%d hr=0x%08X",
-                effect, existing ? 1 : 0, static_cast<unsigned>(managerHr));
+            Log("effectopt: baseline retained effect={:08X} existingStateManager={} hr=0x{:08X}", reinterpret_cast<std::uintptr_t>(effect), existing ? 1 : 0, static_cast<unsigned>(managerHr));
         } else {
             IDirect3DDevice9* device = nullptr;
             const HRESULT deviceHr = getDevice(effect, &device);
             if (FAILED(deviceHr) || !device) {
                 if (device) device->Release();
                 binding->unsupported = true;
-                Log("effectopt: GetDevice failed effect=%p hr=0x%08X",
-                    effect, static_cast<unsigned>(deviceHr));
+                Log("effectopt: GetDevice failed effect={:08X} hr=0x{:08X}", reinterpret_cast<std::uintptr_t>(effect), static_cast<unsigned>(deviceHr));
             } else {
                 auto* journal = new (std::nothrow) ProperShadersStateJournal(device);
                 device->Release();
@@ -1139,12 +1152,10 @@ static ProperShadersStateJournal* AcquireProperShadersStateJournal(
                     if (FAILED(setHr)) {
                         journal->Release();
                         binding->unsupported = true;
-                        Log("effectopt: SetStateManager failed effect=%p hr=0x%08X",
-                            effect, static_cast<unsigned>(setHr));
+                        Log("effectopt: SetStateManager failed effect={:08X} hr=0x{:08X}", reinterpret_cast<std::uintptr_t>(effect), static_cast<unsigned>(setHr));
                     } else {
                         binding->journal = journal;
-                        Log("effectopt: incremental state journal attached effect=%p device=%p",
-                            effect, device);
+                        Log("effectopt: incremental state journal attached effect={:08X} device={:08X}", reinterpret_cast<std::uintptr_t>(effect), reinterpret_cast<std::uintptr_t>(device));
                     }
                 }
             }
@@ -1189,7 +1200,7 @@ static ProperShadersStateJournal* AcquireProperShadersStateJournal(
             binding->journal->Release();
         }
         delete binding;
-        Log("effectopt: vtable hook unavailable effect=%p; baseline retained", effect);
+        Log("effectopt: vtable hook unavailable effect={:08X}; baseline retained", reinterpret_cast<std::uintptr_t>(effect));
         return nullptr;
     }
 
@@ -1206,10 +1217,9 @@ static void RecordProperShadersGeneralFallback(
 {
     const uint64_t count = ++g_properShadersGeneralFallbacks;
     if (count <= 8) {
-        Log("effectgeneral: fallback=%lld phase=%s effect=%p primaryHr=0x%08X restoreHr=0x%08X",
+        Log("effectgeneral: fallback={} phase={} effect={:08X} primaryHr=0x{:08X} restoreHr=0x{:08X}",
             static_cast<long long>(count),
-            phase,
-            effect,
+            phase, reinterpret_cast<std::uintptr_t>(effect),
             static_cast<unsigned>(primaryHr),
             static_cast<unsigned>(restoreHr));
     }
@@ -1354,7 +1364,7 @@ static HRESULT WINAPI HookedProperShadersGeneralBegin(
                 if (loggedHits[i] == plan) break;
                 if (!loggedHits[i]) {
                     loggedHits[i] = plan;
-                    Log("genericdirect: begin-hit technique=%s slots=%u samplers=%u liteEligible=%d",
+                    Log("genericdirect: begin-hit technique={} slots={} samplers={} liteEligible={}",
                         plan->name ? plan->name : "?", plan->slotCount,
                         plan->samplerCount, plan->liteEligible ? 1 : 0);
                     break;
@@ -1362,8 +1372,7 @@ static HRESULT WINAPI HookedProperShadersGeneralBegin(
             }
         } else {
             binding->genericDirectDisabled = true;
-            Log("genericdirect: effect=%p disabled (technique=%p has no plan)",
-                effect, currentTechnique);
+            Log("genericdirect: effect={:08X} disabled (technique={:08X} has no plan)", reinterpret_cast<std::uintptr_t>(effect), reinterpret_cast<std::uintptr_t>(currentTechnique));
         }
     } else if (g_properShadersTraceStabilityProbe && !binding->genericDirectDisabled) {
         // Probe-only plan resolution: look up the plan for recording WITHOUT
@@ -1380,7 +1389,7 @@ static HRESULT WINAPI HookedProperShadersGeneralBegin(
                 if (loggedProbe[i] == plan) break;
                 if (!loggedProbe[i]) {
                     loggedProbe[i] = plan;
-                    Log("tracestab: observing technique=%s slots=%u samplers=%u liteEligible=%d",
+                    Log("tracestab: observing technique={} slots={} samplers={} liteEligible={}",
                         plan->name ? plan->name : "?", plan->slotCount,
                         plan->samplerCount, plan->liteEligible ? 1 : 0);
                     break;
@@ -1402,7 +1411,7 @@ static HRESULT WINAPI HookedProperShadersGeneralBegin(
                 if (loggedLite[i] == plan) break;
                 if (!loggedLite[i]) {
                     loggedLite[i] = plan;
-                    Log("passlite: replay-active technique=%s recBytes=%u",
+                    Log("passlite: replay-active technique={} recBytes={}",
                         plan->name ? plan->name : "?",
                         static_cast<unsigned>(plan->liteRec1.size()));
                     break;
@@ -1562,8 +1571,7 @@ static HRESULT WINAPI HookedProperShadersD3DXCreateEffect(
     if (SUCCEEDED(hr) && effect && *effect && g_properShadersGeneralStateJournal) {
         ProperShadersStateJournal* journal = AcquireProperShadersStateJournal(
             *effect, true, false);
-        Log("effectgeneral: created effect=%p bytes=%u journal=%d",
-            *effect,
+        Log("effectgeneral: created effect={:08X} bytes={} journal={}", reinterpret_cast<std::uintptr_t>(*effect),
             sourceDataLength,
             journal ? 1 : 0);
     }
@@ -1585,7 +1593,7 @@ static HRESULT WINAPI HookedProperShadersD3DXCreateEffect(
         // the trace-stability probe (observation only). Building them under the
         // probe alone does NOT enable direct submission.
         const int okPlans = BuildGenericDirectPlans(*effect, g_gameDir);
-        Log("genericdirect: plans built effect=%p okTechniques=%d", *effect, okPlans);
+        Log("genericdirect: plans built effect={:08X} okTechniques={}", reinterpret_cast<std::uintptr_t>(*effect), okPlans);
     }
     return hr;
 }
@@ -2127,8 +2135,7 @@ static HRESULT WINAPI OptimizedProperShadersBegin(void* effect, UINT* passes, DW
             : transactionHr;
         journal->Disable();
         ++g_properShadersOptimizationFailures;
-        Log("effectopt: BeginTransaction failed effect=%p hr=0x%08X; action=%s",
-            effect,
+        Log("effectopt: BeginTransaction failed effect={:08X} hr=0x{:08X}; action={}", reinterpret_cast<std::uintptr_t>(effect),
             static_cast<unsigned>(failure),
             journalFailed ? "propagate-failure" : "baseline-fallback");
         if (journalFailed) return failure;
@@ -2145,8 +2152,7 @@ static HRESULT WINAPI OptimizedProperShadersBegin(void* effect, UINT* passes, DW
         journal->Restore();
         journal->Disable();
         ++g_properShadersOptimizationFailures;
-        Log("effectopt: native capture Begin failed effect=%p hr=0x%08X",
-            effect, static_cast<unsigned>(failure));
+        Log("effectopt: native capture Begin failed effect={:08X} hr=0x{:08X}", reinterpret_cast<std::uintptr_t>(effect), static_cast<unsigned>(failure));
         return original(effect, passes, flags);
     }
     const HRESULT hr = captureScope.Finish(
@@ -2164,8 +2170,7 @@ static HRESULT WINAPI OptimizedProperShadersBegin(void* effect, UINT* passes, DW
         : FAILED(hr) ? hr : restoreHr;
     journal->Disable();
     ++g_properShadersOptimizationFailures;
-    Log("effectopt: journal Begin fallback effect=%p beginHr=0x%08X restoreHr=0x%08X failure=0x%08X",
-        effect,
+    Log("effectopt: journal Begin fallback effect={:08X} beginHr=0x{:08X} restoreHr=0x{:08X} failure=0x{:08X}", reinterpret_cast<std::uintptr_t>(effect),
         static_cast<unsigned>(hr),
         static_cast<unsigned>(restoreHr),
         static_cast<unsigned>(failure));
@@ -2336,8 +2341,7 @@ static bool ActivateProperShadersDirectConstants(
     if (profileIndex < sizeof(loggedProfiles) / sizeof(loggedProfiles[0]) &&
         !loggedProfiles[profileIndex]) {
         loggedProfiles[profileIndex] = true;
-        Log("effectdirect: active effect=%p technique=%s vs=%u/0x%016llX ps=%u/0x%016llX",
-            effect,
+        Log("effectdirect: active effect={:08X} technique={} vs={}/0x{:016X} ps={}/0x{:016X}", reinterpret_cast<std::uintptr_t>(effect),
             techniqueDesc.Name ? techniqueDesc.Name : "",
             vertexSize,
             static_cast<unsigned long long>(vertexHash),
@@ -2671,9 +2675,8 @@ static HRESULT RestartProperShadersBaselinePass(
     journal->Disable();
     ResetProperShadersParameterCaches();
     ++g_properShadersOptimizationFailures;
-    Log("effectopt: journal %s fallback effect=%p pass=%u triggerHr=0x%08X restoreHr=0x%08X failure=0x%08X",
-        phase,
-        effect,
+    Log("effectopt: journal {} fallback effect={:08X} pass={} triggerHr=0x{:08X} restoreHr=0x{:08X} failure=0x{:08X}",
+        phase, reinterpret_cast<std::uintptr_t>(effect),
         pass,
         static_cast<unsigned>(triggerHr),
         static_cast<unsigned>(restoreHr),
@@ -2765,7 +2768,7 @@ static HRESULT WINAPI OptimizedProperShadersCommitChanges(void* effect)
                 if (loggedPlans[i] == plan) break;
                 if (!loggedPlans[i]) {
                     loggedPlans[i] = plan;
-                    Log("genericdirect: live-hit technique=%s slots=%u samplers=%u",
+                    Log("genericdirect: live-hit technique={} slots={} samplers={}",
                         plan->name ? plan->name : "?", plan->slotCount,
                         plan->samplerCount);
                     break;
@@ -2777,8 +2780,7 @@ static HRESULT WINAPI OptimizedProperShadersCommitChanges(void* effect)
             static thread_local int missLogs = 0;
             if (missLogs < 6) {
                 ++missLogs;
-                Log("genericdirect: live-miss effect=%p technique=%p", effect,
-                    currentTechnique);
+                Log("genericdirect: live-miss effect={:08X} technique={:08X}", reinterpret_cast<std::uintptr_t>(effect), reinterpret_cast<std::uintptr_t>(currentTechnique));
             }
         }
     }
@@ -2853,8 +2855,7 @@ static HRESULT WINAPI OptimizedProperShadersEnd(void* effect)
     if (journalFailed || FAILED(restoreHr)) {
         journal->Disable();
         ++g_properShadersOptimizationFailures;
-        Log("effectopt: journal End disabled effect=%p endHr=0x%08X restoreHr=0x%08X failure=0x%08X",
-            effect,
+        Log("effectopt: journal End disabled effect={:08X} endHr=0x{:08X} restoreHr=0x{:08X} failure=0x{:08X}", reinterpret_cast<std::uintptr_t>(effect),
             static_cast<unsigned>(hr),
             static_cast<unsigned>(restoreHr),
             static_cast<unsigned>(journalFailure));
@@ -2874,10 +2875,9 @@ static void RecordProperShadersBatchFallback(
 {
     const uint64_t count = ++g_properShadersBatchFallbacks;
     if (count <= 8) {
-        Log("effectbatch: fallback=%lld reason=%s effect=%p primaryHr=0x%08X secondaryHr=0x%08X",
+        Log("effectbatch: fallback={} reason={} effect={:08X} primaryHr=0x{:08X} secondaryHr=0x{:08X}",
             static_cast<long long>(count),
-            reason,
-            effect,
+            reason, reinterpret_cast<std::uintptr_t>(effect),
             static_cast<unsigned>(primaryHr),
             static_cast<unsigned>(secondaryHr));
     }
@@ -3412,7 +3412,7 @@ static bool InstallProperShadersCreateEffectHook(HMODULE module)
     DWORD oldProtect = 0;
     if (!VirtualProtect(
             const_cast<PVOID*>(slot), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-        Log("effectgeneral: IAT VirtualProtect failed err=%u", GetLastError());
+        Log("effectgeneral: IAT VirtualProtect failed err={}", GetLastError());
         return false;
     }
 
@@ -3434,11 +3434,9 @@ static bool InstallProperShadersCreateEffectHook(HMODULE module)
     DWORD ignored = 0;
     VirtualProtect(const_cast<PVOID*>(slot), sizeof(void*), oldProtect, &ignored);
     if (installed) {
-        Log("effectgeneral: D3DXCreateEffect IAT hook installed slot=%p original=%p",
-            slot,
-            g_originalProperShadersD3DXCreateEffect);
+        Log("effectgeneral: D3DXCreateEffect IAT hook installed slot={:08X} original={:08X}", reinterpret_cast<std::uintptr_t>(slot), reinterpret_cast<std::uintptr_t>(g_originalProperShadersD3DXCreateEffect));
     } else {
-        Log("effectgeneral: D3DXCreateEffect IAT hook install race current=%p", current);
+        Log("effectgeneral: D3DXCreateEffect IAT hook install race current={:08X}", reinterpret_cast<std::uintptr_t>(current));
     }
     return installed;
 }
@@ -3531,7 +3529,7 @@ static bool InstallProperShadersOptimizationPatches(HMODULE module)
         const ProperShadersCallPatch& patch = g_properShadersOptimizationPatches[i];
         if (patch.rva > imageSize ||
             sizeof(patch.expected) > imageSize - patch.rva) {
-            Log("effectopt: signature out of image name=%s rva=0x%08X imageSize=0x%08X",
+            Log("effectopt: signature out of image name={} rva=0x{:08X} imageSize=0x{:08X}",
                 patch.name, static_cast<unsigned>(patch.rva), static_cast<unsigned>(imageSize));
             return false;
         }
@@ -3540,12 +3538,12 @@ static bool InstallProperShadersOptimizationPatches(HMODULE module)
     }
 
     const size_t mismatch = ProperShadersPatching::FindFirstMismatch(
-        patchBytes, patchCount);
+        patchBytes);
     if (mismatch != patchCount) {
         const ProperShadersCallPatch& patch =
             g_properShadersOptimizationPatches[mismatch];
         const uint8_t* actual = patchBytes[mismatch].actual;
-        Log("effectopt: patch preflight mismatch name=%s rva=0x%08X expected=%02X%02X%02X%02X%02X%02X actual=%02X%02X%02X%02X%02X%02X",
+        Log("effectopt: patch preflight mismatch name={} rva=0x{:08X} expected={:02X}{:02X}{:02X}{:02X}{:02X}{:02X} actual={:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
             patch.name,
             static_cast<unsigned>(patch.rva),
             static_cast<unsigned>(patch.expected[0]),
@@ -3566,7 +3564,7 @@ static bool InstallProperShadersOptimizationPatches(HMODULE module)
     g_properShadersOptimizationModule = module;
     for (auto& patch : g_properShadersOptimizationPatches) {
         if (!WriteProperShadersCallPatch(patch, module)) {
-            Log("effectopt: failed to install name=%s rva=0x%08X err=%u",
+            Log("effectopt: failed to install name={} rva=0x{:08X} err={}",
                 patch.name, static_cast<unsigned>(patch.rva), GetLastError());
             RestoreProperShadersOptimizationPatches();
             return false;
@@ -3574,8 +3572,7 @@ static bool InstallProperShadersOptimizationPatches(HMODULE module)
     }
 
     g_properShadersOptimizationHooksInstalled = true;
-    Log("effectopt: installed module=%p patches=%u noSaveState=%d autoBenchmark=%d skipDuplicateMatrices=%d skipDuplicateParameters=%d directConstants=%d",
-        module,
+    Log("effectopt: installed module={:08X} patches={} noSaveState={} autoBenchmark={} skipDuplicateMatrices={} skipDuplicateParameters={} directConstants={}", reinterpret_cast<std::uintptr_t>(module),
         static_cast<unsigned>(sizeof(g_properShadersOptimizationPatches) /
             sizeof(g_properShadersOptimizationPatches[0])),
         g_properShadersEffectOptimizationNoSaveState ? 1 : 0,
@@ -3616,13 +3613,13 @@ static bool InstallProperShadersCallPatches(HMODULE module)
 
     for (const auto& patch : g_properShadersCallPatches) {
         if (patch.rva + sizeof(patch.expected) > imageSize) {
-            Log("effectprofile: signature out of image name=%s rva=0x%08X imageSize=0x%08X",
+            Log("effectprofile: signature out of image name={} rva=0x{:08X} imageSize=0x{:08X}",
                 patch.name, static_cast<unsigned>(patch.rva), static_cast<unsigned>(imageSize));
             return false;
         }
         const uint8_t* site = reinterpret_cast<const uint8_t*>(module) + patch.rva;
         if (std::memcmp(site, patch.expected, sizeof(patch.expected)) != 0) {
-            Log("effectprofile: signature mismatch name=%s rva=0x%08X",
+            Log("effectprofile: signature mismatch name={} rva=0x{:08X}",
                 patch.name, static_cast<unsigned>(patch.rva));
             return false;
         }
@@ -3630,7 +3627,7 @@ static bool InstallProperShadersCallPatches(HMODULE module)
 
     for (auto& patch : g_properShadersCallPatches) {
         if (!WriteProperShadersCallPatch(patch, module)) {
-            Log("effectprofile: failed to install name=%s rva=0x%08X err=%u",
+            Log("effectprofile: failed to install name={} rva=0x{:08X} err={}",
                 patch.name, static_cast<unsigned>(patch.rva), GetLastError());
             RestoreProperShadersCallPatches();
             return false;
@@ -3658,8 +3655,8 @@ static void WriteProperShadersMethodStats(
     const double callsPerFrame = frames
         ? static_cast<double>(stats.calls) / static_cast<double>(frames)
         : 0.0;
-    fprintf(file,
-        "method=%s calls=%llu callsPerFrame=%.2f totalMs=%.3f avgNs=%.1f maxUs=%.3f\n",
+    std::print(file,
+        "method={} calls={} callsPerFrame={:.2f} totalMs={:.3f} avgNs={:.1f} maxUs={:.3f}\n",
         name,
         static_cast<unsigned long long>(stats.calls),
         callsPerFrame,
@@ -3688,7 +3685,7 @@ static bool StartProperShadersEffectProfile(IDirect3DDevice9* device)
             ? device->CreateStateBlock(D3DSBT_ALL, &savedDeviceState)
             : D3DERR_INVALIDCALL;
         if (FAILED(stateHr) || !savedDeviceState) {
-            Log("effectprofile: refusing no-save-state test because state capture failed hr=0x%08X",
+            Log("effectprofile: refusing no-save-state test because state capture failed hr=0x{:08X}",
                 static_cast<unsigned>(stateHr));
             if (savedDeviceState) savedDeviceState->Release();
             return false;
@@ -3711,14 +3708,12 @@ static bool StartProperShadersEffectProfile(IDirect3DDevice9* device)
 
     g_properShadersEffectProfile.startTick = GetTickCount();
     g_properShadersEffectProfile.active = true;
-    Log("effectprofile: armed durationMs=%u thread=%u module=%p patches=%u noSaveState=%d skipDuplicateMatrices=%d savedState=%p",
+    Log("effectprofile: armed durationMs={} thread={} module={:08X} patches={} noSaveState={} skipDuplicateMatrices={} savedState={:08X}",
         g_properShadersEffectProfileDurationMs,
-        g_properShadersEffectProfile.threadId,
-        module,
+        g_properShadersEffectProfile.threadId, reinterpret_cast<std::uintptr_t>(module),
         static_cast<unsigned>(sizeof(g_properShadersCallPatches) / sizeof(g_properShadersCallPatches[0])),
         g_properShadersEffectProfileTestNoSaveState ? 1 : 0,
-        g_properShadersEffectProfileTestSkipDuplicateMatrices ? 1 : 0,
-        savedDeviceState);
+        g_properShadersEffectProfileTestSkipDuplicateMatrices ? 1 : 0, reinterpret_cast<std::uintptr_t>(savedDeviceState));
     return true;
 }
 
@@ -3736,25 +3731,24 @@ static void FinishProperShadersEffectProfile(const char* reason)
         stateRestoreHr = g_properShadersEffectProfile.savedDeviceState->Apply();
         g_properShadersEffectProfile.savedDeviceState->Release();
         g_properShadersEffectProfile.savedDeviceState = nullptr;
-        Log("effectprofile: restored pre-test D3D9 state hr=0x%08X",
+        Log("effectprofile: restored pre-test D3D9 state hr=0x{:08X}",
             static_cast<unsigned>(stateRestoreHr));
     }
 
     char path[MAX_PATH]{};
-    snprintf(path, sizeof(path), "%s\\scripts\\BridgeD3D9.effectprofile.log", g_gameDir);
+    FormatTo(path, sizeof(path), "{}\\scripts\\BridgeD3D9.effectprofile.log", g_gameDir);
     FILE* file = nullptr;
     if (fopen_s(&file, path, "a") == 0 && file) {
         SYSTEMTIME st{};
         GetLocalTime(&st);
-        fprintf(file,
-            "# capture begin=%04u-%02u-%02uT%02u:%02u:%02u.%03u reason=%s elapsedMs=%u frames=%llu thread=%u foreignThreadCalls=%ld module=%p noSaveState=%d skipDuplicateMatrices=%d stateRestoreHr=0x%08X\n",
+        std::print(file,
+            "# capture begin={:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03} reason={} elapsedMs={} frames={} thread={} foreignThreadCalls={} module={:08X} noSaveState={} skipDuplicateMatrices={} stateRestoreHr=0x{:08X}\n",
             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
             reason ? reason : "unknown",
             elapsedMs,
             static_cast<unsigned long long>(g_properShadersEffectProfile.frames),
             g_properShadersEffectProfile.threadId,
-            g_properShadersEffectProfile.foreignThreadCalls,
-            g_properShadersEffectProfile.module,
+            static_cast<LONG>(g_properShadersEffectProfile.foreignThreadCalls), reinterpret_cast<std::uintptr_t>(g_properShadersEffectProfile.module),
             g_properShadersEffectProfileTestNoSaveState ? 1 : 0,
             g_properShadersEffectProfileTestSkipDuplicateMatrices ? 1 : 0,
             static_cast<unsigned>(stateRestoreHr));
@@ -3777,8 +3771,8 @@ static void FinishProperShadersEffectProfile(const char* reason)
                 ? 100.0 * static_cast<double>(stats.duplicateCalls) /
                     static_cast<double>(stats.method.calls)
                 : 0.0;
-            fprintf(file,
-                "matrix=%s calls=%llu callsPerFrame=%.2f duplicates=%llu skippedDuplicates=%llu duplicatePct=%.2f totalMs=%.3f avgNs=%.1f maxUs=%.3f\n",
+            std::print(file,
+                "matrix={} calls={} callsPerFrame={:.2f} duplicates={} skippedDuplicates={} duplicatePct={:.2f} totalMs={:.3f} avgNs={:.1f} maxUs={:.3f}\n",
                 matrixNames[i],
                 static_cast<unsigned long long>(stats.method.calls),
                 g_properShadersEffectProfile.frames
@@ -3806,13 +3800,13 @@ static void FinishProperShadersEffectProfile(const char* reason)
             g_properShadersEffectProfile.endPass, g_properShadersEffectProfile.frames);
         WriteProperShadersMethodStats(file, "End",
             g_properShadersEffectProfile.end, g_properShadersEffectProfile.frames);
-        fprintf(file,
-            "beginFlags originalOr=0x%08X appliedOr=0x%08X modifiedCalls=%llu\n",
+        std::print(file,
+            "beginFlags originalOr=0x{:08X} appliedOr=0x{:08X} modifiedCalls={}\n",
             static_cast<unsigned>(g_properShadersEffectProfile.beginOriginalFlagsOr),
             static_cast<unsigned>(g_properShadersEffectProfile.beginAppliedFlagsOr),
             static_cast<unsigned long long>(g_properShadersEffectProfile.beginFlagsModifiedCalls));
-        fprintf(file,
-            "summary matrixCalls=%llu duplicateMatrices=%llu skippedDuplicateMatrices=%llu duplicatePct=%.2f\n# capture end\n",
+        std::print(file,
+            "summary matrixCalls={} duplicateMatrices={} skippedDuplicateMatrices={} duplicatePct={:.2f}\n# capture end\n",
             static_cast<unsigned long long>(matrixCalls),
             static_cast<unsigned long long>(duplicateCalls),
             static_cast<unsigned long long>(skippedDuplicateCalls),
@@ -3822,7 +3816,7 @@ static void FinishProperShadersEffectProfile(const char* reason)
         fflush(file);
         fclose(file);
 
-        Log("effectprofile: complete reason=%s elapsedMs=%u frames=%llu matrixCalls=%llu duplicateMatrices=%llu skippedDuplicateMatrices=%llu duplicatePct=%.2f commitCalls=%llu output=%s",
+        Log("effectprofile: complete reason={} elapsedMs={} frames={} matrixCalls={} duplicateMatrices={} skippedDuplicateMatrices={} duplicatePct={:.2f} commitCalls={} output={}",
             reason ? reason : "unknown",
             elapsedMs,
             static_cast<unsigned long long>(g_properShadersEffectProfile.frames),
@@ -3835,7 +3829,7 @@ static void FinishProperShadersEffectProfile(const char* reason)
             static_cast<unsigned long long>(g_properShadersEffectProfile.commitChanges.calls),
             path);
     } else {
-        Log("effectprofile: failed to open output=%s", path);
+        Log("effectprofile: failed to open output={}", path);
     }
 
     g_properShadersEffectProfile.module = nullptr;
@@ -3843,7 +3837,7 @@ static void FinishProperShadersEffectProfile(const char* reason)
 
 static void __stdcall PluginLog(const char* message)
 {
-    Log("plugin: %s", message ? message : "(null)");
+    Log("plugin: {}", message ? message : "(null)");
 }
 
 template <typename Fn, typename... Args>
@@ -3853,7 +3847,7 @@ static void SafePluginCall(const char* name, Fn fn, Args... args)
     __try {
         fn(args...);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        Log("postfx: plugin callback %s crashed, ignored", name);
+        Log("postfx: plugin callback {} crashed, ignored", name);
     }
 }
 
@@ -3930,7 +3924,7 @@ static HRESULT STDMETHODCALLTYPE RecordNativeVulkanPass(
     g_inVulkanPassRecord = false;
 
     if (FAILED(result)) {
-        Log("vulkanhost: pass callback failed name=%s bridgeToken=%llu result=0x%08X",
+        Log("vulkanhost: pass callback failed name={} bridgeToken={} result=0x{:08X}",
             pass->desc.Name,
             static_cast<unsigned long long>(pass->bridgeToken),
             static_cast<unsigned>(result));
@@ -3955,13 +3949,13 @@ static HRESULT RegisterPassOnHostLocked(NativeVulkanPass& pass, VulkanHostDevice
     HRESULT result = host.compat->RegisterVulkanPass(&backendDesc, &backendToken);
     if (SUCCEEDED(result) && backendToken != 0) {
         pass.bindings.push_back({ &host, backendToken });
-        Log("vulkanhost: pass bound name=%s priority=%d bridgeToken=%llu backendToken=%llu",
+        Log("vulkanhost: pass bound name={} priority={} bridgeToken={} backendToken={}",
             pass.desc.Name,
             pass.desc.Priority,
             static_cast<unsigned long long>(pass.bridgeToken),
             static_cast<unsigned long long>(backendToken));
     } else {
-        Log("vulkanhost: pass bind failed name=%s bridgeToken=%llu result=0x%08X",
+        Log("vulkanhost: pass bind failed name={} bridgeToken={} result=0x{:08X}",
             pass.desc.Name,
             static_cast<unsigned long long>(pass.bridgeToken),
             static_cast<unsigned>(result));
@@ -3981,7 +3975,7 @@ static void UnregisterPassBindingsLocked(
             ? binding.host->compat->UnregisterVulkanPass(binding.backendToken)
             : E_NOINTERFACE;
         if (FAILED(result) && result != D3DERR_NOTFOUND) {
-            Log("vulkanhost: pass unbind failed name=%s bridgeToken=%llu backendToken=%llu result=0x%08X",
+            Log("vulkanhost: pass unbind failed name={} bridgeToken={} backendToken={} result=0x{:08X}",
                 pass.desc.Name,
                 static_cast<unsigned long long>(pass.bridgeToken),
                 static_cast<unsigned long long>(binding.backendToken),
@@ -4000,7 +3994,7 @@ static VulkanHostDevice* AttachVulkanHost(IDirect3DDevice9* device)
         __uuidof(ID3D9GtaSaCompatDevice1),
         reinterpret_cast<void**>(&compat));
     if (FAILED(result) || !compat) {
-        Log("vulkanhost: GTA SA DXVK API v2 unavailable result=0x%08X; legacy callbacks remain active",
+        Log("vulkanhost: GTA SA DXVK API v2 unavailable result=0x{:08X}; legacy callbacks remain active",
             static_cast<unsigned>(result));
         return nullptr;
     }
@@ -4015,7 +4009,7 @@ static VulkanHostDevice* AttachVulkanHost(IDirect3DDevice9* device)
         !GtaSaCompatApiVersions::Supports(
             status.ApiVersion, GtaSaCompatApiVersions::kVulkanPass) ||
         (status.Flags & requiredFlags) != requiredFlags) {
-        Log("vulkanhost: incompatible GTA SA DXVK API result=0x%08X api=%u flags=0x%08X",
+        Log("vulkanhost: incompatible GTA SA DXVK API result=0x{:08X} api={} flags=0x{:08X}",
             static_cast<unsigned>(result), status.ApiVersion, status.Flags);
         compat->Release();
         return nullptr;
@@ -4042,7 +4036,7 @@ static VulkanHostDevice* AttachVulkanHost(IDirect3DDevice9* device)
         }
     }
 
-    Log("vulkanhost: attached api=%u flags=0x%08X backbuffer=%ux%u queued=%llu bound=%llu",
+    Log("vulkanhost: attached api={} flags=0x{:08X} backbuffer={}x{} queued={} bound={}",
         status.ApiVersion, status.Flags, status.BackBufferWidth, status.BackBufferHeight,
         static_cast<unsigned long long>(passCount),
         static_cast<unsigned long long>(boundCount));
@@ -4150,7 +4144,7 @@ static HRESULT __stdcall HostRegisterVulkanPass(
     }
 
     *token = registered->bridgeToken;
-    Log("vulkanhost: pass registered name=%s priority=%d bridgeToken=%llu activeDevices=%llu",
+    Log("vulkanhost: pass registered name={} priority={} bridgeToken={} activeDevices={}",
         registered->desc.Name,
         registered->desc.Priority,
         static_cast<unsigned long long>(registered->bridgeToken),
@@ -4173,7 +4167,7 @@ static HRESULT __stdcall HostUnregisterVulkanPass(void* hostContext, UINT64 toke
     if (entry == plugin->vulkanPasses.end()) return D3DERR_NOTFOUND;
 
     UnregisterPassBindingsLocked(**entry);
-    Log("vulkanhost: pass unregistered name=%s bridgeToken=%llu",
+    Log("vulkanhost: pass unregistered name={} bridgeToken={}",
         (*entry)->desc.Name,
         static_cast<unsigned long long>((*entry)->bridgeToken));
     plugin->vulkanPasses.erase(entry);
@@ -4362,21 +4356,20 @@ static double MedianFps(const double* values, UINT count)
         : (sorted[middle - 1] + sorted[middle]) * 0.5;
 }
 
-static void WriteProperShadersAutoBenchmarkLine(const char* format, ...)
+template <class... Args>
+static void WriteProperShadersAutoBenchmarkLine(
+    std::format_string<Args...> fmt, Args&&... args)
 {
     char path[MAX_PATH]{};
-    snprintf(path, sizeof(path), "%s\\scripts\\BridgeD3D9.autobenchmark.log", g_gameDir);
+    FormatTo(path, sizeof(path), "{}\\scripts\\BridgeD3D9.autobenchmark.log", g_gameDir);
     FILE* file = nullptr;
     if (fopen_s(&file, path, "a") != 0 || !file) return;
 
     SYSTEMTIME st{};
     GetLocalTime(&st);
-    fprintf(file, "[%04u-%02u-%02u %02u:%02u:%02u.%03u] ",
+    std::print(file, "[{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}] ",
         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    va_list args;
-    va_start(args, format);
-    vfprintf(file, format, args);
-    va_end(args);
+    std::vprint_nonunicode(file, fmt.get(), std::make_format_args(args...));
     fputc('\n', file);
     fclose(file);
 }
@@ -4490,7 +4483,7 @@ static void OnProperShadersEffectOptimizationPresent()
                 static_cast<double>(intervalParameterCalls)
             : 0.0;
 
-        Log("effectbatch: intervalMs=%llu fps=%.1f frames=%u attempts=%lld mode2=%lld standalone=%lld techniqueCalls=%lld starts=%lld reusedBegins=%lld commits=%lld fallbacks=%lld reject=disabled:%lld/noSave:%lld/technique:%lld/begin:%lld/passCount:%lld/multiPass:%lld/binding:%lld/journalInactive:%lld/journalDisabled:%lld matrixCalls=%lld matrixSkips=%lld matrixSkipPercent=%.1f parameterCalls=%lld parameterSkips=%lld parameterSkipPercent=%.1f directActivations=%lld directCommits=%lld directFallbacks=%lld directVsWrites=%lld directPsWrites=%lld directTextureWrites=%lld directBatches=%lld nativeJournal=begin:%lld/restore:%lld/localFallback:%lld/failure:%lld/captureEnable:%lld/captureDisable:%lld totals=%lld/%lld/%lld/%lld",
+        Log("effectbatch: intervalMs={} fps={:.1f} frames={} attempts={} mode2={} standalone={} techniqueCalls={} starts={} reusedBegins={} commits={} fallbacks={} reject=disabled:{}/noSave:{}/technique:{}/begin:{}/passCount:{}/multiPass:{}/binding:{}/journalInactive:{}/journalDisabled:{} matrixCalls={} matrixSkips={} matrixSkipPercent={:.1f} parameterCalls={} parameterSkips={} parameterSkipPercent={:.1f} directActivations={} directCommits={} directFallbacks={} directVsWrites={} directPsWrites={} directTextureWrites={} directBatches={} nativeJournal=begin:{}/restore:{}/localFallback:{}/failure:{}/captureEnable:{}/captureDisable:{} totals={}/{}/{}/{}",
             static_cast<unsigned long long>(elapsedMs),
             fps,
             frames,
@@ -4598,7 +4591,7 @@ static bool StartProperShadersStateAttribution()
     JournalAttributionStartCapture();
     g_properShadersStateAttributionStartTick = GetTickCount64();
     ++g_properShadersStateAttributionCaptureId;
-    Log("stateattribution: capture=%u started durationMs=%u triggerVirtualKey=%d",
+    Log("stateattribution: capture={} started durationMs={} triggerVirtualKey={}",
         g_properShadersStateAttributionCaptureId,
         g_properShadersStateAttributionDurationMs,
         g_properShadersStateAttributionTriggerKey);
@@ -4622,7 +4615,7 @@ static void FinishProperShadersStateAttribution(const char* reason)
     const auto delta = [](std::uint64_t end, std::uint64_t begin) {
         return end >= begin ? end - begin : 0;
     };
-    Log("stateattribution: capture=%u finished reason=%s elapsedMs=%llu nativeBegin=%llu nativeRestore=%llu localFallback=%llu nativeFailure=%llu captureEnable=%llu captureDisable=%llu output=scripts\\BridgeD3D9.state-attribution.log",
+    Log("stateattribution: capture={} finished reason={} elapsedMs={} nativeBegin={} nativeRestore={} localFallback={} nativeFailure={} captureEnable={} captureDisable={} output=scripts\\BridgeD3D9.state-attribution.log",
         g_properShadersStateAttributionCaptureId,
         reason ? reason : "unknown",
         static_cast<unsigned long long>(elapsed),
@@ -4662,7 +4655,7 @@ static void PollProperShadersStateAttribution(bool& triggerWasDown, bool countPr
         }
         if (triggerWasDown) return;
         triggerWasDown = true;
-        Log("stateattribution: trigger observed on unwrapped support worker key=%d",
+        Log("stateattribution: trigger observed on unwrapped support worker key={}",
             g_properShadersStateAttributionTriggerKey);
         StartProperShadersStateAttribution();
         return;
@@ -4804,51 +4797,50 @@ static bool IsCpuExecutableAddress(const std::vector<CpuExecutableRange>& ranges
     return address >= it->begin && address < it->end;
 }
 
-static UINT CopyCpuStackWords(uintptr_t stackPointer, uintptr_t* output, UINT capacity)
+static UINT CopyCpuStackWords(
+    uintptr_t stackPointer,
+    std::span<uintptr_t> output)
 {
-    if (!stackPointer || !output || !capacity) return 0;
+    if (!stackPointer || output.empty()) return 0;
     __try {
-        std::memcpy(output, reinterpret_cast<const void*>(stackPointer),
-            static_cast<size_t>(capacity) * sizeof(output[0]));
-        return capacity;
+        std::memcpy(output.data(), reinterpret_cast<const void*>(stackPointer),
+            output.size_bytes());
+        return static_cast<UINT>(output.size());
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         return 0;
     }
 }
 
-static void ResolveCpuHotspotAddress(
-    uintptr_t address,
-    char* moduleName,
-    size_t moduleNameSize,
-    uintptr_t& moduleBase,
-    uintptr_t& rva,
-    uintptr_t& preferredAddress)
+struct ResolvedCpuAddress
 {
-    if (moduleName && moduleNameSize) {
-        snprintf(moduleName, moduleNameSize, "private");
-    }
-    moduleBase = 0;
-    rva = 0;
-    preferredAddress = 0;
-    if (!address) return;
+    std::string moduleName = "private";
+    uintptr_t moduleBase = 0;
+    uintptr_t rva = 0;
+    uintptr_t preferredAddress = 0;
+};
+
+static ResolvedCpuAddress ResolveCpuHotspotAddress(uintptr_t address)
+{
+    ResolvedCpuAddress result;
+    if (!address) return result;
 
     MEMORY_BASIC_INFORMATION region{};
     if (VirtualQuery(reinterpret_cast<const void*>(address), &region, sizeof(region)) != sizeof(region)) {
-        return;
+        return result;
     }
 
-    moduleBase = reinterpret_cast<uintptr_t>(region.AllocationBase);
-    if (!moduleBase || address < moduleBase) return;
-    rva = address - moduleBase;
+    result.moduleBase = reinterpret_cast<uintptr_t>(region.AllocationBase);
+    if (!result.moduleBase || address < result.moduleBase) return result;
+    result.rva = address - result.moduleBase;
 
-    HMODULE module = reinterpret_cast<HMODULE>(moduleBase);
+    HMODULE module = reinterpret_cast<HMODULE>(result.moduleBase);
     char path[MAX_PATH]{};
     const DWORD pathLength = GetModuleFileNameA(module, path, static_cast<DWORD>(sizeof(path)));
-    if (pathLength && moduleName && moduleNameSize) {
+    if (pathLength) {
         const char* name = path;
         if (const char* slash = std::strrchr(name, '\\')) name = slash + 1;
-        snprintf(moduleName, moduleNameSize, "%s", name);
+        result.moduleName = name;
     }
 
     uintptr_t imageBase = 0;
@@ -4856,25 +4848,26 @@ static void ResolveCpuHotspotAddress(
     uintptr_t preferredBase = 0;
     if (GetPeImageInfo(module, imageBase, imageSize, preferredBase) &&
         address >= imageBase && address < imageBase + imageSize) {
-        preferredAddress = preferredBase + (address - imageBase);
+        result.preferredAddress = preferredBase + (address - imageBase);
     }
+    return result;
 }
 
 static void FormatCpuHotspotAddressBrief(uintptr_t address, char* output, size_t outputSize)
 {
     if (!output || !outputSize) return;
     if (!address) {
-        snprintf(output, outputSize, "none");
+        const auto [end, written] = std::format_to_n(
+            output, outputSize - 1, "none");
+        *end = '\0';
         return;
     }
 
-    char moduleName[MAX_PATH]{};
-    uintptr_t moduleBase = 0;
-    uintptr_t rva = 0;
-    uintptr_t preferredAddress = 0;
-    ResolveCpuHotspotAddress(address, moduleName, sizeof(moduleName),
-        moduleBase, rva, preferredAddress);
-    snprintf(output, outputSize, "%s+0x%08X", moduleName, static_cast<unsigned>(rva));
+    const ResolvedCpuAddress resolved = ResolveCpuHotspotAddress(address);
+    const auto [end, written] = std::format_to_n(
+        output, outputSize - 1, "{}+0x{:08X}", resolved.moduleName,
+        static_cast<unsigned>(resolved.rva));
+    *end = '\0';
 }
 
 static BridgePerformance::ModuleIdentity MakePerformanceModuleIdentity(
@@ -5278,35 +5271,27 @@ static void CollectPerformanceProviderRows(
     }
 }
 
-static bool SaveD3D9BackBufferBmp(
+static std::expected<void, std::string> SaveD3D9BackBufferBmp(
     IDirect3DDevice9* device,
-    const char* outputPath,
-    char* errorText,
-    size_t errorTextSize)
+    const char* outputPath)
 {
-    if (errorText && errorTextSize) errorText[0] = '\0';
     if (!device || !outputPath || !outputPath[0]) {
-        if (errorText && errorTextSize) snprintf(errorText, errorTextSize, "invalid arguments");
-        return false;
+        return std::unexpected("invalid arguments");
     }
 
     IDirect3DSurface9* backBuffer = nullptr;
     HRESULT hr = device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
     if (FAILED(hr) || !backBuffer) {
-        if (errorText && errorTextSize) {
-            snprintf(errorText, errorTextSize, "GetBackBuffer hr=0x%08X", static_cast<unsigned>(hr));
-        }
-        return false;
+        return std::unexpected(
+            std::format("GetBackBuffer hr=0x{:08X}", static_cast<unsigned>(hr)));
     }
 
     D3DSURFACE_DESC backBufferDesc{};
     hr = backBuffer->GetDesc(&backBufferDesc);
     if (FAILED(hr)) {
-        if (errorText && errorTextSize) {
-            snprintf(errorText, errorTextSize, "GetDesc hr=0x%08X", static_cast<unsigned>(hr));
-        }
         backBuffer->Release();
-        return false;
+        return std::unexpected(
+            std::format("GetDesc hr=0x{:08X}", static_cast<unsigned>(hr)));
     }
 
     IDirect3DSurface9* readableSurface = nullptr;
@@ -5360,39 +5345,31 @@ static bool SaveD3D9BackBufferBmp(
     if (resolvedSurface) resolvedSurface->Release();
 
     if (FAILED(hr) || !readableSurface) {
-        if (errorText && errorTextSize) {
-            snprintf(errorText, errorTextSize, "readback hr=0x%08X", static_cast<unsigned>(hr));
-        }
         if (readableSurface) readableSurface->Release();
-        return false;
+        return std::unexpected(
+            std::format("readback hr=0x{:08X}", static_cast<unsigned>(hr)));
     }
 
     if (readableFormat != D3DFMT_A8R8G8B8 && readableFormat != D3DFMT_X8R8G8B8) {
-        if (errorText && errorTextSize) {
-            snprintf(errorText, errorTextSize, "unsupported format=0x%08X",
-                static_cast<unsigned>(readableFormat));
-        }
         readableSurface->Release();
-        return false;
+        return std::unexpected(
+            std::format("unsupported format=0x{:08X}", static_cast<unsigned>(readableFormat)));
     }
 
     D3DLOCKED_RECT locked{};
     hr = readableSurface->LockRect(&locked, nullptr, D3DLOCK_READONLY);
     if (FAILED(hr)) {
-        if (errorText && errorTextSize) {
-            snprintf(errorText, errorTextSize, "LockRect hr=0x%08X", static_cast<unsigned>(hr));
-        }
         readableSurface->Release();
-        return false;
+        return std::unexpected(
+            std::format("LockRect hr=0x{:08X}", static_cast<unsigned>(hr)));
     }
 
     const uint64_t rowBytes = static_cast<uint64_t>(backBufferDesc.Width) * 4;
     const uint64_t imageBytes = rowBytes * static_cast<uint64_t>(backBufferDesc.Height);
     if (imageBytes > UINT32_MAX) {
-        if (errorText && errorTextSize) snprintf(errorText, errorTextSize, "image too large");
         readableSurface->UnlockRect();
         readableSurface->Release();
-        return false;
+        return std::unexpected("image too large");
     }
 
     BITMAPFILEHEADER fileHeader{};
@@ -5410,10 +5387,9 @@ static bool SaveD3D9BackBufferBmp(
 
     FILE* file = nullptr;
     if (fopen_s(&file, outputPath, "wb") != 0 || !file) {
-        if (errorText && errorTextSize) snprintf(errorText, errorTextSize, "failed to open output");
         readableSurface->UnlockRect();
         readableSurface->Release();
-        return false;
+        return std::unexpected("failed to open output");
     }
 
     bool success =
@@ -5430,10 +5406,10 @@ static bool SaveD3D9BackBufferBmp(
     readableSurface->UnlockRect();
     readableSurface->Release();
 
-    if (!success && errorText && errorTextSize) {
-        snprintf(errorText, errorTextSize, "failed while writing output");
+    if (!success) {
+        return std::unexpected("failed while writing output");
     }
-    return success;
+    return {};
 }
 
 static DWORD WINAPI CpuHotspotWorker(void* parameter)
@@ -5449,7 +5425,7 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
         FALSE,
         context->targetThreadId);
     if (!targetThread) {
-        Log("cpuhotspots: capture=%u OpenThread failed targetThread=%u err=%u",
+        Log("cpuhotspots: capture={} OpenThread failed targetThread={} err={}",
             context->captureId, context->targetThreadId, GetLastError());
         delete context;
         InterlockedExchange(&g_cpuHotspotActive, 0);
@@ -5491,15 +5467,13 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
         if (gotContext) {
             stackWordCount = CopyCpuStackWords(
                 static_cast<uintptr_t>(threadContext.Esp),
-                stackWords,
-                static_cast<UINT>(sizeof(stackWords) / sizeof(stackWords[0])));
+                stackWords);
         }
 #elif defined(_M_X64)
         if (gotContext) {
             stackWordCount = CopyCpuStackWords(
                 static_cast<uintptr_t>(threadContext.Rsp),
-                stackWords,
-                static_cast<UINT>(sizeof(stackWords) / sizeof(stackWords[0])));
+                stackWords);
         }
 #endif
         ResumeThread(targetThread);
@@ -5627,13 +5601,8 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
 
     std::unordered_map<uintptr_t, uint64_t> moduleSamples;
     for (const auto& entry : orderedAddresses) {
-        char moduleName[MAX_PATH]{};
-        uintptr_t moduleBase = 0;
-        uintptr_t rva = 0;
-        uintptr_t preferredAddress = 0;
-        ResolveCpuHotspotAddress(entry.first, moduleName, sizeof(moduleName),
-            moduleBase, rva, preferredAddress);
-        moduleSamples[moduleBase] += entry.second;
+        const ResolvedCpuAddress resolved = ResolveCpuHotspotAddress(entry.first);
+        moduleSamples[resolved.moduleBase] += entry.second;
     }
 
     std::vector<std::pair<uintptr_t, uint64_t>> orderedModules;
@@ -5645,8 +5614,8 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
 
     FILE* file = nullptr;
     if (fopen_s(&file, context->outputPath, "a") == 0 && file) {
-        fprintf(file,
-            "# capture=%u begin=%04u-%02u-%02uT%02u:%02u:%02u.%03u targetThread=%u durationMs=%u intervalMs=%u elapsedMs=%u frames=%u fps=%.2f presents=%u presentRate=%.2f gameFrameStart=%u gameFrameEnd=%u frameCounterValid=%d samples=%llu missed=%llu threadCycles=%llu uniqueAddresses=%u uniqueStacks=%u executableRanges=%u screenshot=\"%s\"\n",
+        std::print(file,
+            "# capture={} begin={:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03} targetThread={} durationMs={} intervalMs={} elapsedMs={} frames={} fps={:.2f} presents={} presentRate={:.2f} gameFrameStart={} gameFrameEnd={} frameCounterValid={} samples={} missed={} threadCycles={} uniqueAddresses={} uniqueStacks={} executableRanges={} screenshot=\"{}\"\n",
             context->captureId,
             beginTime.wYear, beginTime.wMonth, beginTime.wDay,
             beginTime.wHour, beginTime.wMinute, beginTime.wSecond, beginTime.wMilliseconds,
@@ -5671,22 +5640,16 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
 
         UINT moduleRank = 0;
         for (const auto& entry : orderedModules) {
-            char moduleName[MAX_PATH]{};
-            uintptr_t moduleBase = 0;
-            uintptr_t rva = 0;
-            uintptr_t preferredAddress = 0;
-            ResolveCpuHotspotAddress(entry.first, moduleName, sizeof(moduleName),
-                moduleBase, rva, preferredAddress);
+            const ResolvedCpuAddress resolved = ResolveCpuHotspotAddress(entry.first);
             const double percent = totalSamples
                 ? 100.0 * static_cast<double>(entry.second) / static_cast<double>(totalSamples)
                 : 0.0;
-            fprintf(file,
-                "moduleRank=%u samples=%llu percent=%.2f module=%s base=%p\n",
+            std::print(file,
+                "moduleRank={} samples={} percent={:.2f} module={} base={:08X}\n",
                 ++moduleRank,
                 static_cast<unsigned long long>(entry.second),
                 percent,
-                moduleName,
-                reinterpret_cast<void*>(entry.first));
+                resolved.moduleName, reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(entry.first)));
         }
 
         const size_t outputStackCount = (std::min)(orderedStacks.size(), static_cast<size_t>(256));
@@ -5704,8 +5667,8 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
             const double percent = totalSamples
                 ? 100.0 * static_cast<double>(entry.second) / static_cast<double>(totalSamples)
                 : 0.0;
-            fprintf(file,
-                "stackRank=%u samples=%llu percent=%.2f ip=%s caller1=%s caller2=%s caller3=%s\n",
+            std::print(file,
+                "stackRank={} samples={} percent={:.2f} ip={} caller1={} caller2={} caller3={}\n",
                 static_cast<unsigned>(i + 1),
                 static_cast<unsigned long long>(entry.second),
                 percent,
@@ -5718,25 +5681,18 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
         const size_t outputAddressCount = (std::min)(orderedAddresses.size(), static_cast<size_t>(256));
         for (size_t i = 0; i < outputAddressCount; ++i) {
             const auto& entry = orderedAddresses[i];
-            char moduleName[MAX_PATH]{};
-            uintptr_t moduleBase = 0;
-            uintptr_t rva = 0;
-            uintptr_t preferredAddress = 0;
-            ResolveCpuHotspotAddress(entry.first, moduleName, sizeof(moduleName),
-                moduleBase, rva, preferredAddress);
+            const ResolvedCpuAddress resolved = ResolveCpuHotspotAddress(entry.first);
             const double percent = totalSamples
                 ? 100.0 * static_cast<double>(entry.second) / static_cast<double>(totalSamples)
                 : 0.0;
-            fprintf(file,
-                "rank=%u samples=%llu percent=%.2f address=%p module=%s base=%p rva=0x%08X preferred=0x%08X\n",
+            std::print(file,
+                "rank={} samples={} percent={:.2f} address={:08X} module={} base={:08X} rva=0x{:08X} preferred=0x{:08X}\n",
                 static_cast<unsigned>(i + 1),
                 static_cast<unsigned long long>(entry.second),
-                percent,
-                reinterpret_cast<void*>(entry.first),
-                moduleName,
-                reinterpret_cast<void*>(moduleBase),
-                static_cast<unsigned>(rva),
-                static_cast<unsigned>(preferredAddress));
+                percent, reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(entry.first)),
+                resolved.moduleName, reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(resolved.moduleBase)),
+                static_cast<unsigned>(resolved.rva),
+                static_cast<unsigned>(resolved.preferredAddress));
         }
         if (g_performanceRuntimeConfig.enabled)
         {
@@ -5749,15 +5705,15 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
                 performanceConfigs,
                 performanceWarnings);
         }
-        fprintf(file, "# capture=%u end\n", context->captureId);
+        std::print(file, "# capture={} end\n", context->captureId);
         fflush(file);
         fclose(file);
     } else {
-        Log("cpuhotspots: capture=%u failed to open %s",
+        Log("cpuhotspots: capture={} failed to open {}",
             context->captureId, context->outputPath);
     }
 
-    Log("cpuhotspots: capture=%u complete targetThread=%u frames=%u fps=%.2f presents=%u presentRate=%.2f frameCounterValid=%d samples=%llu missed=%llu elapsedMs=%u screenshot=%s path=%s",
+    Log("cpuhotspots: capture={} complete targetThread={} frames={} fps={:.2f} presents={} presentRate={:.2f} frameCounterValid={} samples={} missed={} elapsedMs={} screenshot={} path={}",
         context->captureId,
         context->targetThreadId,
         static_cast<unsigned>(capturedFrames),
@@ -5776,7 +5732,7 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
     InterlockedExchange(&g_cpuHotspotActive, 0);
     if (g_enableD3D9CallsiteProfile && g_cpuHotspotChainD3D9CallsiteProfile) {
         InterlockedExchange(&g_cpuHotspotCallsitePending, static_cast<LONG>(completedCaptureId));
-        Log("cpuhotspots: capture=%u queued sequential D3D9 callsite stage",
+        Log("cpuhotspots: capture={} queued sequential D3D9 callsite stage",
             completedCaptureId);
     }
     return 0;
@@ -5840,7 +5796,7 @@ static void MaybeArmCpuHotspotProfileUnwrapped()
     }
     if (g_unwrappedHotspotTriggerWasDown) return;
     g_unwrappedHotspotTriggerWasDown = true;
-    Log("cpuhotspots: trigger observed on unwrapped support worker key=%d",
+    Log("cpuhotspots: trigger observed on unwrapped support worker key={}",
         g_cpuHotspotTriggerKey);
 
     if (InterlockedCompareExchange(&g_cpuHotspotCallsitePending, 0, 0) != 0) {
@@ -5866,8 +5822,8 @@ static void MaybeArmCpuHotspotProfileUnwrapped()
     context->captureId = static_cast<UINT>(InterlockedIncrement(&g_cpuHotspotCaptureId));
     context->durationMs = g_cpuHotspotDurationMs;
     context->intervalMs = g_cpuHotspotIntervalMs;
-    snprintf(context->outputPath, sizeof(context->outputPath),
-        "%s\\scripts\\BridgeD3D9.cpuhotspots.log", g_gameDir);
+    FormatTo(context->outputPath, sizeof(context->outputPath),
+        "{}\\scripts\\BridgeD3D9.cpuhotspots.log", g_gameDir);
     context->screenshotPath[0] = '\0';
 
     const UINT captureId = context->captureId;
@@ -5877,7 +5833,7 @@ static void MaybeArmCpuHotspotProfileUnwrapped()
 
     HANDLE worker = CreateThread(nullptr, 0, CpuHotspotWorker, context, 0, nullptr);
     if (!worker) {
-        Log("cpuhotspots: capture=%u CreateThread failed err=%u",
+        Log("cpuhotspots: capture={} CreateThread failed err={}",
             captureId, GetLastError());
         delete context;
         InterlockedExchange(&g_cpuHotspotActive, 0);
@@ -5885,13 +5841,13 @@ static void MaybeArmCpuHotspotProfileUnwrapped()
     }
     CloseHandle(worker);
 
-    Log("cpuhotspots: capture=%u armed targetThread=%u durationMs=%u intervalMs=%u screenshotSaved=0 screenshot=(skipped-unwrapped)",
+    Log("cpuhotspots: capture={} armed targetThread={} durationMs={} intervalMs={} screenshotSaved=0 screenshot=(skipped-unwrapped)",
         captureId, targetThreadId, durationMs, intervalMs);
 }
 
 static DWORD WINAPI UnwrappedSupportThread(LPVOID)
 {
-    Log("postfx: unwrapped support worker started renderThread=%u",
+    Log("postfx: unwrapped support worker started renderThread={}",
         g_unwrappedRenderThreadId);
     const ULONGLONG installDeadline = GetTickCount64() + 180000ull;
     bool installDone = !g_enableProperShadersEffectOptimization;
@@ -5951,7 +5907,7 @@ static void OnUnwrappedDeviceCreated(IDirect3DDevice9* device)
     // Only the first device is the game's render device. D3DX9 helper devices
     // created later must not steal the render-thread id or the Vulkan host.
     if (InterlockedCompareExchange(&g_unwrappedDeviceClaimed, 1, 0) != 0) {
-        Log("postfx: additional device left unwrapped inner=0x%p (not claimed)", device);
+        Log("postfx: additional device left unwrapped inner=0x{:08X} (not claimed)", reinterpret_cast<std::uintptr_t>(device));
         return;
     }
     g_unwrappedDevice = device;
@@ -5963,11 +5919,10 @@ static void OnUnwrappedDeviceCreated(IDirect3DDevice9* device)
             CloseHandle(thread);
         } else {
             InterlockedExchange(&g_unwrappedWorkerStarted, 0);
-            Log("postfx: unwrapped support worker CreateThread failed err=%u", GetLastError());
+            Log("postfx: unwrapped support worker CreateThread failed err={}", GetLastError());
         }
     }
-    Log("postfx: device left unwrapped inner=0x%p renderThread=%u (per-call wrapper disabled)",
-        device, g_unwrappedRenderThreadId);
+    Log("postfx: device left unwrapped inner=0x{:08X} renderThread={} (per-call wrapper disabled)", reinterpret_cast<std::uintptr_t>(device), g_unwrappedRenderThreadId);
 }
 
 
@@ -5994,33 +5949,16 @@ static bool EqualsNoCase(const std::string& a, const char* b)
 static bool LoadTextLines(const char* path, std::vector<std::string>& lines)
 {
     lines.clear();
-    FILE* f = fopen(path, "rb");
-    if (!f) return false;
+    std::ifstream input(path, std::ios::binary);
+    if (!input.good()) return false;
 
-    std::string current;
-    char buffer[4096];
-    while (size_t n = fread(buffer, 1, sizeof(buffer), f)) {
-        for (size_t i = 0; i < n; ++i) {
-            char c = buffer[i];
-            if (c == '\n') {
-                if (!current.empty() && current.back() == '\r') {
-                    current.pop_back();
-                }
-                lines.push_back(current);
-                current.clear();
-            } else {
-                current.push_back(c);
-            }
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.ends_with('\r')) {
+            line.pop_back();
         }
+        lines.push_back(std::move(line));
     }
-    if (!current.empty()) {
-        if (!current.empty() && current.back() == '\r') {
-            current.pop_back();
-        }
-        lines.push_back(current);
-    }
-
-    fclose(f);
     return true;
 }
 
@@ -6065,12 +6003,11 @@ static bool IniLineMatchesKey(const std::string& line, const char* key)
 
 static std::string BuildIniLine(const char* key, const char* value, bool enabled)
 {
-    std::string line;
-    if (!enabled) line += "#";
-    line += key ? key : "";
-    line += " = ";
-    line += value ? value : "";
-    return line;
+    return std::format(
+        "{}{} = {}",
+        enabled ? "" : "#",
+        key ? key : "",
+        value ? value : "");
 }
 
 static bool SetIniKey(std::vector<std::string>& lines, const char* section,
@@ -6109,10 +6046,7 @@ static bool SetIniKey(std::vector<std::string>& lines, const char* section,
         if (!lines.empty() && !lines.back().empty()) {
             lines.push_back("");
         }
-        std::string header = "[";
-        header += section;
-        header += "]";
-        lines.push_back(header);
+        lines.push_back(std::format("[{}]", section));
         lines.push_back(wanted);
         return true;
     }
@@ -6123,11 +6057,12 @@ static bool SetIniKey(std::vector<std::string>& lines, const char* section,
 
 static bool PreviousRunHadOlaCrash()
 {
-    char logPath[MAX_PATH]{};
-    snprintf(logPath, sizeof(logPath), "%s\\fastman92limitAdjuster.log", g_gameDir);
+    const std::string logPath = std::format(
+        "{}\\fastman92limitAdjuster.log",
+        g_gameDir);
 
     std::vector<std::string> lines;
-    if (!LoadTextLines(logPath, lines)) {
+    if (!LoadTextLines(logPath.c_str(), lines)) {
         return false;
     }
 
@@ -6178,17 +6113,17 @@ static void ApplyLimitCoordinator(const char* bridgeIniPath)
 
     char flaPath[MAX_PATH]{};
     char olaPath[MAX_PATH]{};
-    snprintf(flaPath, sizeof(flaPath), "%s\\fastman92limitAdjuster_GTASA.ini", g_gameDir);
-    snprintf(olaPath, sizeof(olaPath), "%s\\modloader\\OLA\\III.VC.SA.LimitAdjuster.ini", g_gameDir);
+    FormatTo(flaPath, sizeof(flaPath), "{}\\fastman92limitAdjuster_GTASA.ini", g_gameDir);
+    FormatTo(olaPath, sizeof(olaPath), "{}\\modloader\\OLA\\III.VC.SA.LimitAdjuster.ini", g_gameDir);
 
     std::vector<std::string> flaLines;
     std::vector<std::string> olaLines;
     if (!LoadTextLines(flaPath, flaLines)) {
-        Log("limitcoord: failed to read FLA ini %s", flaPath);
+        Log("limitcoord: failed to read FLA ini {}", flaPath);
         return;
     }
     if (!LoadTextLines(olaPath, olaLines)) {
-        Log("limitcoord: failed to read OLA ini %s", olaPath);
+        Log("limitcoord: failed to read OLA ini {}", olaPath);
         return;
     }
 
@@ -6215,7 +6150,7 @@ static void ApplyLimitCoordinator(const char* bridgeIniPath)
 
     bool flaChanged = false;
     bool olaChanged = false;
-    Log("limitcoord: enabled mode=%s crashGuard=%d quarantineAfterCrash=%d previousOlaCrash=%d",
+    Log("limitcoord: enabled mode={} crashGuard={} quarantineAfterCrash={} previousOlaCrash={}",
         mode, crashGuard ? 1 : 0, quarantineAfterCrash ? 1 : 0, previousOlaCrash ? 1 : 0);
     if (previousOlaCrash) {
         Log("limitcoord: OLA SA limits quarantined because previous run crashed inside iii.vc.sa.limitadjuster.asi");
@@ -6229,14 +6164,14 @@ static void ApplyLimitCoordinator(const char* bridgeIniPath)
 
         flaChanged |= SetIniKey(flaLines, rule.flaSection, rule.flaKey, rule.flaValue, !useOla);
         olaChanged |= SetIniKey(olaLines, "SALIMITS", rule.olaKey, rule.olaValue, useOla);
-        Log("limitcoord: %s owner=%s reason=%s", rule.name, useOla ? "OLA" : "FLA", rule.reason);
+        Log("limitcoord: {} owner={} reason={}", rule.name, useOla ? "OLA" : "FLA", rule.reason);
     }
 
     if (flaChanged) {
         if (SaveTextLines(flaPath, flaLines)) {
             Log("limitcoord: wrote FLA ini");
         } else {
-            Log("limitcoord: failed to write FLA ini %s", flaPath);
+            Log("limitcoord: failed to write FLA ini {}", flaPath);
         }
     } else {
         Log("limitcoord: FLA ini unchanged");
@@ -6246,7 +6181,7 @@ static void ApplyLimitCoordinator(const char* bridgeIniPath)
         if (SaveTextLines(olaPath, olaLines)) {
             Log("limitcoord: wrote OLA ini");
         } else {
-            Log("limitcoord: failed to write OLA ini %s", olaPath);
+            Log("limitcoord: failed to write OLA ini {}", olaPath);
         }
     } else {
         Log("limitcoord: OLA ini unchanged");
@@ -6256,13 +6191,21 @@ static void ApplyLimitCoordinator(const char* bridgeIniPath)
 static DWORD PriorityNameToClass(const char* name)
 {
     if (!name || !name[0]) return NORMAL_PRIORITY_CLASS;
-    if (_stricmp(name, "Idle") == 0) return IDLE_PRIORITY_CLASS;
-    if (_stricmp(name, "BelowNormal") == 0) return BELOW_NORMAL_PRIORITY_CLASS;
-    if (_stricmp(name, "Normal") == 0) return NORMAL_PRIORITY_CLASS;
-    if (_stricmp(name, "AboveNormal") == 0) return ABOVE_NORMAL_PRIORITY_CLASS;
-    if (_stricmp(name, "High") == 0) return HIGH_PRIORITY_CLASS;
-    if (_stricmp(name, "Realtime") == 0 || _stricmp(name, "RealTime") == 0) return REALTIME_PRIORITY_CLASS;
-    return NORMAL_PRIORITY_CLASS;
+    constexpr std::array<std::pair<std::string_view, DWORD>, 7> kNames = {{
+        {"Idle", IDLE_PRIORITY_CLASS},
+        {"BelowNormal", BELOW_NORMAL_PRIORITY_CLASS},
+        {"Normal", NORMAL_PRIORITY_CLASS},
+        {"AboveNormal", ABOVE_NORMAL_PRIORITY_CLASS},
+        {"High", HIGH_PRIORITY_CLASS},
+        {"Realtime", REALTIME_PRIORITY_CLASS},
+        {"RealTime", REALTIME_PRIORITY_CLASS},
+    }};
+    const auto match = std::ranges::find_if(
+        kNames,
+        [name](const auto& entry) {
+            return _stricmp(name, entry.first.data()) == 0;
+        });
+    return match == kNames.end() ? NORMAL_PRIORITY_CLASS : match->second;
 }
 
 static const char* PriorityClassName(DWORD priorityClass)
@@ -6319,12 +6262,8 @@ static void ApplyAffinityAndPriority(const char* reason)
         return;
     }
 
-    Log("affinity: %s enable=1 requested=0x%p current=0x%p target=0x%p system=0x%p affinityChanged=%d applied=%d err=%u priorityCurrent=0x%08X priority=%s class=0x%08X priorityChanged=%d applied=%d err=%u",
-        reason ? reason : "apply",
-        reinterpret_cast<void*>(g_affinityRequestedMask),
-        reinterpret_cast<void*>(gotMasks ? processMask : 0),
-        reinterpret_cast<void*>(targetMask),
-        reinterpret_cast<void*>(gotMasks ? systemMask : 0),
+    Log("affinity: {} enable=1 requested=0x{:08X} current=0x{:08X} target=0x{:08X} system=0x{:08X} affinityChanged={} applied={} err={} priorityCurrent=0x{:08X} priority={} class=0x{:08X} priorityChanged={} applied={} err={}",
+        reason ? reason : "apply", reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(g_affinityRequestedMask)), reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(gotMasks ? processMask : 0)), reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(targetMask)), reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(gotMasks ? systemMask : 0)),
         affinityChanged ? 1 : 0,
         affinityOk ? 1 : 0,
         affinityErr,
@@ -6338,7 +6277,7 @@ static void ApplyAffinityAndPriority(const char* reason)
 
 static DWORD WINAPI AffinityReapplyThread(void*)
 {
-    Log("affinity: reapply worker started count=%u intervalMs=%u",
+    Log("affinity: reapply worker started count={} intervalMs={}",
         g_affinityReapplyCount, g_affinityReapplyIntervalMs);
     for (DWORD i = 0; i < g_affinityReapplyCount; ++i) {
         Sleep(g_affinityReapplyIntervalMs);
@@ -6374,9 +6313,9 @@ static void BuildGamePath(const char* relOrAbs, char* out, size_t outSize)
     if (!relOrAbs || !relOrAbs[0]) return;
 
     if (IsAbsolutePathA(relOrAbs)) {
-        snprintf(out, outSize, "%s", relOrAbs);
+        FormatTo(out, outSize, "{}", relOrAbs);
     } else {
-        snprintf(out, outSize, "%s\\%s", g_gameDir, relOrAbs);
+        FormatTo(out, outSize, "{}\\{}", g_gameDir, relOrAbs);
     }
 }
 
@@ -6385,7 +6324,7 @@ static bool EnsureDirectoryTreeA(const char* path)
     if (!path || !path[0]) return false;
 
     char current[MAX_PATH]{};
-    snprintf(current, sizeof(current), "%s", path);
+    FormatTo(current, sizeof(current), "{}", path);
 
     size_t length = strlen(current);
     while (length > 3 && (current[length - 1] == '\\' || current[length - 1] == '/')) {
@@ -6420,7 +6359,7 @@ static bool SetDxvkEnvironment(const char* name, const char* value)
 {
     if (!name || !name[0] || !value || !value[0]) return false;
     if (SetEnvironmentVariableA(name, value)) return true;
-    Log("dxvkdiag: SetEnvironmentVariable failed name=%s err=%u", name, GetLastError());
+    Log("dxvkdiag: SetEnvironmentVariable failed name={} err={}", name, GetLastError());
     return false;
 }
 
@@ -6439,20 +6378,20 @@ static void ConfigureDxvkDiagnostics(const char* iniPath)
     char outputDir[MAX_PATH]{};
     BuildGamePath(outputDirText, outputDir, sizeof(outputDir));
     if (!EnsureDirectoryTreeA(outputDir)) {
-        Log("dxvkdiag: failed to create output directory path=%s err=%u", outputDir, GetLastError());
+        Log("dxvkdiag: failed to create output directory path={} err={}", outputDir, GetLastError());
         return;
     }
 
     SYSTEMTIME now{};
     GetLocalTime(&now);
     char sessionDir[MAX_PATH]{};
-    snprintf(sessionDir, sizeof(sessionDir), "%s\\%04u%02u%02u-%02u%02u%02u-%03u-pid%u",
+    FormatTo(sessionDir, sizeof(sessionDir), "{}\\{:04}{:02}{:02}-{:02}{:02}{:02}-{:03}-pid{}",
         outputDir,
         now.wYear, now.wMonth, now.wDay,
         now.wHour, now.wMinute, now.wSecond, now.wMilliseconds,
         GetCurrentProcessId());
     if (!EnsureDirectoryTreeA(sessionDir)) {
-        Log("dxvkdiag: failed to create session directory path=%s err=%u", sessionDir, GetLastError());
+        Log("dxvkdiag: failed to create session directory path={} err={}", sessionDir, GetLastError());
         return;
     }
 
@@ -6469,47 +6408,47 @@ static void ConfigureDxvkDiagnostics(const char* iniPath)
     SetDxvkEnvironment("DXVK_DEBUG", debugMode);
 
     char configPath[MAX_PATH]{};
-    snprintf(configPath, sizeof(configPath), "%s\\dxvk.conf", g_gameDir);
+    FormatTo(configPath, sizeof(configPath), "{}\\dxvk.conf", g_gameDir);
     if (FileExistsA(configPath)) {
         SetDxvkEnvironment("DXVK_CONFIG_FILE", configPath);
     }
 
     char statsPath[MAX_PATH]{};
     if (GetPrivateProfileIntA("DXVKDiagnostics", "StatsLog", 1, iniPath) != 0) {
-        snprintf(statsPath, sizeof(statsPath), "%s\\dxvk-stats.csv", sessionDir);
+        FormatTo(statsPath, sizeof(statsPath), "{}\\dxvk-stats.csv", sessionDir);
         SetDxvkEnvironment("DXVK_STATS_LOG", statsPath);
     }
 
     char frameTimePath[MAX_PATH]{};
     if (GetPrivateProfileIntA("DXVKDiagnostics", "FrameTimeLog", 1, iniPath) != 0) {
-        snprintf(frameTimePath, sizeof(frameTimePath), "%s\\dxvk-frametimes.csv", sessionDir);
+        FormatTo(frameTimePath, sizeof(frameTimePath), "{}\\dxvk-frametimes.csv", sessionDir);
         SetDxvkEnvironment("DXVK_FRAME_TIME_LOG", frameTimePath);
     }
 
     char shaderDir[MAX_PATH]{};
     if (GetPrivateProfileIntA("DXVKDiagnostics", "DumpShaders", 1, iniPath) != 0) {
-        snprintf(shaderDir, sizeof(shaderDir), "%s\\shaders", sessionDir);
+        FormatTo(shaderDir, sizeof(shaderDir), "{}\\shaders", sessionDir);
         if (EnsureDirectoryTreeA(shaderDir)) {
             SetDxvkEnvironment("DXVK_SHADER_DUMP_PATH", shaderDir);
         } else {
-            Log("dxvkdiag: failed to create shader dump directory path=%s err=%u", shaderDir, GetLastError());
+            Log("dxvkdiag: failed to create shader dump directory path={} err={}", shaderDir, GetLastError());
         }
     }
 
     char manifestPath[MAX_PATH]{};
-    snprintf(manifestPath, sizeof(manifestPath), "%s\\session.txt", sessionDir);
+    FormatTo(manifestPath, sizeof(manifestPath), "{}\\session.txt", sessionDir);
     FILE* manifest = nullptr;
     if (fopen_s(&manifest, manifestPath, "wb") == 0 && manifest) {
-        fprintf(manifest, "DXVK diagnostic session\r\n");
-        fprintf(manifest, "LogLevel=%s\r\nHud=%s\r\nDebug=%s\r\n", logLevel, hud, debugMode);
-        fprintf(manifest, "ConfigFile=%s\r\n", FileExistsA(configPath) ? configPath : "(not found)");
-        fprintf(manifest, "StatsLog=%s\r\n", statsPath[0] ? statsPath : "disabled");
-        fprintf(manifest, "FrameTimeLog=%s\r\n", frameTimePath[0] ? frameTimePath : "disabled");
-        fprintf(manifest, "ShaderDump=%s\r\n", shaderDir[0] ? shaderDir : "disabled");
+        std::print(manifest, "DXVK diagnostic session\r\n");
+        std::print(manifest, "LogLevel={}\r\nHud={}\r\nDebug={}\r\n", logLevel, hud, debugMode);
+        std::print(manifest, "ConfigFile={}\r\n", FileExistsA(configPath) ? configPath : "(not found)");
+        std::print(manifest, "StatsLog={}\r\n", statsPath[0] ? statsPath : "disabled");
+        std::print(manifest, "FrameTimeLog={}\r\n", frameTimePath[0] ? frameTimePath : "disabled");
+        std::print(manifest, "ShaderDump={}\r\n", shaderDir[0] ? shaderDir : "disabled");
         fclose(manifest);
     }
 
-    Log("dxvkdiag: enabled session=%s logLevel=%s hud=%s debug=%s stats=%d frametimes=%d shaders=%d",
+    Log("dxvkdiag: enabled session={} logLevel={} hud={} debug={} stats={} frametimes={} shaders={}",
         sessionDir,
         logLevel,
         hud,
@@ -6522,15 +6461,29 @@ static void ConfigureDxvkDiagnostics(const char* iniPath)
 static uint32_t ClaimNameToBit(const char* name)
 {
     if (!name || !name[0]) return 0;
-    if (_stricmp(name, "D3D9Entry") == 0 || _stricmp(name, "D3D9") == 0) return CLAIM_D3D9_ENTRY;
-    if (_stricmp(name, "DeviceWrap") == 0 || _stricmp(name, "Device") == 0) return CLAIM_DEVICE_WRAP;
-    if (_stricmp(name, "EndScene") == 0 || _stricmp(name, "PostFXEndScene") == 0) return CLAIM_POSTFX_ENDSCENE;
-    if (_stricmp(name, "Present") == 0 || _stricmp(name, "PostFXPresent") == 0) return CLAIM_POSTFX_PRESENT;
-    if (_stricmp(name, "Depth") == 0 || _stricmp(name, "DepthAccess") == 0) return CLAIM_DEPTH;
-    if (_stricmp(name, "ShaderPatch") == 0 || _stricmp(name, "Shader") == 0) return CLAIM_SHADER_PATCH;
-    if (_stricmp(name, "DXGI") == 0) return CLAIM_DXGI;
-    if (_stricmp(name, "Backend") == 0 || _stricmp(name, "DXVKBackend") == 0) return CLAIM_BACKEND;
-    return 0;
+    constexpr std::array<std::pair<std::string_view, uint32_t>, 15> kNames = {{
+        {"D3D9Entry", CLAIM_D3D9_ENTRY},
+        {"D3D9", CLAIM_D3D9_ENTRY},
+        {"DeviceWrap", CLAIM_DEVICE_WRAP},
+        {"Device", CLAIM_DEVICE_WRAP},
+        {"EndScene", CLAIM_POSTFX_ENDSCENE},
+        {"PostFXEndScene", CLAIM_POSTFX_ENDSCENE},
+        {"Present", CLAIM_POSTFX_PRESENT},
+        {"PostFXPresent", CLAIM_POSTFX_PRESENT},
+        {"Depth", CLAIM_DEPTH},
+        {"DepthAccess", CLAIM_DEPTH},
+        {"ShaderPatch", CLAIM_SHADER_PATCH},
+        {"Shader", CLAIM_SHADER_PATCH},
+        {"DXGI", CLAIM_DXGI},
+        {"Backend", CLAIM_BACKEND},
+        {"DXVKBackend", CLAIM_BACKEND},
+    }};
+    const auto match = std::ranges::find_if(
+        kNames,
+        [name](const auto& entry) {
+            return _stricmp(name, entry.first.data()) == 0;
+        });
+    return match == kNames.end() ? 0 : match->second;
 }
 
 static uint32_t ParseClaimMask(char* text)
@@ -6544,7 +6497,7 @@ static uint32_t ParseClaimMask(char* text)
         if (bit) {
             mask |= bit;
         } else if (token[0]) {
-            Log("proxychain: unknown claim '%s'", token);
+            Log("proxychain: unknown claim '{}'", token);
         }
     }
     return mask;
@@ -6553,7 +6506,6 @@ static uint32_t ParseClaimMask(char* text)
 static void ClaimMaskToString(uint32_t mask, char* out, size_t outSize)
 {
     if (!out || outSize == 0) return;
-    out[0] = '\0';
 
     struct ClaimName { uint32_t bit; const char* name; };
     static const ClaimName names[] = {
@@ -6567,14 +6519,13 @@ static void ClaimMaskToString(uint32_t mask, char* out, size_t outSize)
         { CLAIM_BACKEND, "Backend" },
     };
 
+    std::string text;
     for (const auto& item : names) {
         if (!(mask & item.bit)) continue;
-        if (out[0]) strncat(out, ";", outSize - strlen(out) - 1);
-        strncat(out, item.name, outSize - strlen(out) - 1);
+        if (!text.empty()) text += ';';
+        text += item.name;
     }
-    if (!out[0]) {
-        snprintf(out, outSize, "None");
-    }
+    FormatTo(out, outSize, "{}", text.empty() ? "None" : text.c_str());
 }
 
 static void ResetProxyClaimOwners()
@@ -6589,7 +6540,7 @@ static void AssignProxyClaimOwner(uint32_t mask, const char* ownerName)
     if (!ownerName || !ownerName[0]) return;
     for (auto& owner : g_claimOwners) {
         if (mask & owner.bit) {
-            snprintf(owner.owner, sizeof(owner.owner), "%s", ownerName);
+            FormatTo(owner.owner, sizeof(owner.owner), "{}", ownerName);
         }
     }
 }
@@ -6597,24 +6548,22 @@ static void AssignProxyClaimOwner(uint32_t mask, const char* ownerName)
 static void DescribeProxyClaimOwners(uint32_t mask, char* out, size_t outSize)
 {
     if (!out || outSize == 0) return;
-    out[0] = '\0';
 
+    std::string text;
     for (const auto& owner : g_claimOwners) {
         if (!(mask & owner.bit)) continue;
 
         char claimText[64]{};
         ClaimMaskToString(owner.bit, claimText, sizeof(claimText));
 
-        char item[160]{};
-        snprintf(item, sizeof(item), "%s=%s", claimText, owner.owner[0] ? owner.owner : "(unowned)");
-
-        if (out[0]) strncat(out, "; ", outSize - strlen(out) - 1);
-        strncat(out, item, outSize - strlen(out) - 1);
+        if (!text.empty()) text += "; ";
+        text += std::format(
+            "{}={}",
+            claimText,
+            owner.owner[0] ? owner.owner : "(unowned)");
     }
 
-    if (!out[0]) {
-        snprintf(out, outSize, "None");
-    }
+    FormatTo(out, outSize, "{}", text.empty() ? "None" : text.c_str());
 }
 
 static void LogProxyClaimTable()
@@ -6627,12 +6576,12 @@ static void LogProxyClaimTable()
         ClaimMaskToString(owner.bit, claimText, sizeof(claimText));
 
         char item[160]{};
-        snprintf(item, sizeof(item), "%s=%s", claimText, owner.owner);
+        FormatTo(item, sizeof(item), "{}={}", claimText, owner.owner);
         if (owned[0]) strncat(owned, "; ", sizeof(owned) - strlen(owned) - 1);
         strncat(owned, item, sizeof(owned) - strlen(owned) - 1);
     }
 
-    Log("proxychain: ownership %s", owned[0] ? owned : "(none)");
+    Log("proxychain: ownership {}", owned[0] ? owned : "(none)");
 }
 
 static void LoadProxyChainConfig(const char* iniPath)
@@ -6642,7 +6591,7 @@ static void LoadProxyChainConfig(const char* iniPath)
     g_enableLegacyD3D9PSAutoProbe =
         GetPrivateProfileIntA("ProxyChain", "LegacyAutoProbeD3D9PS", 0, iniPath) != 0;
     if (!g_enableProxyChain) {
-        Log("proxychain: disabled legacyAutoProbeD3D9PS=%d",
+        Log("proxychain: disabled legacyAutoProbeD3D9PS={}",
             g_enableLegacyD3D9PSAutoProbe ? 1 : 0);
         return;
     }
@@ -6655,7 +6604,7 @@ static void LoadProxyChainConfig(const char* iniPath)
         for (int i = 1; i <= 128; ++i) {
             char key[16]{};
             char value[128]{};
-            snprintf(key, sizeof(key), "%d", i);
+            FormatTo(key, sizeof(key), "{}", i);
             GetPrivateProfileStringA("register", key, "", value, sizeof(value), iniPath);
             TrimSpaces(value);
             if (!value[0]) continue;
@@ -6665,7 +6614,7 @@ static void LoadProxyChainConfig(const char* iniPath)
         }
     }
 
-    Log("proxychain: enabled order=%s", order[0] ? order : "(empty)");
+    Log("proxychain: enabled order={}", order[0] ? order : "(empty)");
     if (!order[0]) return;
 
     char* ctx = nullptr;
@@ -6674,10 +6623,10 @@ static void LoadProxyChainConfig(const char* iniPath)
         if (!token[0]) continue;
 
         char section[128]{};
-        snprintf(section, sizeof(section), "Proxy.%s", token);
+        FormatTo(section, sizeof(section), "Proxy.{}", token);
 
         ProxyConfig proxy{};
-        snprintf(proxy.name, sizeof(proxy.name), "%s", token);
+        FormatTo(proxy.name, sizeof(proxy.name), "{}", token);
         proxy.enabled = GetPrivateProfileIntA(section, "Enable", 1, iniPath) != 0;
         proxy.required = GetPrivateProfileIntA(section, "Required", 0, iniPath) != 0;
         GetPrivateProfileStringA(section, "Type", "D3D9Proxy", proxy.type, sizeof(proxy.type), iniPath);
@@ -6691,7 +6640,7 @@ static void LoadProxyChainConfig(const char* iniPath)
         proxy.claims = ParseClaimMask(claims);
 
         if (!proxy.path[0]) {
-            snprintf(section, sizeof(section), "%s", token);
+            FormatTo(section, sizeof(section), "{}", token);
             proxy.enabled = GetPrivateProfileIntA(section, "Enable", proxy.enabled ? 1 : 0, iniPath) != 0;
             proxy.required = GetPrivateProfileIntA(section, "Required", proxy.required ? 1 : 0, iniPath) != 0;
             GetPrivateProfileStringA(section, "Type", proxy.type, proxy.type, sizeof(proxy.type), iniPath);
@@ -6699,7 +6648,7 @@ static void LoadProxyChainConfig(const char* iniPath)
             if (!proxy.path[0]) {
                 GetPrivateProfileStringA(section, "asi", "", proxy.path, sizeof(proxy.path), iniPath);
                 if (proxy.path[0] && _stricmp(proxy.type, "D3D9Proxy") == 0) {
-                    snprintf(proxy.type, sizeof(proxy.type), "ASI");
+                    FormatTo(proxy.type, sizeof(proxy.type), "ASI");
                 }
             }
             if (!proxy.path[0]) {
@@ -6717,13 +6666,13 @@ static void LoadProxyChainConfig(const char* iniPath)
         }
 
         if (!proxy.path[0]) {
-            Log("proxychain: %s skipped, missing Path", proxy.name);
+            Log("proxychain: {} skipped, missing Path", proxy.name);
             continue;
         }
 
         char claimText[256]{};
         ClaimMaskToString(proxy.claims, claimText, sizeof(claimText));
-        Log("proxychain: configured name=%s type=%s path=%s claims=%s mode=%s stage=%s conflict=%s enabled=%d required=%d",
+        Log("proxychain: configured name={} type={} path={} claims={} mode={} stage={} conflict={} enabled={} required={}",
             proxy.name, proxy.type, proxy.path, claimText, proxy.mode, proxy.stage, proxy.conflictPolicy,
             proxy.enabled ? 1 : 0, proxy.required ? 1 : 0);
         g_proxyChain.push_back(proxy);
@@ -6749,7 +6698,7 @@ static void LoadPostFxPlugins(const char* iniPath)
     GetPrivateProfileStringA("PostFX", "Plugins", "", list, sizeof(list), iniPath);
     TrimSpaces(list);
 
-    Log("postfx: host enabled dir=%s plugins=%s", pluginDir, list[0] ? list : "(none)");
+    Log("postfx: host enabled dir={} plugins={}", pluginDir, list[0] ? list : "(none)");
     if (!list[0]) return;
 
     char* ctx = nullptr;
@@ -6759,20 +6708,20 @@ static void LoadPostFxPlugins(const char* iniPath)
 
         char path[MAX_PATH]{};
         if (IsAbsolutePathA(token)) {
-            snprintf(path, sizeof(path), "%s", token);
+            FormatTo(path, sizeof(path), "{}", token);
         } else {
-            snprintf(path, sizeof(path), "%s\\%s", pluginDir, token);
+            FormatTo(path, sizeof(path), "{}\\{}", pluginDir, token);
         }
 
         HMODULE module = LoadLibraryA(path);
         if (!module) {
-            Log("postfx: failed to load %s err=%u", path, GetLastError());
+            Log("postfx: failed to load {} err={}", path, GetLastError());
             continue;
         }
 
         LoadedPlugin plugin{};
         plugin.module = module;
-        snprintf(plugin.path, sizeof(plugin.path), "%s", path);
+        FormatTo(plugin.path, sizeof(plugin.path), "{}", path);
         g_plugins.push_back(std::move(plugin));
         LoadedPlugin* loaded = &g_plugins.back();
 
@@ -6794,7 +6743,7 @@ static void LoadPostFxPlugins(const char* iniPath)
             bool crashed = false;
             BOOL ok = SafePluginInit2(init2, &api2, &crashed);
             if (!ok) {
-                Log("postfx: API v2 init %s %s", crashed ? "crashed for" : "rejected", path);
+                Log("postfx: API v2 init {} {}", crashed ? "crashed for" : "rejected", path);
                 UnregisterPluginVulkanPasses(*loaded);
                 g_plugins.pop_back();
                 FreeLibrary(module);
@@ -6809,7 +6758,7 @@ static void LoadPostFxPlugins(const char* iniPath)
             bool crashed = false;
             BOOL ok = SafePluginInit1(init1, &api1, &crashed);
             if (!ok) {
-                Log("postfx: API v1 init %s %s", crashed ? "crashed for" : "rejected", path);
+                Log("postfx: API v1 init {} {}", crashed ? "crashed for" : "rejected", path);
                 g_plugins.pop_back();
                 FreeLibrary(module);
                 continue;
@@ -6825,7 +6774,7 @@ static void LoadPostFxPlugins(const char* iniPath)
         loaded->onPresentAfter = reinterpret_cast<BridgeD3D9_OnPresentAfter>(GetProcAddress(module, "BridgeD3D9_OnPresentAfter"));
         loaded->onReleaseDevice = reinterpret_cast<BridgeD3D9_OnReleaseDevice>(GetProcAddress(module, "BridgeD3D9_OnReleaseDevice"));
 
-        Log("postfx: loaded %s api=%s nativePasses=%llu", path,
+        Log("postfx: loaded {} api={} nativePasses={}", path,
             loaded->usesApi2 ? "v2" : "v1",
             static_cast<unsigned long long>(loaded->vulkanPasses.size()));
     }
@@ -6855,7 +6804,7 @@ static void EnsurePostFxPluginsLoaded()
 {
     if (!g_enablePostFxHost) return;
     if (!InitOnceExecuteOnce(&g_postFxInitOnce, InitializePostFxOnce, nullptr, nullptr)) {
-        Log("postfx: deferred initialization failed err=%u", GetLastError());
+        Log("postfx: deferred initialization failed err={}", GetLastError());
     }
 }
 
@@ -6867,28 +6816,28 @@ static HMODULE LoadBackendD3D9()
 
     if (kBackendTraceBuild) {
         if (!g_selfModule || !GetModuleFileNameA(g_selfModule, path, sizeof(path))) {
-            Log("backendtrace: failed to resolve proxy module path err=%u", GetLastError());
+            Log("backendtrace: failed to resolve proxy module path err={}", GetLastError());
             return nullptr;
         }
         char* slash = strrchr(path, '\\');
         if (!slash) {
-            Log("backendtrace: proxy module path has no directory: %s", path);
+            Log("backendtrace: proxy module path has no directory: {}", path);
             return nullptr;
         }
-        snprintf(slash + 1, static_cast<size_t>(path + sizeof(path) - slash - 1), "d3d9_dxvk.dll");
+        FormatTo(slash + 1, static_cast<size_t>(path + sizeof(path) - slash - 1), "d3d9_dxvk.dll");
     } else if (g_useDxvkBackend && g_dxvkBackendDir[0]) {
-        snprintf(path, sizeof(path), "%s\\d3d9.dll", g_dxvkBackendDir);
+        FormatTo(path, sizeof(path), "{}\\d3d9.dll", g_dxvkBackendDir);
     } else {
         char sysDir[MAX_PATH]{};
         GetSystemDirectoryA(sysDir, sizeof(sysDir));
-        snprintf(path, sizeof(path), "%s\\d3d9.dll", sysDir);
+        FormatTo(path, sizeof(path), "{}\\d3d9.dll", sysDir);
     }
 
     HMODULE h = LoadLibraryA(path);
-    Log("%s d3d9: %s -> 0x%p",
+    Log("{} d3d9: {} -> 0x{:08X}",
         kBackendTraceBuild ? "backendtrace" :
         (g_useDxvkBackend && g_dxvkBackendDir[0] ? "backend" : "system"),
-        path, h);
+        path, reinterpret_cast<std::uintptr_t>(h));
     // Log every module named d3d9.dll with its base so CPU hotspot captures
     // can be attributed unambiguously (module bases change across launches).
     {
@@ -6900,8 +6849,7 @@ static HMODULE LoadBackendD3D9()
         char sysD3d9[MAX_PATH]{};
         GetSystemDirectoryA(sysD3d9, sizeof(sysD3d9));
         strncat_s(sysD3d9, "\\d3d9.dll", _TRUNCATE);
-        Log("modulemap: bridge=0x%p backend=0x%p system-d3d9=0x%p",
-            self, h, GetModuleHandleA(sysD3d9));
+        Log("modulemap: bridge=0x{:08X} backend=0x{:08X} system-d3d9=0x{:08X}", reinterpret_cast<std::uintptr_t>(self), reinterpret_cast<std::uintptr_t>(h), reinterpret_cast<std::uintptr_t>(GetModuleHandleA(sysD3d9)));
     }
     return h;
 }
@@ -6914,7 +6862,7 @@ static HMODULE LoadPSProxy()
         HMODULE selectedD3D9Proxy = nullptr;
         for (const auto& proxy : g_proxyChain) {
             if (!proxy.enabled) {
-                Log("proxychain: %s disabled", proxy.name);
+                Log("proxychain: {} disabled", proxy.name);
                 continue;
             }
 
@@ -6924,7 +6872,7 @@ static HMODULE LoadPSProxy()
             if (conflict && !allowShared && !replaceEarlier) {
                 char conflictText[256]{};
                 DescribeProxyClaimOwners(conflict, conflictText, sizeof(conflictText));
-                Log("proxychain: %s skipped, claims already owned: %s", proxy.name, conflictText);
+                Log("proxychain: {} skipped, claims already owned: {}", proxy.name, conflictText);
                 continue;
             }
 
@@ -6938,15 +6886,15 @@ static HMODULE LoadPSProxy()
                     BuildGamePath(proxy.path, path, sizeof(path));
                     DWORD attrs = GetFileAttributesA(path);
                     if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-                        Log("proxychain: observed ASI %s missing path=%s", proxy.name, path);
+                        Log("proxychain: observed ASI {} missing path={}", proxy.name, path);
                         continue;
                     }
 
                     const char* moduleName = strrchr(path, '\\');
                     moduleName = moduleName ? moduleName + 1 : path;
                     HMODULE h = GetModuleHandleA(moduleName);
-                    Log("proxychain: observed ASI %s path=%s module=0x%p state=%s",
-                        proxy.name, path, h, h ? "loaded" : "deferred-to-ASI-loader");
+                    Log("proxychain: observed ASI {} path={} module=0x{:08X} state={}",
+                        proxy.name, path, reinterpret_cast<std::uintptr_t>(h), h ? "loaded" : "deferred-to-ASI-loader");
                 }
 
                 if (_stricmp(proxy.type, "ASI") == 0) {
@@ -6954,10 +6902,10 @@ static HMODULE LoadPSProxy()
                     BuildGamePath(proxy.path, path, sizeof(path));
                     HMODULE h = LoadLibraryA(path);
                     if (!h) {
-                        Log("proxychain: failed to load ASI %s path=%s err=%u", proxy.name, path, GetLastError());
+                        Log("proxychain: failed to load ASI {} path={} err={}", proxy.name, path, GetLastError());
                         continue;
                     }
-                    Log("proxychain: loaded ASI %s path=%s -> 0x%p", proxy.name, path, h);
+                    Log("proxychain: loaded ASI {} path={} -> 0x{:08X}", proxy.name, path, reinterpret_cast<std::uintptr_t>(h));
                 }
 
                 if (proxy.claims && !conflict) {
@@ -6965,14 +6913,14 @@ static HMODULE LoadPSProxy()
                     AssignProxyClaimOwner(proxy.claims, proxy.name);
                 }
                 if (_stricmp(proxy.type, "ASI") != 0 && !observedAsi) {
-                    Log("proxychain: %s type=%s accepted for ownership audit but no adapter is implemented yet",
+                    Log("proxychain: {} type={} accepted for ownership audit but no adapter is implemented yet",
                         proxy.name, proxy.type);
                 }
                 continue;
             }
 
             if (selectedD3D9Proxy) {
-                Log("proxychain: %s skipped, primary D3D9 proxy already selected: %s",
+                Log("proxychain: {} skipped, primary D3D9 proxy already selected: {}",
                     proxy.name, g_primaryProxyName[0] ? g_primaryProxyName : "(unnamed)");
                 continue;
             }
@@ -6992,20 +6940,20 @@ static HMODULE LoadPSProxy()
             }
 
             if (!h) {
-                Log("proxychain: failed to load %s path=%s err=%u", proxy.name, path, GetLastError());
+                Log("proxychain: failed to load {} path={} err={}", proxy.name, path, GetLastError());
                 if (proxy.required) {
-                    Log("proxychain: required proxy %s missing; continuing without D3D9 proxy to avoid loader abort", proxy.name);
+                    Log("proxychain: required proxy {} missing; continuing without D3D9 proxy to avoid loader abort", proxy.name);
                 }
                 continue;
             }
 
             claimed = replaceEarlier ? proxy.claims : (claimed | proxy.claims);
             AssignProxyClaimOwner(proxy.claims, proxy.name);
-            snprintf(g_primaryProxyName, sizeof(g_primaryProxyName), "%s", proxy.name);
+            FormatTo(g_primaryProxyName, sizeof(g_primaryProxyName), "{}", proxy.name);
             char claimText[256]{};
             ClaimMaskToString(proxy.claims, claimText, sizeof(claimText));
-            Log("proxychain: loaded primary D3D9 proxy %s path=%s claims=%s -> 0x%p",
-                proxy.name, path, claimText, h);
+            Log("proxychain: loaded primary D3D9 proxy {} path={} claims={} -> 0x{:08X}",
+                proxy.name, path, claimText, reinterpret_cast<std::uintptr_t>(h));
             selectedD3D9Proxy = h;
         }
 
@@ -7033,8 +6981,8 @@ static HMODULE LoadPSProxy()
     }
 
     if (h) {
-        Log("PS proxy: loaded d3d9_ps.dll -> 0x%p", h);
-        snprintf(g_primaryProxyName, sizeof(g_primaryProxyName), "ProperShaders");
+        Log("PS proxy: loaded d3d9_ps.dll -> 0x{:08X}", reinterpret_cast<std::uintptr_t>(h));
+        FormatTo(g_primaryProxyName, sizeof(g_primaryProxyName), "ProperShaders");
     } else {
         Log("PS proxy: d3d9_ps.dll not found, PS disabled");
     }
@@ -7070,13 +7018,13 @@ static bool InstallSystemDirectoryHook()
 
     HMODULE kernel32 = GetModuleHandleA("KERNEL32.dll");
     if (!kernel32) {
-        Log("backend: GetModuleHandleA(KERNEL32.dll) failed err=%u", GetLastError());
+        Log("backend: GetModuleHandleA(KERNEL32.dll) failed err={}", GetLastError());
         return false;
     }
 
     g_getSystemDirectoryAAddress = reinterpret_cast<void*>(GetProcAddress(kernel32, "GetSystemDirectoryA"));
     if (!g_getSystemDirectoryAAddress) {
-        Log("backend: GetProcAddress(GetSystemDirectoryA) failed err=%u", GetLastError());
+        Log("backend: GetProcAddress(GetSystemDirectoryA) failed err={}", GetLastError());
         return false;
     }
 
@@ -7088,7 +7036,7 @@ static bool InstallSystemDirectoryHook()
 
     DWORD oldProtect = 0;
     if (!VirtualProtect(g_getSystemDirectoryAAddress, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        Log("backend: VirtualProtect GetSystemDirectoryA failed err=%u", GetLastError());
+        Log("backend: VirtualProtect GetSystemDirectoryA failed err={}", GetLastError());
         return false;
     }
 
@@ -7111,7 +7059,7 @@ static void RestoreSystemDirectoryHook()
     DWORD oldProtect = 0;
     if (!VirtualProtect(g_getSystemDirectoryAAddress, sizeof(g_getSystemDirectoryAOriginal),
             PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        Log("backend: restore VirtualProtect GetSystemDirectoryA failed err=%u", GetLastError());
+        Log("backend: restore VirtualProtect GetSystemDirectoryA failed err={}", GetLastError());
         return;
     }
 
@@ -7130,7 +7078,7 @@ static void LoadBridgeConfig()
     char gameDir[MAX_PATH]{};
     GetGameDirectory(gameDir, sizeof(gameDir));
     if (!gameDir[0]) return;
-    snprintf(g_gameDir, sizeof(g_gameDir), "%s", gameDir);
+    FormatTo(g_gameDir, sizeof(g_gameDir), "{}", gameDir);
 
     if (kBackendTraceBuild) {
         g_enablePostFxHost = false;
@@ -7147,8 +7095,8 @@ static void LoadBridgeConfig()
     }
 
     char iniPath[MAX_PATH]{};
-    snprintf(iniPath, sizeof(iniPath), "%s\\scripts\\BridgeD3D9.ini", gameDir);
-    snprintf(g_performanceIniPath, sizeof(g_performanceIniPath), "%s", iniPath);
+    FormatTo(iniPath, sizeof(iniPath), "{}\\scripts\\BridgeD3D9.ini", gameDir);
+    FormatTo(g_performanceIniPath, sizeof(g_performanceIniPath), "{}", iniPath);
 
     ConfigureDxvkDiagnostics(iniPath);
 
@@ -7165,7 +7113,7 @@ static void LoadBridgeConfig()
     if (g_affinityReapplyIntervalMs < 250) {
         g_affinityReapplyIntervalMs = 250;
     }
-    Log("affinity: config enable=%d mask=%s priority=%s reapply=%d count=%u intervalMs=%u",
+    Log("affinity: config enable={} mask={} priority={} reapply={} count={} intervalMs={}",
         g_affinityEnable ? 1 : 0,
         affinityMaskText,
         PriorityClassName(g_affinityPriorityClass),
@@ -7178,7 +7126,7 @@ static void LoadBridgeConfig()
     if (g_d3d9StatsIntervalMs < 250) {
         g_d3d9StatsIntervalMs = 250;
     }
-    Log("d3d9stats: enable=%d intervalMs=%u layer=game-to-primary-proxy",
+    Log("d3d9stats: enable={} intervalMs={} layer=game-to-primary-proxy",
         g_enableD3D9Stats ? 1 : 0, g_d3d9StatsIntervalMs);
 
     g_enableD3D9Trace = GetPrivateProfileIntA("D3D9Trace", "Enable", 0, iniPath) != 0;
@@ -7193,7 +7141,7 @@ static void LoadBridgeConfig()
     } else if (g_d3d9TraceMaxDraws > 100000) {
         g_d3d9TraceMaxDraws = 100000;
     }
-    Log("d3d9trace: enable=%d triggerVirtualKey=%d maxDraws=%u output=scripts\\BridgeD3D9.drawtrace.log",
+    Log("d3d9trace: enable={} triggerVirtualKey={} maxDraws={} output=scripts\\BridgeD3D9.drawtrace.log",
         g_enableD3D9Trace ? 1 : 0,
         g_d3d9TraceTriggerKey,
         g_d3d9TraceMaxDraws);
@@ -7219,7 +7167,7 @@ static void LoadBridgeConfig()
     } else if (g_d3d9CallsiteSampleEveryDraws > 4096) {
         g_d3d9CallsiteSampleEveryDraws = 4096;
     }
-    Log("d3d9callsites: enable=%d triggerVirtualKey=%d captureFrames=%u sampleEveryDraws=%u output=scripts\\BridgeD3D9.callsites.log",
+    Log("d3d9callsites: enable={} triggerVirtualKey={} captureFrames={} sampleEveryDraws={} output=scripts\\BridgeD3D9.callsites.log",
         g_enableD3D9CallsiteProfile ? 1 : 0,
         g_d3d9CallsiteTriggerKey,
         g_d3d9CallsiteCaptureFrames,
@@ -7248,7 +7196,7 @@ static void LoadBridgeConfig()
     } else if (g_cpuHotspotIntervalMs > 100) {
         g_cpuHotspotIntervalMs = 100;
     }
-    Log("cpuhotspots: enable=%d triggerVirtualKey=%d durationMs=%u intervalMs=%u chainD3D9Callsites=%d output=scripts\\BridgeD3D9.cpuhotspots.log",
+    Log("cpuhotspots: enable={} triggerVirtualKey={} durationMs={} intervalMs={} chainD3D9Callsites={} output=scripts\\BridgeD3D9.cpuhotspots.log",
         g_enableCpuHotspotProfile ? 1 : 0,
         g_cpuHotspotTriggerKey,
         g_cpuHotspotDurationMs,
@@ -7270,7 +7218,7 @@ static void LoadBridgeConfig()
     } else if (g_properShadersStateAttributionDurationMs > 10000) {
         g_properShadersStateAttributionDurationMs = 10000;
     }
-    Log("stateattribution: enable=%d triggerVirtualKey=%d durationMs=%u output=scripts\\BridgeD3D9.state-attribution.log",
+    Log("stateattribution: enable={} triggerVirtualKey={} durationMs={} output=scripts\\BridgeD3D9.state-attribution.log",
         g_enableProperShadersStateAttribution ? 1 : 0,
         g_properShadersStateAttributionTriggerKey,
         g_properShadersStateAttributionDurationMs);
@@ -7298,7 +7246,7 @@ static void LoadBridgeConfig()
     } else if (g_properShadersEffectProfileDurationMs > 10000) {
         g_properShadersEffectProfileDurationMs = 10000;
     }
-    Log("effectprofile: enable=%d triggerVirtualKey=%d durationMs=%u noSaveState=%d skipDuplicateMatrices=%d output=scripts\\BridgeD3D9.effectprofile.log",
+    Log("effectprofile: enable={} triggerVirtualKey={} durationMs={} noSaveState={} skipDuplicateMatrices={} output=scripts\\BridgeD3D9.effectprofile.log",
         g_enableProperShadersEffectProfile ? 1 : 0,
         g_properShadersEffectProfileTriggerKey,
         g_properShadersEffectProfileDurationMs,
@@ -7333,7 +7281,7 @@ static void LoadBridgeConfig()
         "ProperShadersEffectOptimization", "TraceStabilityProbe", 0, iniPath) != 0;
     g_properShadersJournalProbe = GetPrivateProfileIntA(
         "ProperShadersEffectOptimization", "JournalProbe", 0, iniPath) != 0;
-    Log("effectopt: genericDirect=%d genericDirectDryRun=%d passLite=%d traceStabProbe=%d journalProbe=%d",
+    Log("effectopt: genericDirect={} genericDirectDryRun={} passLite={} traceStabProbe={} journalProbe={}",
         g_properShadersGenericDirect ? 1 : 0,
         g_properShadersGenericDirectDryRun ? 1 : 0,
         g_properShadersGenericPassLite ? 1 : 0,
@@ -7341,7 +7289,7 @@ static void LoadBridgeConfig()
         g_properShadersJournalProbe ? 1 : 0);
     g_forceDeviceWrap = GetPrivateProfileIntA(
         "ProxyChain", "ForceDeviceWrap", 0, iniPath) != 0;
-    Log("effectopt: nativeStateJournal=%d forceDeviceWrap=%d inspectEffects=%d",
+    Log("effectopt: nativeStateJournal={} forceDeviceWrap={} inspectEffects={}",
         g_properShadersNativeStateJournalPolicy ? 1 : 0,
         g_forceDeviceWrap ? 1 : 0,
         g_properShadersInspectEffects ? 1 : 0);
@@ -7355,7 +7303,7 @@ static void LoadBridgeConfig()
         Log("effectprofile: disabled while incremental state journal hooks are active");
         g_enableProperShadersEffectProfile = false;
     }
-    Log("effectopt: enable=%d stateJournal=%d generalStateJournal=%d batching=%d skipDuplicateMatrices=%d skipDuplicateParameters=%d directConstants=%d autoBenchmark=0 failPolicy=per-effect-baseline",
+    Log("effectopt: enable={} stateJournal={} generalStateJournal={} batching={} skipDuplicateMatrices={} skipDuplicateParameters={} directConstants={} autoBenchmark=0 failPolicy=per-effect-baseline",
         g_enableProperShadersEffectOptimization ? 1 : 0,
         g_properShadersEffectOptimizationStateJournal ? 1 : 0,
         g_properShadersGeneralStateJournal ? 1 : 0,
@@ -7367,7 +7315,7 @@ static void LoadBridgeConfig()
     g_enableD3D9Optimizer = GetPrivateProfileIntA("D3D9Optimizer", "Enable", 0, iniPath) != 0;
     g_skipRedundantShaders = GetPrivateProfileIntA("D3D9Optimizer", "SkipRedundantShaders", 1, iniPath) != 0;
     g_skipRedundantConstants = GetPrivateProfileIntA("D3D9Optimizer", "SkipRedundantConstants", 1, iniPath) != 0;
-    Log("d3d9optimizer: enable=%d shaders=%d constants=%d",
+    Log("d3d9optimizer: enable={} shaders={} constants={}",
         g_enableD3D9Optimizer ? 1 : 0,
         g_skipRedundantShaders ? 1 : 0,
         g_skipRedundantConstants ? 1 : 0);
@@ -7375,8 +7323,8 @@ static void LoadBridgeConfig()
     ApplyLimitCoordinator(iniPath);
 
     g_enablePostFxHost = GetPrivateProfileIntA("PostFX", "EnableHost", 0, iniPath) != 0;
-    snprintf(g_postFxIniPath, sizeof(g_postFxIniPath), "%s", iniPath);
-    Log("postfx: host %s initialization=%s",
+    FormatTo(g_postFxIniPath, sizeof(g_postFxIniPath), "{}", iniPath);
+    Log("postfx: host {} initialization={}",
         g_enablePostFxHost ? "enabled" : "disabled",
         g_enablePostFxHost ? "deferred-to-Direct3DCreate9" : "none");
     LoadProxyChainConfig(iniPath);
@@ -7391,22 +7339,22 @@ static void LoadBridgeConfig()
     }
 
     if (strchr(backendRel, ':') || (backendRel[0] == '\\' && backendRel[1] == '\\')) {
-        snprintf(g_dxvkBackendDir, sizeof(g_dxvkBackendDir), "%s", backendRel);
+        FormatTo(g_dxvkBackendDir, sizeof(g_dxvkBackendDir), "{}", backendRel);
     } else {
-        snprintf(g_dxvkBackendDir, sizeof(g_dxvkBackendDir), "%s\\%s", gameDir, backendRel);
+        FormatTo(g_dxvkBackendDir, sizeof(g_dxvkBackendDir), "{}\\{}", gameDir, backendRel);
     }
 
     char dxvkD3D9[MAX_PATH]{};
-    snprintf(dxvkD3D9, sizeof(dxvkD3D9), "%s\\d3d9.dll", g_dxvkBackendDir);
+    FormatTo(dxvkD3D9, sizeof(dxvkD3D9), "{}\\d3d9.dll", g_dxvkBackendDir);
 
     if (!FileExistsA(dxvkD3D9)) {
-        Log("backend: DXVK requested but missing %s", dxvkD3D9);
+        Log("backend: DXVK requested but missing {}", dxvkD3D9);
         g_dxvkBackendDir[0] = '\0';
         return;
     }
 
     g_useDxvkBackend = true;
-    Log("backend: DXVK enabled dir=%s", g_dxvkBackendDir);
+    Log("backend: DXVK enabled dir={}", g_dxvkBackendDir);
 }
 
 static void EnsurePerformanceConfigLoaded()
@@ -7422,7 +7370,7 @@ static void EnsurePerformanceConfigLoaded()
         g_gameDir);
     g_performanceConfigLoaded = true;
     Log(
-        "performance-adapters: loaded enabled=%d adapters=%u warnings=%u "
+        "performance-adapters: loaded enabled={} adapters={} warnings={} "
         "providers=%d snapshots=%d",
         g_performanceRuntimeConfig.enabled ? 1 : 0,
         static_cast<unsigned>(g_performanceRuntimeConfig.registry.adapters.size()),
@@ -7433,7 +7381,7 @@ static void EnsurePerformanceConfigLoaded()
          g_performanceRuntimeConfig.warnings)
     {
         Log(
-            "performance-adapters: warning code=%s adapter=%s detail=%s",
+            "performance-adapters: warning code={} adapter={} detail={}",
             warning.code.c_str(),
             warning.adapter.c_str(),
             warning.detail.c_str());
@@ -7485,7 +7433,7 @@ static bool PatchImportByName(HMODULE module, const char* importedModule, const 
 
             DWORD oldProtect = 0;
             if (!VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), PAGE_READWRITE, &oldProtect)) {
-                Log("backend: VirtualProtect failed for %s!%s err=%u", importedModule, importedName, GetLastError());
+                Log("backend: VirtualProtect failed for {}!{} err={}", importedModule, importedName, GetLastError());
                 return false;
             }
 
@@ -7493,12 +7441,12 @@ static bool PatchImportByName(HMODULE module, const char* importedModule, const 
             DWORD ignored = 0;
             VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function), oldProtect, &ignored);
             FlushInstructionCache(GetCurrentProcess(), &thunk->u1.Function, sizeof(thunk->u1.Function));
-            Log("backend: patched %s!%s in module 0x%p", importedModule, importedName, module);
+            Log("backend: patched {}!{} in module 0x{:08X}", importedModule, importedName, reinterpret_cast<std::uintptr_t>(module));
             return true;
         }
     }
 
-    Log("backend: import not found %s!%s in module 0x%p", importedModule, importedName, module);
+    Log("backend: import not found {}!{} in module 0x{:08X}", importedModule, importedName, reinterpret_cast<std::uintptr_t>(module));
     return false;
 }
 
@@ -7804,25 +7752,22 @@ public:
     explicit BridgeDirect3DDevice9(IDirect3DDevice9* inner)
         : m_inner(inner), m_refs(1), m_renderThreadId(GetCurrentThreadId())
     {
-        Log("postfx: wrapped IDirect3DDevice9 0x%p -> 0x%p", inner, this);
+        Log("postfx: wrapped IDirect3DDevice9 0x{:08X} -> 0x{:08X}", reinterpret_cast<std::uintptr_t>(inner), reinterpret_cast<std::uintptr_t>(this));
         m_vulkanHost = AttachVulkanHost(inner);
         m_lastStatsTick = GetTickCount();
         m_lastStats = m_stats;
         GetPeImageInfo(GetModuleHandleA(nullptr), m_gameImageBase, m_gameImageSize,
             m_gamePreferredBase);
         if (g_enableD3D9CallsiteProfile) {
-            Log("d3d9callsites: gameImage base=%p size=0x%08X preferred=%p",
-                reinterpret_cast<void*>(m_gameImageBase),
-                static_cast<unsigned>(m_gameImageSize),
-                reinterpret_cast<void*>(m_gamePreferredBase));
+            Log("d3d9callsites: gameImage base={:08X} size=0x{:08X} preferred={:08X}", reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(m_gameImageBase)),
+                static_cast<unsigned>(m_gameImageSize), reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(m_gamePreferredBase)));
             RefreshCallsiteRenderTarget();
         }
 #ifdef BRIDGE_D3D9_BACKEND_TRACE
         m_backendAlphaRing = new (std::nothrow) BackendAlphaDrawRecord[kBackendAlphaRingCapacity];
-        Log("backendtrace: alpha ring allocated records=%u bytes=%llu ptr=%p",
+        Log("backendtrace: alpha ring allocated records={} bytes={} ptr={:08X}",
             static_cast<unsigned>(kBackendAlphaRingCapacity),
-            static_cast<unsigned long long>(sizeof(BackendAlphaDrawRecord) * kBackendAlphaRingCapacity),
-            m_backendAlphaRing);
+            static_cast<unsigned long long>(sizeof(BackendAlphaDrawRecord) * kBackendAlphaRingCapacity), reinterpret_cast<std::uintptr_t>(m_backendAlphaRing));
 #endif
     }
 
@@ -8365,11 +8310,11 @@ private:
         hashes[shader] = hash;
 
         char directory[MAX_PATH]{};
-        snprintf(directory, sizeof(directory), "%s\\scripts\\BridgeD3D9.backend-shaders", g_gameDir);
+        FormatTo(directory, sizeof(directory), "{}\\scripts\\BridgeD3D9.backend-shaders", g_gameDir);
         CreateDirectoryA(directory, nullptr);
 
         char path[MAX_PATH]{};
-        snprintf(path, sizeof(path), "%s\\%s-%016llX.bin", directory,
+        FormatTo(path, sizeof(path), "{}\\{}-{:016X}.bin", directory,
             prefix ? prefix : "shader", static_cast<unsigned long long>(hash));
         if (!FileExistsA(path)) {
             FILE* file = nullptr;
@@ -8378,8 +8323,8 @@ private:
                 fclose(file);
             }
         }
-        Log("backendtrace: shader kind=%s ptr=%p hash=%016llX bytes=%u",
-            prefix ? prefix : "?", shader,
+        Log("backendtrace: shader kind={} ptr={:08X} hash={:016X} bytes={}",
+            prefix ? prefix : "?", reinterpret_cast<std::uintptr_t>(shader),
             static_cast<unsigned long long>(hash), size);
         return hash;
     }
@@ -8663,8 +8608,8 @@ private:
             m_backendAutoDumpPending = true;
             if (m_backendLastDepthColorWriteLogFrame != m_backendFrame) {
                 m_backendLastDepthColorWriteLogFrame = m_backendFrame;
-                Log("backendtrace: depth pass wrote color frame=%u draw=%u tex=%p fmt=0x%08X psHash=%016llX colorWrite=0x%08X callerRva=0x%08X",
-                    record.frame, record.drawInFrame, reinterpret_cast<void*>(record.texture),
+                Log("backendtrace: depth pass wrote color frame={} draw={} tex={:08X} fmt=0x{:08X} psHash={:016X} colorWrite=0x{:08X} callerRva=0x{:08X}",
+                    record.frame, record.drawInFrame, reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(record.texture)),
                     record.textureFormat,
                     static_cast<unsigned long long>(record.pixelShaderHash),
                     record.colorWrite, static_cast<unsigned>(record.callerRva));
@@ -8674,8 +8619,8 @@ private:
             m_backendAutoDumpPending = true;
             if (m_backendLastOpaqueAlphaLogFrame != m_backendFrame) {
                 m_backendLastOpaqueAlphaLogFrame = m_backendFrame;
-                Log("backendtrace: alpha path changed safe-to-opaque frame=%u draw=%u tex=%p fmt=0x%08X psHash=%016llX texkill=%u alphaTest=%u alphaBlend=%u phaseDepth=%u callerRva=0x%08X",
-                    record.frame, record.drawInFrame, reinterpret_cast<void*>(record.texture),
+                Log("backendtrace: alpha path changed safe-to-opaque frame={} draw={} tex={:08X} fmt=0x{:08X} psHash={:016X} texkill={} alphaTest={} alphaBlend={} phaseDepth={} callerRva=0x{:08X}",
+                    record.frame, record.drawInFrame, reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(record.texture)),
                     record.textureFormat,
                     static_cast<unsigned long long>(record.pixelShaderHash),
                     record.pixelShaderHasTexkill, record.alphaTest, record.alphaBlend,
@@ -8703,7 +8648,7 @@ private:
         }
 
         if ((m_backendFrame % 300) == 0) {
-            Log("backendtrace: frame=%u drawInFrame=%u ring=%u alphaDraws=%llu probes=%llu transparentTextures=%llu unknownAlphaTextures=%llu",
+            Log("backendtrace: frame={} drawInFrame={} ring={} alphaDraws={} probes={} transparentTextures={} unknownAlphaTextures={}",
                 m_backendFrame, m_backendDrawInFrame,
                 static_cast<unsigned>(m_backendAlphaRingCount),
                 static_cast<unsigned long long>(m_backendAlphaDraws),
@@ -8721,10 +8666,10 @@ private:
         if (!m_backendAlphaRing || m_backendAlphaRingCount == 0) return;
 
         char path[MAX_PATH]{};
-        snprintf(path, sizeof(path), "%s\\scripts\\BridgeD3D9.backend-alpha-ring.log", g_gameDir);
+        FormatTo(path, sizeof(path), "{}\\scripts\\BridgeD3D9.backend-alpha-ring.log", g_gameDir);
         FILE* file = nullptr;
         if (fopen_s(&file, path, "a") != 0 || !file) {
-            Log("backendtrace: failed to open alpha ring output %s", path);
+            Log("backendtrace: failed to open alpha ring output {}", path);
             return;
         }
 
@@ -8735,16 +8680,16 @@ private:
         const size_t start = totalRecords > kBackendAlphaRingCapacity
             ? static_cast<size_t>(totalRecords % kBackendAlphaRingCapacity)
             : 0;
-        fprintf(file,
-            "# backend-capture begin=%04u-%02u-%02uT%02u:%02u:%02u.%03u reason=%s currentFrame=%u records=%u sequence=%llu device=%p inner=%p\n",
+        std::print(file,
+            "# backend-capture begin={:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03} reason={} currentFrame={} records={} sequence={} device={:08X} inner={:08X}\n",
             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
             reason ? reason : "unknown", m_backendFrame, static_cast<unsigned>(count),
-            static_cast<unsigned long long>(totalRecords), this, m_inner);
+            static_cast<unsigned long long>(totalRecords), reinterpret_cast<std::uintptr_t>(this), reinterpret_cast<std::uintptr_t>(m_inner));
 
         for (size_t i = 0; i < count; ++i) {
             const BackendAlphaDrawRecord& r = m_backendAlphaRing[(start + i) % kBackendAlphaRingCapacity];
-            fprintf(file,
-                "seq=%llu tick=%u frame=%u age=%u draw=%u kind=%u ptype=%u prim=%u verts=%u stride=%u "
+            std::print(file,
+                "seq={} tick={} frame={} age={} draw={} kind={} ptype={} prim={} verts={} stride={} "
                 "callerBase=%p callerRva=0x%08X phaseAlt=%u phaseDepth=%u phaseFading=%u anomaly=0x%02X "
                 "tex=%p alphaClass=%u fmt=0x%08X size=%ux%u levels=%u pool=%u usage=0x%08X "
                 "vs=%p vsHash=%016llX ps=%p psHash=%016llX psTexkill=%u psConstHash=%016llX "
@@ -8773,12 +8718,12 @@ private:
                 r.mipLodBias, r.maxAnisotropy, r.fvf,
                 reinterpret_cast<void*>(r.renderTarget), reinterpret_cast<void*>(r.depthSurface));
         }
-        fprintf(file, "# backend-capture end reason=%s records=%u\n",
+        std::print(file, "# backend-capture end reason={} records={}\n",
             reason ? reason : "unknown", static_cast<unsigned>(count));
         fflush(file);
         fclose(file);
         m_backendLastDumpFrame = m_backendFrame;
-        Log("backendtrace: alpha ring exported reason=%s records=%u path=%s",
+        Log("backendtrace: alpha ring exported reason={} records={} path={}",
             reason ? reason : "unknown", static_cast<unsigned>(count), path);
     }
 #endif
@@ -8848,37 +8793,33 @@ private:
         context->captureId = static_cast<UINT>(InterlockedIncrement(&g_cpuHotspotCaptureId));
         context->durationMs = g_cpuHotspotDurationMs;
         context->intervalMs = g_cpuHotspotIntervalMs;
-        snprintf(context->outputPath, sizeof(context->outputPath),
-            "%s\\scripts\\BridgeD3D9.cpuhotspots.log", g_gameDir);
+        FormatTo(context->outputPath, sizeof(context->outputPath),
+            "{}\\scripts\\BridgeD3D9.cpuhotspots.log", g_gameDir);
 
         char diagnosticsDirectory[MAX_PATH]{};
         char cpuDirectory[MAX_PATH]{};
-        snprintf(diagnosticsDirectory, sizeof(diagnosticsDirectory), "%s\\Diagnostics", g_gameDir);
-        snprintf(cpuDirectory, sizeof(cpuDirectory), "%s\\CPU", diagnosticsDirectory);
+        FormatTo(diagnosticsDirectory, sizeof(diagnosticsDirectory), "{}\\Diagnostics", g_gameDir);
+        FormatTo(cpuDirectory, sizeof(cpuDirectory), "{}\\CPU", diagnosticsDirectory);
         CreateDirectoryA(diagnosticsDirectory, nullptr);
         CreateDirectoryA(cpuDirectory, nullptr);
 
         SYSTEMTIME screenshotTime{};
         GetLocalTime(&screenshotTime);
-        snprintf(context->screenshotPath, sizeof(context->screenshotPath),
-            "%s\\capture-%04u-%04u%02u%02u-%02u%02u%02u-%03u.bmp",
+        FormatTo(context->screenshotPath, sizeof(context->screenshotPath),
+            "{}\\capture-{:04}-{:04}{:02}{:02}-{:02}{:02}{:02}-{:03}.bmp",
             cpuDirectory,
             context->captureId,
             screenshotTime.wYear, screenshotTime.wMonth, screenshotTime.wDay,
             screenshotTime.wHour, screenshotTime.wMinute, screenshotTime.wSecond,
             screenshotTime.wMilliseconds);
 
-        char screenshotError[256]{};
-        const bool screenshotSaved = SaveD3D9BackBufferBmp(
-            m_inner,
-            context->screenshotPath,
-            screenshotError,
-            sizeof(screenshotError));
+        const std::expected<void, std::string> screenshotSaved =
+            SaveD3D9BackBufferBmp(m_inner, context->screenshotPath);
         if (!screenshotSaved) {
-            Log("cpuhotspots: capture=%u screenshot failed path=%s error=%s",
+            Log("cpuhotspots: capture={} screenshot failed path={} error={}",
                 context->captureId,
                 context->screenshotPath,
-                screenshotError[0] ? screenshotError : "unknown");
+                screenshotSaved.error());
         }
 
         const UINT captureId = context->captureId;
@@ -8886,11 +8827,11 @@ private:
         const DWORD durationMs = context->durationMs;
         const DWORD intervalMs = context->intervalMs;
         char screenshotPath[MAX_PATH]{};
-        snprintf(screenshotPath, sizeof(screenshotPath), "%s", context->screenshotPath);
+        FormatTo(screenshotPath, sizeof(screenshotPath), "{}", context->screenshotPath);
 
         HANDLE worker = CreateThread(nullptr, 0, CpuHotspotWorker, context, 0, nullptr);
         if (!worker) {
-            Log("cpuhotspots: capture=%u CreateThread failed err=%u",
+            Log("cpuhotspots: capture={} CreateThread failed err={}",
                 captureId, GetLastError());
             delete context;
             InterlockedExchange(&g_cpuHotspotActive, 0);
@@ -8898,7 +8839,7 @@ private:
         }
         CloseHandle(worker);
 
-        Log("cpuhotspots: capture=%u armed targetThread=%u durationMs=%u intervalMs=%u screenshotSaved=%d screenshot=%s",
+        Log("cpuhotspots: capture={} armed targetThread={} durationMs={} intervalMs={} screenshotSaved={} screenshot={}",
             captureId,
             targetThreadId,
             durationMs,
@@ -8923,7 +8864,7 @@ private:
         m_callsiteProfileActive = true;
         ++m_callsiteCaptureId;
 
-        Log("d3d9callsites: capture=%u armed source=%s parentCpuCapture=%u frames=%u sampleEveryDraws=%u",
+        Log("d3d9callsites: capture={} armed source={} parentCpuCapture={} frames={} sampleEveryDraws={}",
             m_callsiteCaptureId,
             source ? source : "unknown",
             m_callsiteParentCpuCaptureId,
@@ -9068,7 +9009,7 @@ private:
 
         MEMORY_BASIC_INFORMATION region{};
         if (VirtualQuery(address, &region, sizeof(region)) != sizeof(region)) {
-            snprintf(output, outputSize, "%p", address);
+            FormatTo(output, outputSize, "{:08X}", reinterpret_cast<std::uintptr_t>(address));
             return;
         }
 
@@ -9082,12 +9023,12 @@ private:
         const uintptr_t rva = value >= moduleBase ? value - moduleBase : 0;
 
         if (moduleBase == m_gameImageBase && m_gamePreferredBase) {
-            snprintf(output, outputSize, "%s+0x%08X[ghidra=0x%08X]",
+            FormatTo(output, outputSize, "{}+0x{:08X}[ghidra=0x{:08X}]",
                 name,
                 static_cast<unsigned>(rva),
                 static_cast<unsigned>(m_gamePreferredBase + rva));
         } else {
-            snprintf(output, outputSize, "%s+0x%08X", name, static_cast<unsigned>(rva));
+            FormatTo(output, outputSize, "{}+0x{:08X}", name, static_cast<unsigned>(rva));
         }
     }
 
@@ -9097,10 +9038,10 @@ private:
         m_callsiteProfileActive = false;
 
         char path[MAX_PATH]{};
-        snprintf(path, sizeof(path), "%s\\scripts\\BridgeD3D9.callsites.log", g_gameDir);
+        FormatTo(path, sizeof(path), "{}\\scripts\\BridgeD3D9.callsites.log", g_gameDir);
         FILE* file = nullptr;
         if (fopen_s(&file, path, "a") != 0 || !file) {
-            Log("d3d9callsites: capture=%u failed to open %s", m_callsiteCaptureId, path);
+            Log("d3d9callsites: capture={} failed to open {}", m_callsiteCaptureId, path);
             return;
         }
 
@@ -9114,8 +9055,8 @@ private:
         SYSTEMTIME st{};
         GetLocalTime(&st);
         const DWORD elapsed = GetTickCount() - m_callsiteStartTick;
-        fprintf(file,
-            "# capture=%u parentCpuCapture=%u begin=%04u-%02u-%02uT%02u:%02u:%02u.%03u reason=%s frames=%u draws=%llu primitives=%llu samples=%llu entries=%u dropped=%llu sampleEveryDraws=%u elapsedMs=%u gameBase=%p preferredBase=%p\n",
+        std::print(file,
+            "# capture={} parentCpuCapture={} begin={:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03} reason={} frames={} draws={} primitives={} samples={} entries={} dropped={} sampleEveryDraws={} elapsedMs={} gameBase={:08X} preferredBase={:08X}\n",
             m_callsiteCaptureId,
             m_callsiteParentCpuCaptureId,
             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
@@ -9127,9 +9068,7 @@ private:
             m_callsiteEntryCount,
             static_cast<unsigned long long>(m_callsiteDroppedEntries),
             g_d3d9CallsiteSampleEveryDraws,
-            elapsed,
-            reinterpret_cast<void*>(m_gameImageBase),
-            reinterpret_cast<void*>(m_gamePreferredBase));
+            elapsed, reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(m_gameImageBase)), reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(m_gamePreferredBase)));
 
         UINT rank = 0;
         for (UINT index : order) {
@@ -9143,8 +9082,8 @@ private:
             const uintptr_t ghidraAddress = entry.originRva && m_gamePreferredBase
                 ? m_gamePreferredBase + entry.originRva
                 : 0;
-            fprintf(file,
-                "rank=%u kind=%s samples=%llu estimatedDraws=%llu sampledPrimitives=%llu rt=%ux%u rtFmt=0x%08X originRva=0x%08X ghidra=0x%08X firstMainRva=0x%08X immediate=%s stack=",
+            std::print(file,
+                "rank={} kind={} samples={} estimatedDraws={} sampledPrimitives={} rt={}x{} rtFmt=0x{:08X} originRva=0x{:08X} ghidra=0x{:08X} firstMainRva=0x{:08X} immediate={} stack=",
                 ++rank,
                 D3D9DrawKindName(entry.kind),
                 static_cast<unsigned long long>(entry.samples),
@@ -9161,15 +9100,15 @@ private:
             for (USHORT i = 0; i < entry.stackDepth; ++i) {
                 char frame[2 * MAX_PATH]{};
                 FormatCallsiteFrame(entry.stack[i], frame, sizeof(frame));
-                fprintf(file, "%s%s", i ? ">" : "", frame);
+                std::print(file, "{}{}", i ? ">" : "", frame);
             }
-            fprintf(file, "\n");
+            std::print(file, "\n");
         }
-        fprintf(file, "# capture=%u end\n", m_callsiteCaptureId);
+        std::print(file, "# capture={} end\n", m_callsiteCaptureId);
         fflush(file);
         fclose(file);
 
-        Log("d3d9callsites: capture=%u parentCpuCapture=%u complete reason=%s frames=%u draws=%llu samples=%llu entries=%u dropped=%llu elapsedMs=%u path=%s",
+        Log("d3d9callsites: capture={} parentCpuCapture={} complete reason={} frames={} draws={} samples={} entries={} dropped={} elapsedMs={} path={}",
             m_callsiteCaptureId,
             m_callsiteParentCpuCaptureId,
             reason ? reason : "unknown",
@@ -9195,10 +9134,10 @@ private:
         m_drawTraceTriggerWasDown = true;
 
         char path[MAX_PATH]{};
-        snprintf(path, sizeof(path), "%s\\scripts\\BridgeD3D9.drawtrace.log", g_gameDir);
+        FormatTo(path, sizeof(path), "{}\\scripts\\BridgeD3D9.drawtrace.log", g_gameDir);
         FILE* file = nullptr;
         if (fopen_s(&file, path, "a") != 0 || !file) {
-            Log("d3d9trace: failed to open %s", path);
+            Log("d3d9trace: failed to open {}", path);
             return;
         }
 
@@ -9210,16 +9149,14 @@ private:
         m_drawTraceTruncated = false;
         m_drawTraceDrawCount = 0;
         m_drawTraceStartTick = GetTickCount();
-        fprintf(m_drawTraceFile,
-            "# capture=%u begin=%04u-%02u-%02uT%02u:%02u:%02u.%03u triggerVK=%d maxDraws=%u device=%p inner=%p\n",
+        std::print(m_drawTraceFile,
+            "# capture={} begin={:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03} triggerVK={} maxDraws={} device={:08X} inner={:08X}\n",
             m_drawTraceCaptureId,
             st.wYear, st.wMonth, st.wDay,
             st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
             g_d3d9TraceTriggerKey,
-            g_d3d9TraceMaxDraws,
-            this,
-            m_inner);
-        Log("d3d9trace: capture=%u armed for next presented frame maxDraws=%u",
+            g_d3d9TraceMaxDraws, reinterpret_cast<std::uintptr_t>(this), reinterpret_cast<std::uintptr_t>(m_inner));
+        Log("d3d9trace: capture={} armed for next presented frame maxDraws={}",
             m_drawTraceCaptureId, g_d3d9TraceMaxDraws);
     }
 
@@ -9228,8 +9165,8 @@ private:
         if (!m_drawTraceActive && !m_drawTraceFile) return;
         const DWORD elapsed = GetTickCount() - m_drawTraceStartTick;
         if (m_drawTraceFile) {
-            fprintf(m_drawTraceFile,
-                "# capture=%u end reason=%s draws=%u truncated=%u elapsedMs=%u\n",
+            std::print(m_drawTraceFile,
+                "# capture={} end reason={} draws={} truncated={} elapsedMs={}\n",
                 m_drawTraceCaptureId,
                 reason ? reason : "unknown",
                 m_drawTraceDrawCount,
@@ -9239,7 +9176,7 @@ private:
             fclose(m_drawTraceFile);
             m_drawTraceFile = nullptr;
         }
-        Log("d3d9trace: capture=%u complete reason=%s draws=%u truncated=%d elapsedMs=%u",
+        Log("d3d9trace: capture={} complete reason={} draws={} truncated={} elapsedMs={}",
             m_drawTraceCaptureId,
             reason ? reason : "unknown",
             m_drawTraceDrawCount,
@@ -9262,7 +9199,7 @@ private:
         if (!m_drawTraceActive || !m_drawTraceFile) return;
         if (m_drawTraceDrawCount >= g_d3d9TraceMaxDraws) {
             if (!m_drawTraceTruncated) {
-                fprintf(m_drawTraceFile, "# capture=%u truncated-at=%u\n",
+                std::print(m_drawTraceFile, "# capture={} truncated-at={}\n",
                     m_drawTraceCaptureId, m_drawTraceDrawCount);
                 m_drawTraceTruncated = true;
             }
@@ -9431,8 +9368,8 @@ private:
         }
 
         ++m_drawTraceDrawCount;
-        fprintf(m_drawTraceFile,
-            "draw=%u kind=%s ra=%p callerBase=%p callerRva=0x%08X psFading=%u psDepth=%u psAlt=%u "
+        std::print(m_drawTraceFile,
+            "draw={} kind={} ra={:08X} callerBase={:08X} callerRva=0x{:08X} psFading={} psDepth={} psAlt={} "
             "ptype=%u prim=%u base=%d min=%u verts=%u start=%u suppliedStride=%u "
             "alphaTest=%u alphaRef=%u alphaFunc=%u alphaBlend=%u src=%u dest=%u blendOp=%u sepAlpha=%u srcAlpha=%u destAlpha=%u blendOpAlpha=%u "
             "cull=%u z=%u zWrite=%u zFunc=%u colorWrite=0x%08X fog=%u "
@@ -9442,9 +9379,7 @@ private:
             "vb=%p vbOffset=%u vbStride=%u ib=%p decl=%p "
             "rt=%p rtW=%u rtH=%u rtFmt=0x%08X depth=%p depthW=%u depthH=%u depthFmt=0x%08X "
             "vpX=%u vpY=%u vpW=%u vpH=%u vpMin=%.6f vpMax=%.6f\n",
-            m_drawTraceDrawCount,
-            kind ? kind : "?",
-            returnAddress,
+            m_drawTraceDrawCount, reinterpret_cast<std::uintptr_t>(kind ? kind : "?"), reinterpret_cast<std::uintptr_t>(returnAddress),
             returnRegion.AllocationBase,
             static_cast<unsigned>(callerRva),
             psFading,
@@ -9591,7 +9526,7 @@ private:
             CounterDelta(c.createVertexShader, p.createVertexShader) +
             CounterDelta(c.createPixelShader, p.createPixelShader);
 
-        Log("d3d9stats: ms=%u fps=%.1f frames=%llu draws=%llu prims=%llu tex=%llu rs=%llu tss=%llu samp=%llu shader=%llu constF=%llu vb=%llu ib=%llu decl=%llu fvf=%llu rt=%llu z=%llu clear=%llu begin=%llu end=%llu reset=%llu creates=%llu",
+        Log("d3d9stats: ms={} fps={:.1f} frames={} draws={} prims={} tex={} rs={} tss={} samp={} shader={} constF={} vb={} ib={} decl={} fvf={} rt={} z={} clear={} begin={} end={} reset={} creates={}",
             elapsedMs,
             elapsedMs ? (1000.0 * static_cast<double>(frames) / static_cast<double>(elapsedMs)) : 0.0,
             static_cast<unsigned long long>(frames),
@@ -9615,7 +9550,7 @@ private:
             static_cast<unsigned long long>(CounterDelta(c.reset, p.reset)),
             static_cast<unsigned long long>(creates));
 
-        Log("d3d9redundancy: frames=%llu texSame=%llu/%llu rsSame=%llu/%llu shaderSame=%llu/%llu vsSame=%llu/%llu psSame=%llu/%llu constCallSame=%llu/%llu vsConstCallSame=%llu/%llu psConstCallSame=%llu/%llu constVecSame=%llu/%llu vsConstVecSame=%llu/%llu psConstVecSame=%llu/%llu",
+        Log("d3d9redundancy: frames={} texSame={}/{} rsSame={}/{} shaderSame={}/{} vsSame={}/{} psSame={}/{} constCallSame={}/{} vsConstCallSame={}/{} psConstCallSame={}/{} constVecSame={}/{} vsConstVecSame={}/{} psConstVecSame={}/{}",
             static_cast<unsigned long long>(frames),
             static_cast<unsigned long long>(CounterDelta(c.redundantSetTexture, p.redundantSetTexture)),
             static_cast<unsigned long long>(textureSets),
@@ -9729,7 +9664,7 @@ public:
     explicit BridgeDirect3D9(IDirect3D9* inner)
         : m_inner(inner), m_refs(1)
     {
-        Log("postfx: wrapped IDirect3D9 0x%p -> 0x%p", inner, this);
+        Log("postfx: wrapped IDirect3D9 0x{:08X} -> 0x{:08X}", reinterpret_cast<std::uintptr_t>(inner), reinterpret_cast<std::uintptr_t>(this));
     }
 
     ~BridgeDirect3D9()
@@ -9806,13 +9741,13 @@ private:
 
 extern "C" __declspec(dllexport) IDirect3D9* __stdcall Direct3DCreate9(UINT SDKVersion)
 {
-    Log("Direct3DCreate9 called SDKVersion=%u", SDKVersion);
+    Log("Direct3DCreate9 called SDKVersion={}", SDKVersion);
     EnsurePostFxPluginsLoaded();
 
     if (g_ps_Direct3DCreate9) {
         Log("Direct3DCreate9: using ProperShaders proxy");
         IDirect3D9* result = g_ps_Direct3DCreate9(SDKVersion);
-        Log("Direct3DCreate9: ProperShaders proxy returned 0x%p", result);
+        Log("Direct3DCreate9: ProperShaders proxy returned 0x{:08X}", reinterpret_cast<std::uintptr_t>(result));
         if (result) {
             // The IDirect3D9 wrapper only intercepts creation-time calls and
             // costs nothing per frame; it must stay so CreateDevice can attach
@@ -9824,9 +9759,9 @@ extern "C" __declspec(dllexport) IDirect3D9* __stdcall Direct3DCreate9(UINT SDKV
 
     if (g_real_Direct3DCreate9) {
         const char* backendName = g_useDxvkBackend ? "DXVK" : "SystemD3D9";
-        Log("Direct3DCreate9: using configured backend=%s", backendName);
+        Log("Direct3DCreate9: using configured backend={}", backendName);
         IDirect3D9* result = g_real_Direct3DCreate9(SDKVersion);
-        Log("Direct3DCreate9: backend=%s returned 0x%p", backendName, result);
+        Log("Direct3DCreate9: backend={} returned 0x{:08X}", backendName, reinterpret_cast<std::uintptr_t>(result));
         if (result) {
             // Always wrap the interface (creation-time only, no per-frame cost)
             // so CreateDevice interception keeps working in unwrapped mode.
@@ -9959,7 +9894,7 @@ static void InstallSafeStub()
     void* stubMem = VirtualAlloc(reinterpret_cast<void*>(kAllocBase), kAllocSize,
         MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
     if (!stubMem) {
-        Log("stub: VirtualAlloc at 0x%08X size=0x%X failed (err=%u)",
+        Log("stub: VirtualAlloc at 0x{:08X} size=0x{:X} failed (err={})",
             kAllocBase, kAllocSize, GetLastError());
         return;
     }
@@ -9971,9 +9906,9 @@ static void InstallSafeStub()
         // can turn a TXD name pointer into an index and corrupt later loading.
         stub[0] = 0x33; stub[1] = 0xC0;  // xor eax, eax
         stub[2] = 0xC3;                  // ret
-        Log("stub: installed xor eax,eax;ret at 0x%08X", kBadAddress);
+        Log("stub: installed xor eax,eax;ret at 0x{:08X}", kBadAddress);
     } else {
-        Log("stub: alloc at 0x%p does not cover 0x%08X", stubMem, kBadAddress);
+        Log("stub: alloc at 0x{:08X} does not cover 0x{:08X}", reinterpret_cast<std::uintptr_t>(stubMem), kBadAddress);
     }
 }
 
@@ -9982,7 +9917,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
     if (reason == DLL_PROCESS_ATTACH) {
         g_selfModule = hModule;
         DisableThreadLibraryCalls(hModule);
-        Log("BridgeD3D9: loaded mode=%s", kBackendTraceBuild ? "backend-trace" : "root-proxy");
+        Log("BridgeD3D9: loaded mode={}", kBackendTraceBuild ? "backend-trace" : "root-proxy");
 
         if (!kBackendTraceBuild) {
             InstallSafeStub();
@@ -9996,7 +9931,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
             if (thread) {
                 CloseHandle(thread);
             } else {
-                Log("affinity: CreateThread failed err=%u", GetLastError());
+                Log("affinity: CreateThread failed err={}", GetLastError());
             }
         }
 
@@ -10010,9 +9945,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
             if (g_psProxy) {
                 PatchPSProxyBackend();
                 g_ps_Direct3DCreate9 = (PFN_Direct3DCreate9)GetProcAddress(g_psProxy, "Direct3DCreate9");
-                Log("BridgeD3D9: primary proxy=%s Direct3DCreate9=0x%p",
-                    g_primaryProxyName[0] ? g_primaryProxyName : "(unnamed)",
-                    g_ps_Direct3DCreate9);
+                Log("BridgeD3D9: primary proxy={} Direct3DCreate9=0x{:08X}",
+                    g_primaryProxyName[0] ? g_primaryProxyName : "(unnamed)", reinterpret_cast<std::uintptr_t>(g_ps_Direct3DCreate9));
             }
         }
     } else if (reason == DLL_PROCESS_DETACH && reserved == nullptr) {

@@ -1,7 +1,9 @@
 #include <sa_renderstack/backend_api.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include <print>
 #include <type_traits>
 
 static_assert(sizeof(void*) == 4u);
@@ -165,13 +167,10 @@ constexpr GUID kExpectedIids[] = {
 
 bool GuidEquals(const GUID& left, const GUID& right)
 {
-    if (left.Data1 != right.Data1 || left.Data2 != right.Data2 || left.Data3 != right.Data3) {
-        return false;
-    }
-    for (std::size_t index = 0; index < 8u; ++index) {
-        if (left.Data4[index] != right.Data4[index]) return false;
-    }
-    return true;
+    return left.Data1 == right.Data1 &&
+        left.Data2 == right.Data2 &&
+        left.Data3 == right.Data3 &&
+        std::ranges::equal(left.Data4, right.Data4);
 }
 }
 
@@ -189,7 +188,7 @@ int main()
 
     for (std::size_t index = 0; index < 7u; ++index) {
         if (!GuidEquals(actualIids[index], kExpectedIids[index])) {
-            std::fprintf(stderr, "backend API IID mismatch for API %zu\n", index + 1u);
+            std::print(stderr, "backend API IID mismatch for API {}\n", index + 1u);
             return static_cast<int>(index + 1u);
         }
     }

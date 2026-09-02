@@ -568,7 +568,7 @@ try {
     [void](Invoke-Gate -Name 'backend-api-msvc-executable' -Category 'api' -FilePath (Get-OutputPath -RelativePath 'out/build/sdk-tests/backend-api-layout-test.exe') -Required $true)
     $llvmSyntaxDirectory = New-TestRunDirectory -Name 'backend-api-llvm-syntax'
     [void](Invoke-Gate -Name 'backend-api-llvm-syntax' -Category 'api' -FilePath $toolchain.LlvmMingw.CompilerPath `
-        -Arguments @('-std=c++17', '-fsyntax-only', (Join-Path $root 'tests/backend-api-layout-test.cpp'), '-I', (Join-Path $root 'sdk/include'), '-I', (Join-Path $root 'backend/dxvk/include/vulkan/include')) `
+        -Arguments @('-std=c++23', '-fsyntax-only', (Join-Path $root 'tests/backend-api-layout-test.cpp'), '-I', (Join-Path $root 'sdk/include'), '-I', (Join-Path $root 'backend/dxvk/include/vulkan/include')) `
         -Required $true -WorkingDirectory $llvmSyntaxDirectory -MaxAttempts 3)
 
     $compatProbe = (Get-Content -LiteralPath (Join-Path $root 'out/build/dxvk-x86/meson-info/intro-targets.json') -Raw | ConvertFrom-Json | Where-Object name -eq 'renderstack-gta-sa-compat-probe').filename[0]

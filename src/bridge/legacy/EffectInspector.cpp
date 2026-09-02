@@ -1,8 +1,13 @@
 #include "EffectInspector.h"
 #include "ProperShadersStateJournal.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
+#include <format>
+#include <print>
+#include <span>
 #include <atomic>
 #include <vector>
 
@@ -16,13 +21,27 @@ namespace {
 FILE* g_report = nullptr;
 int g_effectIndex = 0;
 
-void Report(const char* format, ...)
+// Truncating, null-terminated format into a fixed buffer: byte-identical to
+// snprintf for the same format string, but checked at compile time.
+template <class... Args>
+void FormatTo(char* output, size_t outputSize,
+    std::format_string<Args...> fmt, Args&&... args)
+{
+    if (!output || !outputSize) return;
+    const std::string text = std::vformat(
+        fmt.get(), std::make_format_args(args...));
+    const size_t count = text.size() < outputSize
+        ? text.size()
+        : outputSize - 1;
+    std::memcpy(output, text.data(), count);
+    output[count] = '\0';
+}
+
+template <class... Args>
+void Report(std::format_string<Args...> fmt, Args&&... args)
 {
     if (!g_report) return;
-    va_list args;
-    va_start(args, format);
-    vfprintf(g_report, format, args);
-    va_end(args);
+    std::vprint_nonunicode(g_report, fmt.get(), std::make_format_args(args...));
     fputc('\n', g_report);
     fflush(g_report);
 }
@@ -78,7 +97,7 @@ const char* RegSetName(D3DXREGISTER_SET s)
 // The bridge does not import d3dx9_43.dll statically; resolve at first use.
 // d3dx9_43 is guaranteed to be loaded here because ProperShaders created the
 // effect we are inspecting with it.
-typedef HRESULT(WINAPI* D3DXGetShaderConstantTableFn)(
+using D3DXGetShaderConstantTableFn = HRESULT(WINAPI*)(
     const DWORD*, ID3DXConstantTable**);
 
 D3DXGetShaderConstantTableFn ResolveGetShaderConstantTable()
@@ -99,32 +118,32 @@ D3DXGetShaderConstantTableFn ResolveGetShaderConstantTable()
 void DumpConstantTable(const char* tag, const DWORD* function)
 {
     if (!function) {
-        Report("    %s: <no bytecode>", tag);
+        Report("    {}: <no bytecode>", tag);
         return;
     }
 
     const D3DXGetShaderConstantTableFn getTable = ResolveGetShaderConstantTable();
     if (!getTable) {
-        Report("    %s: D3DXGetShaderConstantTable unavailable", tag);
+        Report("    {}: D3DXGetShaderConstantTable unavailable", tag);
         return;
     }
 
     ID3DXConstantTable* table = nullptr;
     const HRESULT hr = getTable(function, &table);
     if (FAILED(hr) || !table) {
-        Report("    %s: D3DXGetShaderConstantTable failed hr=0x%08X", tag,
+        Report("    {}: D3DXGetShaderConstantTable failed hr=0x{:08X}", tag,
             static_cast<unsigned>(hr));
         return;
     }
 
     D3DXCONSTANTTABLE_DESC desc{};
     if (FAILED(table->GetDesc(&desc))) {
-        Report("    %s: GetDesc failed", tag);
+        Report("    {}: GetDesc failed", tag);
         table->Release();
         return;
     }
 
-    Report("    %s: creator=\"%s\" version=0x%08X constants=%u",
+    Report("    {}: creator=\"{}\" version=0x{:08X} constants={}",
         tag, desc.Creator ? desc.Creator : "", desc.Version, desc.Constants);
 
     for (UINT i = 0; i < desc.Constants; ++i) {
@@ -133,7 +152,7 @@ void DumpConstantTable(const char* tag, const DWORD* function)
         D3DXCONSTANT_DESC cd{};
         UINT count = 1;
         if (FAILED(table->GetConstantDesc(h, &cd, &count))) continue;
-        Report("      const[%02u] %-34s %s%u..%u count=%u class=%s type=%s rows=%u cols=%u elems=%u bytes=%u",
+        Report("      const[{:02}] {:<34} {}{}..{} count={} class={} type={} rows={} cols={} elems={} bytes={}",
             i,
             cd.Name ? cd.Name : "",
             RegSetName(cd.RegisterSet),
@@ -151,13 +170,13 @@ void DumpConstantTable(const char* tag, const DWORD* function)
 // A generic submitter needs to join these against the CTAB above.
 void DumpParameters(ID3DXEffect* effect, const D3DXEFFECT_DESC& ed)
 {
-    Report("  parameters=%u", ed.Parameters);
+    Report("  parameters={}", ed.Parameters);
     for (UINT i = 0; i < ed.Parameters; ++i) {
         D3DXHANDLE p = effect->GetParameter(nullptr, i);
         if (!p) continue;
         D3DXPARAMETER_DESC pd{};
         if (FAILED(effect->GetParameterDesc(p, &pd))) continue;
-        Report("    param[%02u] %-34s semantic=%-18s class=%-12s type=%-12s rows=%u cols=%u elems=%u bytes=%u annots=%u structs=%u",
+        Report("    param[{:02}] {:<34} semantic={:<18} class={:<12} type={:<12} rows={} cols={} elems={} bytes={} annots={} structs={}",
             i,
             pd.Name ? pd.Name : "",
             pd.Semantic ? pd.Semantic : "-",
@@ -175,10 +194,10 @@ namespace {
 bool EnsureReport(const char* gameDir)
 {
     if (g_report) return true;
-    char path[MAX_PATH]{};
-    snprintf(path, sizeof(path), "%s\\scripts\\BridgeD3D9.effectinspect.log",
+    const std::string path = std::format(
+        "{}\\scripts\\BridgeD3D9.effectinspect.log",
         gameDir ? gameDir : ".");
-    g_report = fopen(path, "w");
+    g_report = fopen(path.c_str(), "w");
     return g_report != nullptr;
 }
 
@@ -237,7 +256,7 @@ void BuildGenericDirectPlanDryRun(void* effectPtr, const char* gameDir)
     if (FAILED(effect->GetDesc(&ed))) return;
 
     Report("");
-    Report("PLAN effect=%p techniques=%u parameters=%u", effectPtr, ed.Techniques, ed.Parameters);
+    Report("PLAN effect={:08X} techniques={} parameters={}", reinterpret_cast<std::uintptr_t>(effectPtr), ed.Techniques, ed.Parameters);
 
     for (UINT t = 0; t < ed.Techniques; ++t) {
         D3DXHANDLE th = effect->GetTechnique(t);
@@ -277,7 +296,7 @@ void BuildGenericDirectPlanDryRun(void* effectPtr, const char* gameDir)
                     D3DXHANDLE mh = effect->GetParameter(p, m2);
                     D3DXPARAMETER_DESC md{};
                     if (!mh || FAILED(effect->GetParameterDesc(mh, &md)) || !md.Name) continue;
-                    snprintf(nameBuf, sizeof(nameBuf), "%s.%s", pdd.Name, md.Name);
+                    FormatTo(nameBuf, sizeof(nameBuf), "{}.{}", pdd.Name, md.Name);
                     DryRunSlot s{}; UINT si = 0;
                     const int rv = JoinName(vsTable, true, nameBuf, &s, &si);
                     const int rp = JoinName(psTable, false, nameBuf, &s, &si);
@@ -303,7 +322,7 @@ void BuildGenericDirectPlanDryRun(void* effectPtr, const char* gameDir)
         if (psTable) psTable->Release();
 
         if (!fallbackReason && unsupported > 0) fallbackReason = "b/i-register-param";
-        Report("PLAN   %-40s direct=%u structJoin=%u samplers=%u unused=%u unsupported=%u verdict=%s%s%s",
+        Report("PLAN   {:<40} direct={} structJoin={} samplers={} unused={} unsupported={} verdict={}{}{}",
             td.Name ? td.Name : "?",
             direct, structJoin, samplers, unused, unsupported,
             fallbackReason ? "FALLBACK(" : "DIRECT-OK",
@@ -342,10 +361,12 @@ std::vector<EffectPlans> g_genericDirectRegistry;
 
 EffectPlans* FindEffectPlans(void* effect)
 {
-    for (EffectPlans& e : g_genericDirectRegistry) {
-        if (e.effect == effect) return &e;
-    }
-    return nullptr;
+    const auto entry = std::ranges::find_if(
+        g_genericDirectRegistry,
+        [effect](const EffectPlans& candidate) {
+            return candidate.effect == effect;
+        });
+    return entry == g_genericDirectRegistry.end() ? nullptr : &*entry;
 }
 
 // Adds one stage's join result to the plan. Returns false on overflow or an
@@ -470,7 +491,7 @@ int BuildGenericDirectPlans(void* effectPtr, const char* gameDir)
 
     if (g_properShadersGenericDirectDryRun && EnsureReport(gameDir)) {
         for (const GenericDirectTechniquePlan& plan : g_genericDirectRegistry.back().techniques) {
-            Report("PLANSTORE %-38s slots=%u samplers=%u ok=%d",
+            Report("PLANSTORE {:<38} slots={} samplers={} ok={}",
                 plan.name ? plan.name : "?", plan.slotCount, plan.samplerCount,
                 plan.ok ? 1 : 0);
         }
@@ -481,23 +502,31 @@ int BuildGenericDirectPlans(void* effectPtr, const char* gameDir)
 const GenericDirectTechniquePlan* FindGenericDirectPlan(
     void* effect, D3DXHANDLE technique)
 {
-    for (const EffectPlans& e : g_genericDirectRegistry) {
-        if (e.effect != effect) continue;
-        for (const GenericDirectTechniquePlan& plan : e.techniques) {
-            if (plan.technique == technique) return plan.ok ? &plan : nullptr;
-        }
-        return nullptr;
-    }
-    return nullptr;
+    const auto effectEntry = std::ranges::find_if(
+        g_genericDirectRegistry,
+        [effect](const EffectPlans& candidate) {
+            return candidate.effect == effect;
+        });
+    if (effectEntry == g_genericDirectRegistry.end()) return nullptr;
+    const auto plan = std::ranges::find_if(
+        effectEntry->techniques,
+        [technique](const GenericDirectTechniquePlan& candidate) {
+            return candidate.technique == technique;
+        });
+    return plan == effectEntry->techniques.end()
+        ? nullptr
+        : (plan->ok ? &*plan : nullptr);
 }
 
 void DropGenericDirectPlans(void* effect)
 {
-    for (size_t i = 0; i < g_genericDirectRegistry.size(); ++i) {
-        if (g_genericDirectRegistry[i].effect == effect) {
-            g_genericDirectRegistry.erase(g_genericDirectRegistry.begin() + i);
-            return;
-        }
+    const auto entry = std::ranges::find_if(
+        g_genericDirectRegistry,
+        [effect](const EffectPlans& candidate) {
+            return candidate.effect == effect;
+        });
+    if (entry != g_genericDirectRegistry.end()) {
+        g_genericDirectRegistry.erase(entry);
     }
 }
 
@@ -555,10 +584,14 @@ bool GenericDirectHandleSet(void* effect, const GenericDirectTechniquePlan* plan
     EffectPlans* plans = FindEffectPlans(effect);
     if (!plans) return false;
 
-    ShadowEntry* sh = nullptr;
-    for (ShadowEntry& e : plans->shadow) {
-        if (e.param == param) { sh = &e; break; }
-    }
+    const auto existing = std::ranges::find_if(
+        plans->shadow,
+        [param](const ShadowEntry& candidate) {
+            return candidate.param == param;
+        });
+    ShadowEntry* sh = existing == plans->shadow.end()
+        ? nullptr
+        : &*existing;
     if (!sh) {
         if (plans->shadow.size() >= 128) return false;
         plans->shadow.push_back(ShadowEntry{});
@@ -636,16 +669,17 @@ struct OpHeader
 };
 
 void AppendOp(std::vector<unsigned char>* out, unsigned char op, unsigned a,
-    unsigned b, const void* payload, unsigned payloadBytes)
+    unsigned b, std::span<const std::byte> payload)
 {
-    if (!out || payloadBytes > 0xFFFF) return;
+    if (!out || payload.size() > 0xFFFF) return;
     if (out->size() > (1u << 20)) return; // runaway guard: 1MB per recording
-    OpHeader h{ op, a, b, static_cast<unsigned short>(payloadBytes) };
+    OpHeader h{ op, a, b, static_cast<unsigned short>(payload.size()) };
     const unsigned char* hp = reinterpret_cast<const unsigned char*>(&h);
     out->insert(out->end(), hp, hp + sizeof(h));
-    if (payload && payloadBytes) {
-        const unsigned char* pp = static_cast<const unsigned char*>(payload);
-        out->insert(out->end(), pp, pp + payloadBytes);
+    if (!payload.empty()) {
+        const auto* bytes =
+            reinterpret_cast<const unsigned char*>(payload.data());
+        out->insert(out->end(), bytes, bytes + payload.size());
     }
 }
 
@@ -675,71 +709,71 @@ struct PassRecorder final : public ID3DXEffectStateManager
         D3DTRANSFORMSTATETYPE state, const D3DMATRIX* matrix) override
     {
         if (!inner) return D3D_OK;
-        AppendOp(out, kOpTransform, state, 0, matrix, sizeof(D3DMATRIX));
+        AppendOp(out, kOpTransform, state, 0, std::as_bytes(std::span(matrix, 1)));
         return inner->SetTransform(state, matrix);
     }
     HRESULT STDMETHODCALLTYPE SetMaterial(const D3DMATERIAL9* material) override
     {
         if (!inner) return D3D_OK;
-        AppendOp(out, kOpMaterial, 0, 0, material, sizeof(D3DMATERIAL9));
+        AppendOp(out, kOpMaterial, 0, 0, std::as_bytes(std::span(material, 1)));
         return inner->SetMaterial(material);
     }
     HRESULT STDMETHODCALLTYPE SetLight(DWORD index, const D3DLIGHT9* light) override
     {
         if (!inner) return D3D_OK;
-        AppendOp(out, kOpLight, index, 0, light, sizeof(D3DLIGHT9));
+        AppendOp(out, kOpLight, index, 0, std::as_bytes(std::span(light, 1)));
         return inner->SetLight(index, light);
     }
     HRESULT STDMETHODCALLTYPE LightEnable(DWORD index, BOOL enable) override
     {
         if (!inner) return D3D_OK;
-        AppendOp(out, kOpLightEnable, index, static_cast<unsigned>(enable), nullptr, 0);
+        AppendOp(out, kOpLightEnable, index, static_cast<unsigned>(enable), {});
         return inner->LightEnable(index, enable);
     }
     HRESULT STDMETHODCALLTYPE SetRenderState(
         D3DRENDERSTATETYPE state, DWORD value) override
     {
         if (!inner) return D3D_OK;
-        AppendOp(out, kOpRenderState, state, value, nullptr, 0);
+        AppendOp(out, kOpRenderState, state, value, {});
         return inner->SetRenderState(state, value);
     }
     HRESULT STDMETHODCALLTYPE SetTexture(
         DWORD stage, IDirect3DBaseTexture9* texture) override
     {
         if (!inner) return D3D_OK;
-        AppendOp(out, kOpTexture, stage, 0, &texture, sizeof(texture));
+        AppendOp(out, kOpTexture, stage, 0, std::as_bytes(std::span(&texture, 1)));
         return inner->SetTexture(stage, texture);
     }
     HRESULT STDMETHODCALLTYPE SetTextureStageState(
         DWORD stage, D3DTEXTURESTAGESTATETYPE type, DWORD value) override
     {
         if (!inner) return D3D_OK;
-        AppendOp(out, kOpTextureStage, (stage << 8) | type, value, nullptr, 0);
+        AppendOp(out, kOpTextureStage, (stage << 8) | type, value, {});
         return inner->SetTextureStageState(stage, type, value);
     }
     HRESULT STDMETHODCALLTYPE SetSamplerState(
         DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD value) override
     {
         if (!inner) return D3D_OK;
-        AppendOp(out, kOpSamplerState, (sampler << 8) | type, value, nullptr, 0);
+        AppendOp(out, kOpSamplerState, (sampler << 8) | type, value, {});
         return inner->SetSamplerState(sampler, type, value);
     }
     HRESULT STDMETHODCALLTYPE SetNPatchMode(float segments) override
     {
         if (!inner) return D3D_OK;
-        AppendOp(out, kOpNPatch, 0, 0, &segments, sizeof(segments));
+        AppendOp(out, kOpNPatch, 0, 0, std::as_bytes(std::span(&segments, 1)));
         return inner->SetNPatchMode(segments);
     }
     HRESULT STDMETHODCALLTYPE SetFVF(DWORD fvf) override
     {
         if (!inner) return D3D_OK;
-        AppendOp(out, kOpFvf, fvf, 0, nullptr, 0);
+        AppendOp(out, kOpFvf, fvf, 0, {});
         return inner->SetFVF(fvf);
     }
     HRESULT STDMETHODCALLTYPE SetVertexShader(IDirect3DVertexShader9* shader) override
     {
         if (!inner) return D3D_OK;
-        AppendOp(out, kOpVertexShader, 0, 0, &shader, sizeof(shader));
+        AppendOp(out, kOpVertexShader, 0, 0, std::as_bytes(std::span(&shader, 1)));
         return inner->SetVertexShader(shader);
     }
     HRESULT STDMETHODCALLTYPE SetVertexShaderConstantF(
@@ -747,7 +781,7 @@ struct PassRecorder final : public ID3DXEffectStateManager
     {
         if (!inner) return D3D_OK;
         AppendOp(out, kOpVsConstF, startRegister, registerCount,
-            data, registerCount * 4 * sizeof(float));
+            std::as_bytes(std::span(data, registerCount * 4)));
         return inner->SetVertexShaderConstantF(startRegister, data, registerCount);
     }
     HRESULT STDMETHODCALLTYPE SetVertexShaderConstantI(
@@ -755,7 +789,7 @@ struct PassRecorder final : public ID3DXEffectStateManager
     {
         if (!inner) return D3D_OK;
         AppendOp(out, kOpVsConstI, startRegister, registerCount,
-            data, registerCount * 4 * sizeof(int));
+            std::as_bytes(std::span(data, registerCount * 4)));
         return inner->SetVertexShaderConstantI(startRegister, data, registerCount);
     }
     HRESULT STDMETHODCALLTYPE SetVertexShaderConstantB(
@@ -763,13 +797,13 @@ struct PassRecorder final : public ID3DXEffectStateManager
     {
         if (!inner) return D3D_OK;
         AppendOp(out, kOpVsConstB, startRegister, registerCount,
-            data, registerCount * sizeof(BOOL));
+            std::as_bytes(std::span(data, registerCount)));
         return inner->SetVertexShaderConstantB(startRegister, data, registerCount);
     }
     HRESULT STDMETHODCALLTYPE SetPixelShader(IDirect3DPixelShader9* shader) override
     {
         if (!inner) return D3D_OK;
-        AppendOp(out, kOpPixelShader, 0, 0, &shader, sizeof(shader));
+        AppendOp(out, kOpPixelShader, 0, 0, std::as_bytes(std::span(&shader, 1)));
         return inner->SetPixelShader(shader);
     }
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantF(
@@ -777,7 +811,7 @@ struct PassRecorder final : public ID3DXEffectStateManager
     {
         if (!inner) return D3D_OK;
         AppendOp(out, kOpPsConstF, startRegister, registerCount,
-            data, registerCount * 4 * sizeof(float));
+            std::as_bytes(std::span(data, registerCount * 4)));
         return inner->SetPixelShaderConstantF(startRegister, data, registerCount);
     }
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantI(
@@ -785,7 +819,7 @@ struct PassRecorder final : public ID3DXEffectStateManager
     {
         if (!inner) return D3D_OK;
         AppendOp(out, kOpPsConstI, startRegister, registerCount,
-            data, registerCount * 4 * sizeof(int));
+            std::as_bytes(std::span(data, registerCount * 4)));
         return inner->SetPixelShaderConstantI(startRegister, data, registerCount);
     }
     HRESULT STDMETHODCALLTYPE SetPixelShaderConstantB(
@@ -793,7 +827,7 @@ struct PassRecorder final : public ID3DXEffectStateManager
     {
         if (!inner) return D3D_OK;
         AppendOp(out, kOpPsConstB, startRegister, registerCount,
-            data, registerCount * sizeof(BOOL));
+            std::as_bytes(std::span(data, registerCount)));
         return inner->SetPixelShaderConstantB(startRegister, data, registerCount);
     }
 };
@@ -885,40 +919,43 @@ bool EnsureStabReport()
     return g_stabReport != nullptr;
 }
 
-void StabReport(const char* format, ...)
+template <class... Args>
+void StabReport(std::format_string<Args...> fmt, Args&&... args)
 {
     if (!g_stabReport) return;
-    va_list args;
-    va_start(args, format);
-    vfprintf(g_stabReport, format, args);
-    va_end(args);
+    std::vprint_nonunicode(g_stabReport, fmt.get(), std::make_format_args(args...));
     fputc('\n', g_stabReport);
     fflush(g_stabReport);
 }
 
 const char* StabOpName(unsigned char op)
 {
-    switch (op) {
-    case kOpVertexShader: return "VS";
-    case kOpPixelShader:  return "PS";
-    case kOpRenderState:  return "RS";
-    case kOpSamplerState: return "SAMP";
-    case kOpTextureStage: return "TSS";
-    case kOpTexture:      return "TEX";
-    case kOpVsConstF:     return "VcF";
-    case kOpPsConstF:     return "PcF";
-    case kOpFvf:          return "FVF";
-    case kOpNPatch:       return "NPATCH";
-    case kOpTransform:    return "XFORM";
-    case kOpMaterial:     return "MAT";
-    case kOpLight:        return "LIGHT";
-    case kOpLightEnable:  return "LIGHTEN";
-    case kOpVsConstI:     return "VcI";
-    case kOpVsConstB:     return "VcB";
-    case kOpPsConstI:     return "PcI";
-    case kOpPsConstB:     return "PcB";
-    default:              return "?";
-    }
+    constexpr std::array<std::pair<unsigned char, const char*>, 18> kNames = {{
+        {kOpVertexShader, "VS"},
+        {kOpPixelShader, "PS"},
+        {kOpRenderState, "RS"},
+        {kOpSamplerState, "SAMP"},
+        {kOpTextureStage, "TSS"},
+        {kOpTexture, "TEX"},
+        {kOpVsConstF, "VcF"},
+        {kOpPsConstF, "PcF"},
+        {kOpFvf, "FVF"},
+        {kOpNPatch, "NPATCH"},
+        {kOpTransform, "XFORM"},
+        {kOpMaterial, "MAT"},
+        {kOpLight, "LIGHT"},
+        {kOpLightEnable, "LIGHTEN"},
+        {kOpVsConstI, "VcI"},
+        {kOpVsConstB, "VcB"},
+        {kOpPsConstI, "PcI"},
+        {kOpPsConstB, "PcB"},
+    }};
+    const auto match = std::ranges::find_if(
+        kNames,
+        [op](const auto& entry) {
+            return entry.first == op;
+        });
+    return match == kNames.end() ? "?" : match->second;
 }
 
 // Same payload-masking rule as RecordingsAgree: texture pointers are rebound
@@ -1004,7 +1041,7 @@ void TraceStabilityDumpAll()
                 StabReport("---- tracestab dump (samples compared, not replayed) ----");
                 wroteAny = true;
             }
-            StabReport("technique=%s samples=%u diffs=%u",
+            StabReport("technique={} samples={} diffs={}",
                 plan.name ? plan.name : "?", plan.stabSamples, diffs);
 
             const std::vector<unsigned char>& b = plan.stabBase;
@@ -1023,7 +1060,7 @@ void TraceStabilityDumpAll()
                 else if (ch == 0) ++inv;
                 else ++obj;
                 if (ch > 0 || m) {
-                    StabReport("  slot[%3u] %-7s a=%u b=%u bytes=%u changed=%u/%u%s",
+                    StabReport("  slot[{:3}] {:<7} a={} b={} bytes={} changed={}/{}{}",
                         slot, StabOpName(h.op), h.a, h.b, h.bytes, ch, diffs,
                         m ? " masked" : "");
                 }
@@ -1032,7 +1069,7 @@ void TraceStabilityDumpAll()
             }
             const unsigned classified = inv + obj;
             StabReport(
-                "  SUMMARY invariant=%u perObject=%u masked=%u total=%u stableRatio=%.3f",
+                "  SUMMARY invariant={} perObject={} masked={} total={} stableRatio={:.3f}",
                 inv, obj, masked, total,
                 classified ? double(inv) / double(classified) : 0.0);
         }
@@ -1322,10 +1359,10 @@ void InspectProperShadersEffect(void* effectPtr, unsigned long long effectBytes,
     if (!g_properShadersInspectEffects || !effectPtr) return;
 
     if (!g_report) {
-        char path[MAX_PATH]{};
-        snprintf(path, sizeof(path), "%s\\scripts\\BridgeD3D9.effectinspect.log",
+        const std::string path = std::format(
+            "{}\\scripts\\BridgeD3D9.effectinspect.log",
             gameDir ? gameDir : ".");
-        g_report = fopen(path, "w");
+        g_report = fopen(path.c_str(), "w");
         if (!g_report) {
             g_properShadersInspectEffects = false;
             return;
@@ -1340,14 +1377,14 @@ void InspectProperShadersEffect(void* effectPtr, unsigned long long effectBytes,
 
     D3DXEFFECT_DESC ed{};
     if (FAILED(effect->GetDesc(&ed))) {
-        Report("effect[%d] ptr=%p bytes=%llu: GetDesc failed", index, effectPtr, effectBytes);
+        Report("effect[{}] ptr={:08X} bytes={}: GetDesc failed", index, reinterpret_cast<std::uintptr_t>(effectPtr), effectBytes);
         return;
     }
 
     Report("");
     Report("================================================================");
-    Report("effect[%d] ptr=%p bytes=%llu techniques=%u parameters=%u functions=%u",
-        index, effectPtr, effectBytes, ed.Techniques, ed.Parameters, ed.Functions);
+    Report("effect[{}] ptr={:08X} bytes={} techniques={} parameters={} functions={}",
+        index, reinterpret_cast<std::uintptr_t>(effectPtr), effectBytes, ed.Techniques, ed.Parameters, ed.Functions);
 
     DumpParameters(effect, ed);
 
@@ -1358,7 +1395,7 @@ void InspectProperShadersEffect(void* effectPtr, unsigned long long effectBytes,
         if (FAILED(effect->GetTechniqueDesc(th, &td))) continue;
 
         const HRESULT valid = effect->ValidateTechnique(th);
-        Report("  technique[%u] %-40s passes=%u annotations=%u validate=0x%08X",
+        Report("  technique[{}] {:<40} passes={} annotations={} validate=0x{:08X}",
             t, td.Name ? td.Name : "", td.Passes, td.Annotations,
             static_cast<unsigned>(valid));
 
@@ -1367,10 +1404,10 @@ void InspectProperShadersEffect(void* effectPtr, unsigned long long effectBytes,
             if (!ph) continue;
             D3DXPASS_DESC pdesc{};
             if (FAILED(effect->GetPassDesc(ph, &pdesc))) {
-                Report("    pass[%u]: GetPassDesc failed", p);
+                Report("    pass[{}]: GetPassDesc failed", p);
                 continue;
             }
-            Report("    pass[%u] %-32s annotations=%u",
+            Report("    pass[{}] {:<32} annotations={}",
                 p, pdesc.Name ? pdesc.Name : "", pdesc.Annotations);
             DumpConstantTable("VS", pdesc.pVertexShaderFunction);
             DumpConstantTable("PS", pdesc.pPixelShaderFunction);
@@ -1426,41 +1463,46 @@ JournalTechniqueStat* FindOrAddJournalStat(const char* name)
     if (g_journalStats.size() >= kJournalMaxTechniques) return nullptr;
     g_journalStats.emplace_back();
     JournalTechniqueStat& s = g_journalStats.back();
-    std::snprintf(s.name, sizeof(s.name), "%s", n);
+    FormatTo(s.name, sizeof(s.name), "{}", n);
     return &s;
 }
 
 const char* JournalOpName(unsigned char op)
 {
-    switch (static_cast<JournalProbeOp>(op)) {
-    case JournalProbeOp::Transform:    return "XFORM";
-    case JournalProbeOp::Material:     return "MAT";
-    case JournalProbeOp::Light:        return "LIGHT";
-    case JournalProbeOp::LightEnable:  return "LIGHTEN";
-    case JournalProbeOp::RenderState:  return "RS";
-    case JournalProbeOp::Texture:      return "TEX";
-    case JournalProbeOp::TextureStage: return "TSS";
-    case JournalProbeOp::SamplerState: return "SAMP";
-    case JournalProbeOp::NPatch:       return "NPATCH";
-    case JournalProbeOp::Fvf:          return "FVF";
-    case JournalProbeOp::VertexShader: return "VS";
-    case JournalProbeOp::VsConstF:     return "VcF";
-    case JournalProbeOp::VsConstI:     return "VcI";
-    case JournalProbeOp::VsConstB:     return "VcB";
-    case JournalProbeOp::PixelShader:  return "PS";
-    case JournalProbeOp::PsConstF:     return "PcF";
-    case JournalProbeOp::PsConstI:     return "PcI";
-    case JournalProbeOp::PsConstB:     return "PcB";
-    default:                           return "?";
-    }
+    constexpr std::array<std::pair<JournalProbeOp, const char*>, 18> kNames = {{
+        {JournalProbeOp::Transform, "XFORM"},
+        {JournalProbeOp::Material, "MAT"},
+        {JournalProbeOp::Light, "LIGHT"},
+        {JournalProbeOp::LightEnable, "LIGHTEN"},
+        {JournalProbeOp::RenderState, "RS"},
+        {JournalProbeOp::Texture, "TEX"},
+        {JournalProbeOp::TextureStage, "TSS"},
+        {JournalProbeOp::SamplerState, "SAMP"},
+        {JournalProbeOp::NPatch, "NPATCH"},
+        {JournalProbeOp::Fvf, "FVF"},
+        {JournalProbeOp::VertexShader, "VS"},
+        {JournalProbeOp::VsConstF, "VcF"},
+        {JournalProbeOp::VsConstI, "VcI"},
+        {JournalProbeOp::VsConstB, "VcB"},
+        {JournalProbeOp::PixelShader, "PS"},
+        {JournalProbeOp::PsConstF, "PcF"},
+        {JournalProbeOp::PsConstI, "PcI"},
+        {JournalProbeOp::PsConstB, "PcB"},
+    }};
+    const auto match = std::ranges::find_if(
+        kNames,
+        [op](const auto& entry) {
+            return entry.first == static_cast<JournalProbeOp>(op);
+        });
+    return match == kNames.end() ? "?" : match->second;
 }
 
 } // namespace
 
 void JournalProbeObserveTransaction(const char* techniqueName,
-    const JournalProbeRecord* records, unsigned count, bool truncated)
+    std::span<const JournalProbeRecord> records, bool truncated)
 {
-    if (!g_properShadersJournalProbe || !records || !count) return;
+    if (!g_properShadersJournalProbe || records.empty()) return;
     JournalTechniqueStat* stat = FindOrAddJournalStat(techniqueName);
     if (!stat) return;
 
@@ -1468,13 +1510,13 @@ void JournalProbeObserveTransaction(const char* techniqueName,
     if (truncated) ++stat->truncatedCount;
 
     if (stat->slots.empty()) {
-        stat->slots.reserve(count);
-        for (unsigned i = 0; i < count; ++i) {
+        stat->slots.reserve(records.size());
+        for (const JournalProbeRecord& record : records) {
             JournalSlotStat s;
-            s.op = records[i].op;
-            s.key = records[i].key;
-            s.pass = records[i].pass;
-            s.baseHash = records[i].hash;
+            s.op = record.op;
+            s.key = record.key;
+            s.pass = record.pass;
+            s.baseHash = record.hash;
             stat->slots.push_back(s);
         }
         return;
@@ -1502,9 +1544,10 @@ void JournalProbeObserveTransaction(const char* techniqueName,
     // technique's write sequence itself varies between objects, which is a
     // stronger form of instability than a value change: record it separately
     // and stop, because slot indices no longer correspond.
-    const unsigned n = count < stat->slots.size()
-        ? count : static_cast<unsigned>(stat->slots.size());
-    bool structural = (count != stat->slots.size());
+    const unsigned n = records.size() < stat->slots.size()
+        ? static_cast<unsigned>(records.size())
+        : static_cast<unsigned>(stat->slots.size());
+    bool structural = (records.size() != stat->slots.size());
     for (unsigned i = 0; i < n; ++i) {
         JournalSlotStat& s = stat->slots[i];
         if (s.op != records[i].op || s.key != records[i].key ||
@@ -1526,7 +1569,7 @@ void JournalProbeDump()
     StabReport("---- journal probe dump (observation only) ----");
     for (const JournalTechniqueStat& s : g_journalStats) {
         if (s.transactions < 2) {
-            StabReport("technique=%s transactions=%u (too few to compare)",
+            StabReport("technique={} transactions={} (too few to compare)",
                 s.name, s.transactions);
             continue;
         }
@@ -1536,7 +1579,7 @@ void JournalProbeDump()
         }
         const unsigned total = inv + per;
         StabReport(
-            "technique=%s transactions=%u comparisons=%u stride=%u slots=%u "
+            "technique={} transactions={} comparisons={} stride={} slots={} "
             "invariant=%u perObject=%u stableRatio=%.3f structuralMismatch=%u truncated=%u",
             s.name, s.transactions, s.comparisons, s.stride, total, inv, per,
             total ? double(inv) / double(total) : 0.0,
@@ -1545,7 +1588,7 @@ void JournalProbeDump()
         for (unsigned i = 0; i < s.slots.size(); ++i) {
             const JournalSlotStat& sl = s.slots[i];
             if (!sl.changed) continue;
-            StabReport("  slot[%3u] %-7s key=0x%08X pass=%u changed=%u/%u",
+            StabReport("  slot[{:3}] {:<7} key=0x{:08X} pass={} changed={}/{}",
                 i, JournalOpName(sl.op), sl.key, sl.pass,
                 sl.changed, s.comparisons);
         }
@@ -1616,7 +1659,7 @@ JournalAttributionTechniqueStat* FindAttributionTechnique(const char* name)
     }
     JournalAttributionTechniqueStat& result =
         g_journalAttribution[g_journalAttributionTechniqueCount++];
-    std::snprintf(result.name, sizeof(result.name), "%s", normalized);
+    FormatTo(result.name, sizeof(result.name), "{}", normalized);
     return &result;
 }
 
@@ -1653,7 +1696,7 @@ void DumpAttributionOps(FILE* report, const JournalAttributionPassStat& pass)
 {
     for (unsigned i = 0; i < kJournalAttributionOpCount; ++i) {
         if (!pass.ops[i]) continue;
-        std::fprintf(report, "    op=%s count=%llu\n",
+        std::print(report, "    op={} count={}\n",
             JournalOpName(static_cast<unsigned char>(i + 1)),
             static_cast<unsigned long long>(pass.ops[i]));
     }
@@ -1662,7 +1705,7 @@ void DumpAttributionOps(FILE* report, const JournalAttributionPassStat& pass)
 } // namespace
 
 void JournalAttributionObserveTransaction(const char* techniqueName,
-    const JournalProbeRecord* records, unsigned count, bool truncated,
+    std::span<const JournalProbeRecord> records, bool truncated,
     const JournalProbeTransactionInfo& info)
 {
     // The journal admits a transaction before the capture can be stopped. Do
@@ -1676,7 +1719,7 @@ void JournalAttributionObserveTransaction(const char* techniqueName,
     }
 
     ++technique->transactions;
-    technique->records += count;
+    technique->records += records.size();
     technique->totalQpc += info.qpcTicks;
     if (info.qpcTicks > technique->maxQpc) technique->maxQpc = info.qpcTicks;
     if (info.native) ++technique->nativeTransactions;
@@ -1685,26 +1728,26 @@ void JournalAttributionObserveTransaction(const char* techniqueName,
 
     std::uint32_t seenPasses[kJournalAttributionMaxPasses]{};
     unsigned seenPassCount = 0;
-    for (unsigned i = 0; i < count; ++i) {
+    for (const JournalProbeRecord& record : records) {
         JournalAttributionPassStat* pass = FindAttributionPass(
-            *technique, records[i].pass);
+            *technique, record.pass);
         if (!pass) continue;
         bool firstInTransaction = true;
         for (unsigned seen = 0; seen < seenPassCount; ++seen) {
-            if (seenPasses[seen] == records[i].pass) {
+            if (seenPasses[seen] == record.pass) {
                 firstInTransaction = false;
                 break;
             }
         }
         if (firstInTransaction && seenPassCount < kJournalAttributionMaxPasses) {
-            seenPasses[seenPassCount++] = records[i].pass;
+            seenPasses[seenPassCount++] = record.pass;
             ++pass->transactions;
         }
         ++pass->records;
-        const unsigned op = AttributionOpIndex(records[i].op);
+        const unsigned op = AttributionOpIndex(record.op);
         if (op < kJournalAttributionOpCount) ++pass->ops[op];
     }
-    if (!count) {
+    if (records.empty()) {
         ++technique->emptyTransactions;
         if (JournalAttributionPassStat* pass = FindAttributionPass(
                 *technique, kJournalAttributionPrePass)) {
@@ -1828,18 +1871,20 @@ void JournalAttributionDump()
     const double qpcToMs = frequency.QuadPart
         ? 1000.0 / static_cast<double>(frequency.QuadPart)
         : 0.0;
-    auto line = [report](const char* format, auto... args) {
-        std::fprintf(report, format, args...);
+    auto line = [report]<class... Args>(
+                     std::format_string<Args...> fmt, Args&&... args) {
+        std::vprint_nonunicode(
+            report, fmt.get(), std::make_format_args(args...));
         std::fputc('\n', report);
     };
     line("---- ProperShaders state attribution (observation only) ----");
-    line("frames=%llu presents=%llu techniques=%u droppedTechniques=%llu droppedPasses=%llu orphanRestores=%llu qpcToMs=%.9f",
-        static_cast<unsigned long long>(g_journalAttributionFrame),
-        static_cast<unsigned long long>(g_journalAttributionPresentCount),
+    line("frames={} presents={} techniques={} droppedTechniques={} droppedPasses={} orphanRestores={} qpcToMs={:.9f}",
+        g_journalAttributionFrame,
+        g_journalAttributionPresentCount,
         g_journalAttributionTechniqueCount,
-        static_cast<unsigned long long>(g_journalAttributionDroppedTechniques),
-        static_cast<unsigned long long>(g_journalAttributionDroppedPasses),
-        static_cast<unsigned long long>(g_journalAttributionOrphanRestores),
+        g_journalAttributionDroppedTechniques,
+        g_journalAttributionDroppedPasses,
+        g_journalAttributionOrphanRestores,
         qpcToMs);
     for (unsigned i = 0; i < g_journalAttributionTechniqueCount; ++i) {
         const JournalAttributionTechniqueStat& technique = g_journalAttribution[i];
@@ -1851,25 +1896,25 @@ void JournalAttributionDump()
             ? static_cast<double>(technique.restoreQpc) * qpcToMs /
                 static_cast<double>(technique.restoreCount)
             : 0.0;
-        line("technique=%s transactions=%llu records=%llu avgMs=%.6f maxMs=%.6f native=%llu local=%llu truncated=%llu empty=%llu restoreCount=%llu restoreAvgMs=%.6f restoreMaxMs=%.6f",
+        line("technique={} transactions={} records={} avgMs={:.6f} maxMs={:.6f} native={} local={} truncated={} empty={} restoreCount={} restoreAvgMs={:.6f} restoreMaxMs={:.6f}",
             technique.name,
-            static_cast<unsigned long long>(technique.transactions),
-            static_cast<unsigned long long>(technique.records),
+            technique.transactions,
+            technique.records,
             avgMs,
             static_cast<double>(technique.maxQpc) * qpcToMs,
-            static_cast<unsigned long long>(technique.nativeTransactions),
-            static_cast<unsigned long long>(technique.localTransactions),
-            static_cast<unsigned long long>(technique.truncated),
-            static_cast<unsigned long long>(technique.emptyTransactions),
-            static_cast<unsigned long long>(technique.restoreCount),
+            technique.nativeTransactions,
+            technique.localTransactions,
+            technique.truncated,
+            technique.emptyTransactions,
+            technique.restoreCount,
             restoreAvgMs,
             static_cast<double>(technique.maxRestoreQpc) * qpcToMs);
         for (unsigned passIndex = 0; passIndex < technique.passCount; ++passIndex) {
             const JournalAttributionPassStat& pass = technique.passes[passIndex];
-            line("  pass=%s index=%u transactions=%llu records=%llu",
+            line("  pass={} index={} transactions={} records={}",
                 AttributionPassName(pass.pass), pass.pass,
-                static_cast<unsigned long long>(pass.transactions),
-                static_cast<unsigned long long>(pass.records));
+                pass.transactions,
+                pass.records);
             DumpAttributionOps(report, pass);
         }
     }

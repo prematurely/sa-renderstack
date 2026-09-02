@@ -187,7 +187,7 @@ int main()
     };
     ok &= Check(
         ProperShadersPatching::FindFirstMismatch(
-            mismatchingPatches, 2) == 1,
+            mismatchingPatches) == 1,
         "preflight reports the first mismatching patch before writes");
 
     const ProperShadersPatching::PatchBytes matchingPatches[] = {
@@ -195,10 +195,10 @@ int main()
         { matchingBytes, expectedBytes, sizeof(expectedBytes) },
     };
     ok &= Check(
-        ProperShadersPatching::FindFirstMismatch(matchingPatches, 2) == 2,
+        ProperShadersPatching::FindFirstMismatch(matchingPatches) == 2,
         "preflight returns the patch count when every patch matches");
     ok &= Check(
-        ProperShadersPatching::FindFirstMismatch(nullptr, 0) == 0,
+        ProperShadersPatching::FindFirstMismatch({}) == 0,
         "empty preflight succeeds without a patch array");
 
     if (!ok) return 1;

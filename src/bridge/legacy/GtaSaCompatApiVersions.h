@@ -11,7 +11,7 @@ inline constexpr std::uint32_t kEffectStateBatch = 5u;
 inline constexpr std::uint32_t kStateDrawBatch = 6u;
 inline constexpr std::uint32_t kSelectiveStateJournal = 7u;
 
-constexpr bool Supports(std::uint32_t runtimeVersion, std::uint32_t requiredVersion)
+[[nodiscard]] constexpr bool Supports(std::uint32_t runtimeVersion, std::uint32_t requiredVersion)
 {
     return runtimeVersion >= requiredVersion;
 }

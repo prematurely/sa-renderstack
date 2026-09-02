@@ -9,10 +9,14 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <expected>
+#include <flat_map>
+#include <format>
 #include <fstream>
 #include <limits>
-#include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -42,28 +46,17 @@ struct RawSectionInfo
     bool truncated = false;
 };
 
-bool IsAsciiWhitespace(const char character)
+std::string_view TrimAscii(const std::string_view value)
 {
-    return character == ' ' || character == '\t' ||
-        character == '\r' || character == '\n' ||
-        character == '\f' || character == '\v';
-}
-
-std::string TrimAscii(const std::string& value)
-{
-    std::size_t first = 0;
-    while (first < value.size() && IsAsciiWhitespace(value[first]))
+    constexpr std::string_view kAsciiWhitespace = " \t\r\n\f\v";
+    const std::size_t first = value.find_first_not_of(kAsciiWhitespace);
+    if (first == std::string_view::npos)
     {
-        ++first;
+        return {};
     }
 
-    std::size_t last = value.size();
-    while (last > first && IsAsciiWhitespace(value[last - 1]))
-    {
-        --last;
-    }
-
-    return value.substr(first, last - first);
+    const std::size_t last = value.find_last_not_of(kAsciiWhitespace);
+    return value.substr(first, last - first + 1);
 }
 
 char LowerAscii(const char character)
@@ -74,17 +67,13 @@ char LowerAscii(const char character)
 }
 
 bool EqualsInsensitive(
-    const std::string& left,
-    const char* right)
+    const std::string_view left,
+    const std::string_view right)
 {
-    std::size_t position = 0;
-    while (right[position] != '\0' && position < left.size() &&
-           LowerAscii(left[position]) == LowerAscii(right[position]))
-    {
-        ++position;
-    }
-
-    return position == left.size() && right[position] == '\0';
+    return left.size() == right.size() &&
+        std::ranges::equal(left, right, [](const char leftChar, const char rightChar) {
+            return LowerAscii(leftChar) == LowerAscii(rightChar);
+        });
 }
 
 bool IsReadableFile(const std::string& path)
@@ -117,7 +106,7 @@ bool TryReadSectionHeader(
     const std::string& line,
     std::string& sectionName)
 {
-    const std::string trimmed = TrimAscii(line);
+    const std::string trimmed(TrimAscii(line));
     if (trimmed.size() < 2 || trimmed.front() != '[' ||
         trimmed.back() != ']')
     {
@@ -157,7 +146,7 @@ RawSectionInfo ScanRawSection(
                 break;
             }
 
-            inTargetSection = EqualsInsensitive(sectionName, section.c_str());
+            inTargetSection = EqualsInsensitive(sectionName, section);
             if (inTargetSection)
             {
                 result.present = true;
@@ -232,26 +221,27 @@ SectionData ReadSection(
             while (position < length)
             {
                 const std::size_t remaining = length - position;
+                const char* recordStart = buffer.data() + position;
                 const std::size_t recordLength =
-                    std::char_traits<char>::length(buffer.data() + position);
+                    std::char_traits<char>::length(recordStart);
                 if (recordLength > remaining)
                 {
                     break;
                 }
 
-                const std::string record(
-                    buffer.data() + position,
-                    recordLength);
+                const std::string_view record(recordStart, recordLength);
                 const std::size_t equals = record.find('=');
-                if (equals == std::string::npos)
+                if (equals == std::string_view::npos)
                 {
-                    result.entries.push_back({TrimAscii(record), std::string()});
+                    result.entries.push_back({
+                        std::string(TrimAscii(record)),
+                        std::string()});
                 }
                 else
                 {
                     result.entries.push_back({
-                        TrimAscii(record.substr(0, equals)),
-                        record.substr(equals + 1)});
+                        std::string(TrimAscii(record.substr(0, equals))),
+                        std::string(record.substr(equals + 1))});
                 }
                 position += recordLength + 1;
             }
@@ -277,32 +267,28 @@ void AddWarning(
 
 const SectionEntry* FindEntry(
     const SectionData& section,
-    const char* key)
+    const std::string_view key)
 {
-    for (const SectionEntry& entry : section.entries)
-    {
-        if (EqualsInsensitive(entry.key, key))
-        {
-            return &entry;
-        }
-    }
-    return nullptr;
+    const auto entry = std::ranges::find_if(
+        section.entries,
+        [key](const SectionEntry& candidate) {
+            return EqualsInsensitive(candidate.key, key);
+        });
+    return entry == section.entries.end() ? nullptr : &*entry;
 }
 
-bool ParseBoolean(
+std::optional<bool> ParseBoolean(
     const SectionData& section,
     const char* key,
-    const bool defaultValue,
-    bool& valid)
+    const bool defaultValue)
 {
-    valid = true;
     const SectionEntry* entry = FindEntry(section, key);
     if (entry == nullptr)
     {
         return defaultValue;
     }
 
-    const std::string value = TrimAscii(entry->value);
+    const std::string_view value = TrimAscii(entry->value);
     if (value == "1" || EqualsInsensitive(value, "true") ||
         EqualsInsensitive(value, "yes") || EqualsInsensitive(value, "on"))
     {
@@ -314,46 +300,36 @@ bool ParseBoolean(
         return false;
     }
 
-    valid = false;
-    return false;
+    return std::nullopt;
 }
 
-bool ParseUnsigned32(
-    const SectionData& section,
-    const char* key,
-    std::uint32_t& output)
+std::optional<std::uint32_t> ParseUnsigned32Value(
+    const std::string_view value)
 {
-    const SectionEntry* entry = FindEntry(section, key);
-    if (entry == nullptr)
+    const std::string_view trimmed = TrimAscii(value);
+    if (trimmed.empty())
     {
-        return true;
-    }
-
-    const std::string value = TrimAscii(entry->value);
-    if (value.empty())
-    {
-        return false;
+        return std::nullopt;
     }
 
     std::uint64_t parsed = 0;
-    for (const char character : value)
+    for (const char character : trimmed)
     {
         if (character < '0' || character > '9')
         {
-            return false;
+            return std::nullopt;
         }
         const std::uint64_t digit =
             static_cast<std::uint64_t>(character - '0');
         if (parsed >
             (std::numeric_limits<std::uint32_t>::max() - digit) / 10u)
         {
-            return false;
+            return std::nullopt;
         }
         parsed = parsed * 10u + digit;
     }
 
-    output = static_cast<std::uint32_t>(parsed);
-    return true;
+    return static_cast<std::uint32_t>(parsed);
 }
 
 enum class RegistrationKeyResult
@@ -363,14 +339,15 @@ enum class RegistrationKeyResult
     OutOfRange,
 };
 
-RegistrationKeyResult ParseRegistrationNumber(
-    const std::string& key,
-    unsigned& output)
+std::expected<unsigned, RegistrationKeyResult> ParseRegistrationNumber(
+    const std::string_view key)
 {
-    const std::string trimmed = TrimAscii(key);
+    constexpr unsigned MaxRegistrationOrder = 128u;
+
+    const std::string_view trimmed = TrimAscii(key);
     if (trimmed.empty())
     {
-        return RegistrationKeyResult::Invalid;
+        return std::unexpected(RegistrationKeyResult::Invalid);
     }
 
     unsigned parsed = 0;
@@ -378,31 +355,28 @@ RegistrationKeyResult ParseRegistrationNumber(
     {
         if (character < '0' || character > '9')
         {
-            return RegistrationKeyResult::Invalid;
+            return std::unexpected(RegistrationKeyResult::Invalid);
         }
         const unsigned digit = static_cast<unsigned>(character - '0');
-        if (parsed > (128u - digit) / 10u)
+        if (parsed > (MaxRegistrationOrder - digit) / 10u)
         {
-            return RegistrationKeyResult::OutOfRange;
+            return std::unexpected(RegistrationKeyResult::OutOfRange);
         }
         parsed = parsed * 10u + digit;
     }
 
     if (parsed == 0)
     {
-        return RegistrationKeyResult::OutOfRange;
+        return std::unexpected(RegistrationKeyResult::OutOfRange);
     }
 
-    output = parsed;
-    return RegistrationKeyResult::Valid;
+    return parsed;
 }
 
-AdapterType ParseAdapterType(
-    const std::string& value,
-    bool& valid)
+std::optional<AdapterType> ParseAdapterType(
+    const std::string_view value)
 {
-    const std::string trimmed = TrimAscii(value);
-    valid = true;
+    const std::string_view trimmed = TrimAscii(value);
     if (EqualsInsensitive(trimmed, "ModuleGroup"))
     {
         return AdapterType::ModuleGroup;
@@ -420,8 +394,7 @@ AdapterType ParseAdapterType(
         return AdapterType::SharedLayer;
     }
 
-    valid = false;
-    return AdapterType::ModuleGroup;
+    return std::nullopt;
 }
 
 void ParseModuleList(
@@ -443,11 +416,11 @@ void ParseModuleList(
     for (;;)
     {
         const std::size_t separator = value.find(';', start);
-        const std::string token = TrimAscii(value.substr(
+        const std::string token(TrimAscii(value.substr(
             start,
             separator == std::string::npos
                 ? std::string::npos
-                : separator - start));
+                : separator - start)));
         if (token.empty())
         {
             if (hasSeparator)
@@ -456,7 +429,7 @@ void ParseModuleList(
                     config,
                     "empty-module-token",
                     adapterName,
-                    std::string("empty item in ") + key);
+                    std::format("empty item in {}", key));
             }
         }
         else
@@ -487,7 +460,7 @@ std::string ResolveConfigPath(
     const std::string& value,
     const std::string& gameDirectory)
 {
-    const std::string trimmed = TrimAscii(value);
+    const std::string trimmed(TrimAscii(value));
     if (IsAbsoluteWindowsPath(trimmed))
     {
         return NormalizeModulePath(trimmed);
@@ -509,14 +482,14 @@ void ParseConfigPaths(
 {
     for (unsigned index = 1; index <= 16; ++index)
     {
-        const std::string key = "Config" + std::to_string(index);
-        const SectionEntry* entry = FindEntry(section, key.c_str());
+        const std::string key = std::format("Config{}", index);
+        const SectionEntry* entry = FindEntry(section, key);
         if (entry == nullptr)
         {
             continue;
         }
 
-        const std::string value = TrimAscii(entry->value);
+        const std::string value(TrimAscii(entry->value));
         if (!value.empty())
         {
             definition.configPaths.push_back(
@@ -525,7 +498,7 @@ void ParseConfigPaths(
     }
 }
 
-std::string StripSnapshotComment(const std::string& value)
+std::string StripSnapshotComment(const std::string_view value)
 {
     bool quoted = false;
     char quote = '\0';
@@ -558,23 +531,23 @@ std::string StripSnapshotComment(const std::string& value)
         }
         else if (character == ';' || character == '#')
         {
-            return value.substr(0, position);
+            return std::string(value.substr(0, position));
         }
     }
 
-    return value;
+    return std::string(value);
 }
 
-std::string UnquoteSnapshotValue(const std::string& value)
+std::string UnquoteSnapshotValue(const std::string_view value)
 {
-    const std::string trimmed = TrimAscii(value);
+    const std::string_view trimmed = TrimAscii(value);
     if (trimmed.size() >= 2 &&
         ((trimmed.front() == '"' && trimmed.back() == '"') ||
          (trimmed.front() == '\'' && trimmed.back() == '\'')))
     {
-        return trimmed.substr(1, trimmed.size() - 2);
+        return std::string(trimmed.substr(1, trimmed.size() - 2));
     }
-    return trimmed;
+    return std::string(trimmed);
 }
 
 void AddSnapshotWarning(
@@ -621,13 +594,12 @@ AdapterRuntimeConfig LoadAdapterConfig(
             "PerformanceDiagnostics exceeds the 64 KiB section limit");
     }
 
-    bool valueValid = true;
-    config.enabled = ParseBoolean(
-        diagnostics,
-        "Enable",
-        false,
-        valueValid);
-    if (!valueValid)
+    if (const std::optional<bool> enabled =
+        ParseBoolean(diagnostics, "Enable", false))
+    {
+        config.enabled = *enabled;
+    }
+    else
     {
         AddWarning(
             config,
@@ -636,12 +608,12 @@ AdapterRuntimeConfig LoadAdapterConfig(
             "PerformanceDiagnostics.Enable is invalid");
     }
 
-    config.includeProcessMemory = ParseBoolean(
-        diagnostics,
-        "IncludeProcessMemory",
-        true,
-        valueValid);
-    if (!valueValid)
+    if (const std::optional<bool> includeProcessMemory =
+        ParseBoolean(diagnostics, "IncludeProcessMemory", true))
+    {
+        config.includeProcessMemory = *includeProcessMemory;
+    }
+    else
     {
         config.includeProcessMemory = false;
         AddWarning(
@@ -651,12 +623,12 @@ AdapterRuntimeConfig LoadAdapterConfig(
             "PerformanceDiagnostics.IncludeProcessMemory is invalid");
     }
 
-    config.includeConfigSnapshots = ParseBoolean(
-        diagnostics,
-        "IncludeConfigSnapshots",
-        true,
-        valueValid);
-    if (!valueValid)
+    if (const std::optional<bool> includeConfigSnapshots =
+        ParseBoolean(diagnostics, "IncludeConfigSnapshots", true))
+    {
+        config.includeConfigSnapshots = *includeConfigSnapshots;
+    }
+    else
     {
         config.includeConfigSnapshots = false;
         AddWarning(
@@ -666,12 +638,12 @@ AdapterRuntimeConfig LoadAdapterConfig(
             "PerformanceDiagnostics.IncludeConfigSnapshots is invalid");
     }
 
-    config.enableProviders = ParseBoolean(
-        diagnostics,
-        "EnableProviders",
-        true,
-        valueValid);
-    if (!valueValid)
+    if (const std::optional<bool> enableProviders =
+        ParseBoolean(diagnostics, "EnableProviders", true))
+    {
+        config.enableProviders = *enableProviders;
+    }
+    else
     {
         config.enableProviders = false;
         AddWarning(
@@ -681,16 +653,25 @@ AdapterRuntimeConfig LoadAdapterConfig(
             "PerformanceDiagnostics.EnableProviders is invalid");
     }
 
-    if (!ParseUnsigned32(
+    const SectionEntry* slowWarningEntry = FindEntry(
         diagnostics,
-        "ProviderSlowWarningUs",
-        config.providerSlowWarningUs))
+        "ProviderSlowWarningUs");
+    if (slowWarningEntry != nullptr)
     {
-        AddWarning(
-            config,
-            "invalid-number",
-            std::string(),
-            "PerformanceDiagnostics.ProviderSlowWarningUs is invalid");
+        const std::optional<std::uint32_t> parsed =
+            ParseUnsigned32Value(slowWarningEntry->value);
+        if (parsed)
+        {
+            config.providerSlowWarningUs = *parsed;
+        }
+        else
+        {
+            AddWarning(
+                config,
+                "invalid-number",
+                std::string(),
+                "PerformanceDiagnostics.ProviderSlowWarningUs is invalid");
+        }
     }
 
     const SectionData registrations = ReadSection(
@@ -713,32 +694,29 @@ AdapterRuntimeConfig LoadAdapterConfig(
             "PerformanceRegister exceeds the 64 KiB section limit");
     }
 
-    std::map<unsigned, std::string> registeredAdapters;
+    std::flat_map<unsigned, std::string> registeredAdapters;
     for (const SectionEntry& entry : registrations.entries)
     {
-        unsigned registrationOrder = 0;
-        const RegistrationKeyResult keyResult = ParseRegistrationNumber(
-            entry.key,
-            registrationOrder);
-        if (keyResult == RegistrationKeyResult::Invalid)
+        const auto keyResult = ParseRegistrationNumber(entry.key);
+        if (!keyResult)
         {
+            const RegistrationKeyResult reason = keyResult.error();
             AddWarning(
                 config,
-                "invalid-registration-key",
+                reason == RegistrationKeyResult::OutOfRange
+                    ? "registration-out-of-range"
+                    : "invalid-registration-key",
                 std::string(),
-                "registration key '" + entry.key + "' is not numeric");
+                reason == RegistrationKeyResult::OutOfRange
+                    ? std::format(
+                        "registration key '{}' is outside 1..128",
+                        entry.key)
+                    : std::format(
+                        "registration key '{}' is not numeric",
+                        entry.key));
             continue;
         }
-        if (keyResult == RegistrationKeyResult::OutOfRange)
-        {
-            AddWarning(
-                config,
-                "registration-out-of-range",
-                std::string(),
-                "registration key '" + entry.key +
-                    "' is outside 1..128");
-            continue;
-        }
+        const unsigned registrationOrder = *keyResult;
         if (registeredAdapters.find(registrationOrder) ==
             registeredAdapters.end())
         {
@@ -752,8 +730,9 @@ AdapterRuntimeConfig LoadAdapterConfig(
                 config,
                 "duplicate-registration-key",
                 std::string(),
-                "registration key '" + entry.key +
-                    "' is duplicated; first value is kept");
+                std::format(
+                    "registration key '{}' is duplicated; first value is kept",
+                    entry.key));
         }
     }
 
@@ -768,12 +747,15 @@ AdapterRuntimeConfig LoadAdapterConfig(
                 config,
                 "empty-registration",
                 std::string(),
-                "registration key " + std::to_string(registrationOrder) +
-                    " has an empty adapter name");
+                std::format(
+                    "registration key {} has an empty adapter name",
+                    registrationOrder));
             continue;
         }
 
-        const std::string sectionName = "Performance." + adapterName;
+        const std::string sectionName = std::format(
+            "Performance.{}",
+            adapterName);
         const SectionData adapterSection = ReadSection(
             iniPath,
             sectionName);
@@ -783,7 +765,7 @@ AdapterRuntimeConfig LoadAdapterConfig(
                 config,
                 "missing-section",
                 adapterName,
-                "section '" + sectionName + "' is missing");
+                std::format("section '{}' is missing", sectionName));
             continue;
         }
         if (adapterSection.truncated)
@@ -797,11 +779,11 @@ AdapterRuntimeConfig LoadAdapterConfig(
         }
 
         const SectionEntry* typeEntry = FindEntry(adapterSection, "Type");
-        bool typeValid = false;
-        const AdapterType type = ParseAdapterType(
-            typeEntry == nullptr ? std::string() : typeEntry->value,
-            typeValid);
-        if (!typeValid)
+        const std::optional<AdapterType> type = ParseAdapterType(
+            typeEntry == nullptr
+                ? std::string_view()
+                : std::string_view(typeEntry->value));
+        if (!type)
         {
             AddWarning(
                 config,
@@ -814,13 +796,13 @@ AdapterRuntimeConfig LoadAdapterConfig(
         AdapterDefinition definition;
         definition.name = adapterName;
         definition.registrationOrder = registrationOrder;
-        definition.type = type;
-        definition.enabled = ParseBoolean(
-            adapterSection,
-            "Enable",
-            true,
-            valueValid);
-        if (!valueValid)
+        definition.type = *type;
+        if (const std::optional<bool> adapterEnabled =
+            ParseBoolean(adapterSection, "Enable", true))
+        {
+            definition.enabled = *adapterEnabled;
+        }
+        else
         {
             AddWarning(
                 config,
@@ -879,9 +861,9 @@ ConfigSnapshot ReadConfigSnapshot(
 
     ConfigSnapshot snapshot;
     const std::size_t byteLimit =
-        (std::min)(limits.maxBytes, MaximumSnapshotBytes);
+        std::min(limits.maxBytes, MaximumSnapshotBytes);
     const std::size_t entryLimit =
-        (std::min)(limits.maxEntries, MaximumSnapshotEntries);
+        std::min(limits.maxEntries, MaximumSnapshotEntries);
 
     std::ifstream input(path, std::ios::binary);
     if (!input.good())
@@ -892,7 +874,7 @@ ConfigSnapshot ReadConfigSnapshot(
             attributes == INVALID_FILE_ATTRIBUTES
                 ? "missing-file"
                 : "read-failed",
-            "unable to read config snapshot '" + path + "'");
+            std::format("unable to read config snapshot '{}'", path));
         return snapshot;
     }
 
@@ -918,7 +900,9 @@ ConfigSnapshot ReadConfigSnapshot(
         AddSnapshotWarning(
             snapshot,
             "read-failed",
-            "I/O error while reading config snapshot '" + path + "'");
+            std::format(
+                "I/O error while reading config snapshot '{}'",
+                path));
         return snapshot;
     }
 
@@ -957,7 +941,8 @@ ConfigSnapshot ReadConfigSnapshot(
         {
             line.pop_back();
         }
-        line = TrimAscii(StripSnapshotComment(line));
+        const std::string stripped = StripSnapshotComment(line);
+        line = TrimAscii(stripped);
 
         if (!line.empty() && line.front() == '[' && line.back() == ']')
         {
@@ -968,7 +953,7 @@ ConfigSnapshot ReadConfigSnapshot(
             const std::size_t equals = line.find('=');
             if (equals != std::string::npos)
             {
-                const std::string key = TrimAscii(line.substr(0, equals));
+                const std::string key(TrimAscii(line.substr(0, equals)));
                 if (!key.empty())
                 {
                     if (snapshot.entries.size() >= entryLimit)
@@ -988,7 +973,7 @@ ConfigSnapshot ReadConfigSnapshot(
                         currentSection,
                         key,
                         UnquoteSnapshotValue(line.substr(equals + 1)),
-                        path + ":" + std::to_string(lineNumber)});
+                        std::format("{}:{}", path, lineNumber)});
                 }
             }
         }

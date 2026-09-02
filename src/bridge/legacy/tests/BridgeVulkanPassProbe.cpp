@@ -6,6 +6,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <format>
+#include <string>
 
 struct ProbePassState
 {
@@ -39,16 +41,14 @@ static HRESULT STDMETHODCALLTYPE RecordProbePass(
 
     LONG call = InterlockedIncrement(&pass->calls);
     if (g_output != INVALID_HANDLE_VALUE) {
-        char line[64]{};
-        int length = std::snprintf(line, sizeof(line), "%c frame=%llu call=%ld\r\n",
+        const std::string line = std::format(
+            "{} frame={} call={}\r\n",
             pass->id,
-            static_cast<unsigned long long>(frame->FrameId),
+            frame->FrameId,
             call);
-        if (length > 0) {
-            DWORD written = 0;
-            WriteFile(g_output, line, static_cast<DWORD>(length), &written, nullptr);
-            FlushFileBuffers(g_output);
-        }
+        DWORD written = 0;
+        WriteFile(g_output, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+        FlushFileBuffers(g_output);
     }
 
     return pass->failFirstCall && call == 1 ? E_FAIL : D3D_OK;
@@ -76,7 +76,9 @@ extern "C" __declspec(dllexport) BOOL __stdcall BridgeD3D9_PluginInit2(
         desc.Priority = priorities[i];
         desc.Stage = D3D9_GTA_SA_VULKAN_PASS_AFTER_BLIT;
         desc.Flags = D3D9_GTA_SA_VULKAN_PASS_RESTORES_LAYOUTS;
-        std::snprintf(desc.Name, sizeof(desc.Name), "BridgeProbe%c", g_passes[i].id);
+        const auto [nameEnd, nameSize] = std::format_to_n(
+            desc.Name, sizeof(desc.Name) - 1, "BridgeProbe{}", g_passes[i].id);
+        *nameEnd = '\0';
         desc.Record = &RecordProbePass;
         desc.UserData = &g_passes[i];
 

@@ -6,7 +6,9 @@
 #include "d3d9_gta_sa_api.h"
 
 #include <atomic>
+#include <concepts>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 struct ProperShadersStateJournalDiagnostics
@@ -83,7 +85,7 @@ enum class JournalProbeOp : std::uint8_t
 // Receives one finished transaction's records. `techniqueName` may be null when
 // the bridge could not resolve it. Implemented in EffectInspector.cpp.
 void JournalProbeObserveTransaction(const char* techniqueName,
-    const JournalProbeRecord* records, unsigned count, bool truncated);
+    std::span<const JournalProbeRecord> records, bool truncated);
 
 struct JournalProbeTransactionInfo
 {
@@ -93,10 +95,17 @@ struct JournalProbeTransactionInfo
     bool native = false;
 };
 
+// A getter the journal can call to read one constant range back from the
+// device: invocable as getter(startRegister, values, count) and returning
+// something convertible to HRESULT.
+template <typename Getter, typename T>
+concept ConstantRangeGetter = std::invocable<Getter, UINT, T*, UINT> &&
+    std::convertible_to<std::invoke_result_t<Getter, UINT, T*, UINT>, HRESULT>;
+
 // Observation-only transaction attribution. The implementation aggregates by
 // technique and pass and writes only when JournalAttributionDump is requested.
 void JournalAttributionObserveTransaction(const char* techniqueName,
-    const JournalProbeRecord* records, unsigned count, bool truncated,
+    std::span<const JournalProbeRecord> records, bool truncated,
     const JournalProbeTransactionInfo& info);
 void JournalAttributionObserveRestore(std::uint64_t sequence,
     std::uint64_t qpcTicks);
@@ -252,10 +261,11 @@ private:
     void ClearJournal();
     static int TextureSlot(DWORD stage);
 
-    template <typename Entry>
+    template <std::copy_constructible Entry>
     HRESULT AppendEntry(std::vector<Entry>& entries, const Entry& entry);
 
     template <typename T, UINT RegisterCapacity, UINT Components, typename Getter>
+        requires ConstantRangeGetter<Getter, T>
     HRESULT CaptureConstantRange(
         UINT startRegister,
         UINT registerCount,

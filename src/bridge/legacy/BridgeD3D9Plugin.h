@@ -32,28 +32,28 @@ struct BridgeD3D9PluginApi2
         UINT64 token);
 };
 
-typedef BOOL (__stdcall *PFN_BridgeD3D9_PluginInit)(const BridgeD3D9PluginApi* api);
-typedef BOOL (__stdcall *PFN_BridgeD3D9_PluginInit2)(const BridgeD3D9PluginApi2* api);
-typedef void (__stdcall *PFN_BridgeD3D9_PluginShutdown)();
-typedef void (__stdcall *PFN_BridgeD3D9_OnCreateDevice)(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* params);
-typedef void (__stdcall *PFN_BridgeD3D9_OnResetBefore)(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* params);
-typedef void (__stdcall *PFN_BridgeD3D9_OnResetAfter)(IDirect3DDevice9* device, HRESULT result, D3DPRESENT_PARAMETERS* params);
-typedef void (__stdcall *PFN_BridgeD3D9_OnEndScene)(IDirect3DDevice9* device);
-typedef void (__stdcall *PFN_BridgeD3D9_OnPresentBefore)(IDirect3DDevice9* device, const RECT* src, const RECT* dst, HWND hwnd, const RGNDATA* dirty);
-typedef void (__stdcall *PFN_BridgeD3D9_OnPresentAfter)(IDirect3DDevice9* device, HRESULT result);
-typedef void (__stdcall *PFN_BridgeD3D9_OnReleaseDevice)(IDirect3DDevice9* device);
+using PFN_BridgeD3D9_PluginInit = BOOL (__stdcall *)(const BridgeD3D9PluginApi* api);
+using PFN_BridgeD3D9_PluginInit2 = BOOL (__stdcall *)(const BridgeD3D9PluginApi2* api);
+using PFN_BridgeD3D9_PluginShutdown = void (__stdcall *)();
+using PFN_BridgeD3D9_OnCreateDevice = void (__stdcall *)(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* params);
+using PFN_BridgeD3D9_OnResetBefore = void (__stdcall *)(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* params);
+using PFN_BridgeD3D9_OnResetAfter = void (__stdcall *)(IDirect3DDevice9* device, HRESULT result, D3DPRESENT_PARAMETERS* params);
+using PFN_BridgeD3D9_OnEndScene = void (__stdcall *)(IDirect3DDevice9* device);
+using PFN_BridgeD3D9_OnPresentBefore = void (__stdcall *)(IDirect3DDevice9* device, const RECT* src, const RECT* dst, HWND hwnd, const RGNDATA* dirty);
+using PFN_BridgeD3D9_OnPresentAfter = void (__stdcall *)(IDirect3DDevice9* device, HRESULT result);
+using PFN_BridgeD3D9_OnReleaseDevice = void (__stdcall *)(IDirect3DDevice9* device);
 
 // Legacy host-side aliases. Plugin implementation files define
 // BRIDGE_D3D9_PLUGIN_IMPLEMENTATION so exported function names remain usable.
 #ifndef BRIDGE_D3D9_PLUGIN_IMPLEMENTATION
-typedef PFN_BridgeD3D9_PluginInit BridgeD3D9_PluginInit;
-typedef PFN_BridgeD3D9_PluginInit2 BridgeD3D9_PluginInit2;
-typedef PFN_BridgeD3D9_PluginShutdown BridgeD3D9_PluginShutdown;
-typedef PFN_BridgeD3D9_OnCreateDevice BridgeD3D9_OnCreateDevice;
-typedef PFN_BridgeD3D9_OnResetBefore BridgeD3D9_OnResetBefore;
-typedef PFN_BridgeD3D9_OnResetAfter BridgeD3D9_OnResetAfter;
-typedef PFN_BridgeD3D9_OnEndScene BridgeD3D9_OnEndScene;
-typedef PFN_BridgeD3D9_OnPresentBefore BridgeD3D9_OnPresentBefore;
-typedef PFN_BridgeD3D9_OnPresentAfter BridgeD3D9_OnPresentAfter;
-typedef PFN_BridgeD3D9_OnReleaseDevice BridgeD3D9_OnReleaseDevice;
+using BridgeD3D9_PluginInit = PFN_BridgeD3D9_PluginInit;
+using BridgeD3D9_PluginInit2 = PFN_BridgeD3D9_PluginInit2;
+using BridgeD3D9_PluginShutdown = PFN_BridgeD3D9_PluginShutdown;
+using BridgeD3D9_OnCreateDevice = PFN_BridgeD3D9_OnCreateDevice;
+using BridgeD3D9_OnResetBefore = PFN_BridgeD3D9_OnResetBefore;
+using BridgeD3D9_OnResetAfter = PFN_BridgeD3D9_OnResetAfter;
+using BridgeD3D9_OnEndScene = PFN_BridgeD3D9_OnEndScene;
+using BridgeD3D9_OnPresentBefore = PFN_BridgeD3D9_OnPresentBefore;
+using BridgeD3D9_OnPresentAfter = PFN_BridgeD3D9_OnPresentAfter;
+using BridgeD3D9_OnReleaseDevice = PFN_BridgeD3D9_OnReleaseDevice;
 #endif

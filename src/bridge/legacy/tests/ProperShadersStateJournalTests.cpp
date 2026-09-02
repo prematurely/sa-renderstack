@@ -13,7 +13,7 @@ static_assert(!std::is_copy_assignable_v<ProperShadersNativeCaptureScope>,
     "native capture scope must not transfer ownership by copy assignment");
 
 void JournalProbeObserveTransaction(
-    const char*, const JournalProbeRecord*, unsigned, bool)
+    const char*, std::span<const JournalProbeRecord>, bool)
 {
 }
 
@@ -26,12 +26,12 @@ unsigned g_attributionLastRecordCount = 0;
 JournalProbeRecord g_attributionFirstRecord{};
 
 void JournalAttributionObserveTransaction(
-    const char*, const JournalProbeRecord* records, unsigned count, bool,
+    const char*, std::span<const JournalProbeRecord> records, bool,
     const JournalProbeTransactionInfo&)
 {
     ++g_attributionTransactions;
-    g_attributionLastRecordCount = count;
-    if (records && count) g_attributionFirstRecord = records[0];
+    g_attributionLastRecordCount = static_cast<unsigned>(records.size());
+    if (!records.empty()) g_attributionFirstRecord = records[0];
 }
 
 void JournalAttributionObserveRestore(std::uint64_t, std::uint64_t)

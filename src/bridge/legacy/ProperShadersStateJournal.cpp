@@ -1,9 +1,11 @@
 #include "ProperShadersStateJournal.h"
 #include "GtaSaCompatApiVersions.h"
 
+#include <algorithm>
 #include <cstring>
 #include <intrin.h>
 #include <new>
+#include <utility>
 
 namespace
 {
@@ -62,7 +64,7 @@ void ProperShadersStateJournal::ProbeRecord(JournalProbeOp op, std::uint32_t key
         }
     }
     JournalProbeRecord& r = m_probeRecords[m_probeCount++];
-    r.op = static_cast<std::uint8_t>(op);
+    r.op = std::to_underlying(op);
     r.key = key;
     r.hash = h;
     r.pass = m_hasCurrentPass ? m_currentPass : 0xFFFFFFFFu;
@@ -74,7 +76,9 @@ void ProperShadersStateJournal::FlushProbeRecords()
     if (!g_properShadersJournalProbe && !m_probeAttributionEnabled) return;
     if (m_probeCount && g_properShadersJournalProbe) {
         JournalProbeObserveTransaction(
-            m_probeTechnique, m_probeRecords, m_probeCount, m_probeTruncated);
+            m_probeTechnique,
+            std::span<const JournalProbeRecord>(m_probeRecords, m_probeCount),
+            m_probeTruncated);
     }
     if (m_probeAttributionEnabled && m_probeSequence) {
         JournalProbeTransactionInfo info{};
@@ -86,7 +90,8 @@ void ProperShadersStateJournal::FlushProbeRecords()
             : 0;
         info.native = m_probeNative;
         JournalAttributionObserveTransaction(
-            m_probeTechnique, m_probeRecords, m_probeCount,
+            m_probeTechnique,
+            std::span<const JournalProbeRecord>(m_probeRecords, m_probeCount),
             m_probeTruncated, info);
     }
     m_probeCount = 0;
@@ -387,7 +392,7 @@ int ProperShadersStateJournal::TextureSlot(DWORD stage)
     return -1;
 }
 
-template <typename Entry>
+template <std::copy_constructible Entry>
 HRESULT ProperShadersStateJournal::AppendEntry(
     std::vector<Entry>& entries, const Entry& entry)
 {
@@ -400,6 +405,7 @@ HRESULT ProperShadersStateJournal::AppendEntry(
 }
 
 template <typename T, UINT RegisterCapacity, UINT Components, typename Getter>
+    requires ConstantRangeGetter<Getter, T>
 HRESULT ProperShadersStateJournal::CaptureConstantRange(
     UINT startRegister,
     UINT registerCount,
@@ -446,13 +452,11 @@ HRESULT ProperShadersStateJournal::SetTransform(
         return EndNativeCapture(m_device->SetTransform(state, matrix));
     }
 
-    bool captured = false;
-    for (const auto& entry : m_transforms) {
-        if (entry.state == state) {
-            captured = true;
-            break;
-        }
-    }
+    const bool captured = std::ranges::find_if(
+        m_transforms,
+        [state](const TransformEntry& entry) {
+            return entry.state == state;
+        }) != m_transforms.end();
     if (!captured) {
         TransformEntry entry{};
         entry.state = state;
@@ -499,13 +503,11 @@ HRESULT ProperShadersStateJournal::SetLight(DWORD index, const D3DLIGHT9* light)
         return EndNativeCapture(m_device->SetLight(index, light));
     }
 
-    bool captured = false;
-    for (const auto& entry : m_lights) {
-        if (entry.index == index) {
-            captured = true;
-            break;
-        }
-    }
+    const bool captured = std::ranges::find_if(
+        m_lights,
+        [index](const LightEntry& entry) {
+            return entry.index == index;
+        }) != m_lights.end();
     if (!captured) {
         LightEntry entry{};
         entry.index = index;
@@ -531,13 +533,11 @@ HRESULT ProperShadersStateJournal::LightEnable(DWORD index, BOOL enable)
         return EndNativeCapture(m_device->LightEnable(index, enable));
     }
 
-    bool captured = false;
-    for (const auto& entry : m_lightEnables) {
-        if (entry.index == index) {
-            captured = true;
-            break;
-        }
-    }
+    const bool captured = std::ranges::find_if(
+        m_lightEnables,
+        [index](const LightEnableEntry& entry) {
+            return entry.index == index;
+        }) != m_lightEnables.end();
     if (!captured) {
         LightEnableEntry entry{};
         entry.index = index;

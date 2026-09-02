@@ -80,8 +80,8 @@ struct ValidationResult
     std::uint32_t metricIndex = 0;
 };
 
-ValidationResult ValidateSnapshot(const Snapshot& snapshot) noexcept;
-const char* ValidationCodeName(ValidationCode code) noexcept;
+[[nodiscard]] ValidationResult ValidateSnapshot(const Snapshot& snapshot) noexcept;
+[[nodiscard]] const char* ValidationCodeName(ValidationCode code) noexcept;
 
 struct ProviderHealth
 {
@@ -109,7 +109,7 @@ struct CallResult
     bool called = false;
 };
 
-CallResult Invoke(
+[[nodiscard]] CallResult Invoke(
     QueryFunction function,
     const Query& query,
     std::uint32_t slowWarningUs,

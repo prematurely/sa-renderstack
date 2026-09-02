@@ -5,19 +5,18 @@
 #include "..\BridgeD3D9Plugin.h"
 
 #include <cstdio>
+#include <format>
+#include <string>
 
 static HANDLE g_output = INVALID_HANDLE_VALUE;
 
 static void WriteEvent(const char* eventName)
 {
     if (g_output == INVALID_HANDLE_VALUE) return;
-    char line[96]{};
-    int length = std::snprintf(line, sizeof(line), "%s\r\n", eventName);
-    if (length > 0) {
-        DWORD written = 0;
-        WriteFile(g_output, line, static_cast<DWORD>(length), &written, nullptr);
-        FlushFileBuffers(g_output);
-    }
+    const std::string line = std::format("{}\r\n", eventName);
+    DWORD written = 0;
+    WriteFile(g_output, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+    FlushFileBuffers(g_output);
 }
 
 extern "C" __declspec(dllexport) BOOL __stdcall BridgeD3D9_PluginInit(

@@ -32,7 +32,7 @@ struct BatchStartFacts
     bool journalDisabled{};
 };
 
-constexpr BatchRejectReason EvaluateBatchStart(const BatchStartFacts& facts)
+[[nodiscard]] constexpr BatchRejectReason EvaluateBatchStart(const BatchStartFacts& facts)
 {
     if (!facts.batchingEnabled) return BatchRejectReason::BatchingDisabled;
     if (!facts.noSaveStateActive) return BatchRejectReason::NoSaveStateInactive;

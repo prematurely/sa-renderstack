@@ -1,12 +1,20 @@
 #include "PerformanceAdapters.h"
 #include "BridgePerformanceProviderV1.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <psapi.h>
 
 #include <algorithm>
 #include <cstdio>
+#include <format>
 #include <limits>
+#include <print>
+#include <ranges>
 #include <string>
+#include <string_view>
+#include <utility>
 
 #pragma comment(lib, "psapi.lib")
 
@@ -16,7 +24,7 @@ namespace
 {
 std::uint64_t SaturatedSum(
     const std::uint64_t left,
-    const std::uint64_t right)
+    const std::uint64_t right) noexcept
 {
     const std::uint64_t maximum =
         std::numeric_limits<std::uint64_t>::max();
@@ -27,9 +35,9 @@ void AddSampleOverflowWarning(
     AttributionResult& result,
     const char* counterName)
 {
-    const std::string detail =
-        "counter '" + std::string(counterName) +
-        "' saturated at UINT64_MAX";
+    const std::string detail = std::format(
+        "counter '{}' saturated at UINT64_MAX",
+        counterName);
     for (const AdapterWarning& warning : result.warnings)
     {
         if (warning.code == "sample-count-overflow" &&
@@ -60,26 +68,21 @@ void AddSaturatedSamples(
     total = SaturatedSum(total, samples);
 }
 
-std::string NormalizeSeparatorsAndCase(const std::string& path)
+std::string NormalizeSeparatorsAndCase(const std::string_view path)
 {
-    std::string result;
-    result.reserve(path.size());
-    for (const char character : path)
-    {
-        if (character == '\\')
-        {
-            result.push_back('/');
-        }
-        else if (character >= 'A' && character <= 'Z')
-        {
-            result.push_back(static_cast<char>(character - 'A' + 'a'));
-        }
-        else
-        {
-            result.push_back(character);
-        }
-    }
-    return result;
+    return path
+        | std::views::transform([](const char character) -> char {
+              if (character == '\\')
+              {
+                  return '/';
+              }
+              if (character >= 'A' && character <= 'Z')
+              {
+                  return static_cast<char>(character - 'A' + 'a');
+              }
+              return character;
+          })
+        | std::ranges::to<std::string>();
 }
 
 std::string NormalizeAdapterName(const std::string& name)
@@ -149,8 +152,10 @@ void AddExclusiveClaim(
         registry.warnings.push_back({
             "duplicate-owner",
             registry.adapters[adapterIndex].name,
-            "token '" + token + "' is already owned by '" +
-                registry.adapters[owner->second].name + "'"});
+            std::format(
+                "token '{}' is already owned by '{}'",
+                token,
+                registry.adapters[owner->second].name)});
         return;
     }
 
@@ -176,8 +181,10 @@ void AddSharedClaim(
             registry.warnings.push_back({
                 "duplicate-shared-layer",
                 registry.adapters[adapterIndex].name,
-                "token '" + token + "' is already claimed by SharedLayer '" +
-                    registry.adapters[existing->second].name + "'"});
+                std::format(
+                    "token '{}' is already claimed by SharedLayer '{}'",
+                    token,
+                    registry.adapters[existing->second].name)});
         }
         return;
     }
@@ -312,7 +319,7 @@ const ModuleIdentity* FindSnapshotModuleByAddress(
     }
 
     const std::uintptr_t maximum =
-        (std::numeric_limits<std::uintptr_t>::max)();
+        std::numeric_limits<std::uintptr_t>::max();
     for (const ModuleIdentity& module : modules)
     {
         if (module.moduleBase == 0 || module.imageSize == 0 ||
@@ -394,10 +401,10 @@ AdapterRegistry BuildRegistry(
             registry.warnings.push_back({
                 "duplicate-adapter-name",
                 adapter.name,
-                "adapter name '" + adapter.name +
-                    "' duplicates '" +
-                    registry.adapters[existing->second].name +
-                    "' case-insensitively"});
+                std::format(
+                    "adapter name '{}' duplicates '{}' case-insensitively",
+                    adapter.name,
+                    registry.adapters[existing->second].name)});
             continue;
         }
 
@@ -563,10 +570,10 @@ AttributionResult AttributeCapture(
             result.warnings.push_back({
                 "duplicate-module-base",
                 ModuleWarningName(module),
-                "module base " + std::to_string(module.moduleBase) +
-                    " already belongs to '" +
-                    ModuleWarningName(existingModule->second) +
-                    "'; module sample skipped"});
+                std::format(
+                    "module base {} already belongs to '{}'; module sample skipped",
+                    module.moduleBase,
+                    ModuleWarningName(existingModule->second))});
             continue;
         }
 
@@ -722,14 +729,12 @@ const AdapterSummary* FindSummary(
     const AttributionResult& result,
     const std::string& adapterName)
 {
-    for (const AdapterSummary& summary : result.summaries)
-    {
-        if (summary.name == adapterName)
-        {
-            return &summary;
-        }
-    }
-    return nullptr;
+    const auto summary = std::ranges::find_if(
+        result.summaries,
+        [&adapterName](const AdapterSummary& candidate) {
+            return candidate.name == adapterName;
+        });
+    return summary == result.summaries.end() ? nullptr : &*summary;
 }
 }
 
@@ -767,15 +772,6 @@ namespace BridgePerformance
 {
 namespace
 {
-std::uint64_t SaturatingAddMemory(
-    const std::uint64_t left,
-    const std::uint64_t right) noexcept
-{
-    const std::uint64_t maximum =
-        std::numeric_limits<std::uint64_t>::max();
-    return right > maximum - left ? maximum : left + right;
-}
-
 std::string EscapeReportValue(const std::string& value)
 {
     std::string escaped;
@@ -852,14 +848,14 @@ ProcessMemoryEvidence AccumulateMemoryRegions(
         const std::uint64_t size = static_cast<std::uint64_t>(region.size);
         if (region.state == MemoryRegionState::Free)
         {
-            result.freeBytes = SaturatingAddMemory(result.freeBytes, size);
+            result.freeBytes = SaturatedSum(result.freeBytes, size);
             result.largestFreeRegion =
-                (std::max)(result.largestFreeRegion, size);
+                std::max(result.largestFreeRegion, size);
         }
         else
         {
             result.virtualBytes =
-                SaturatingAddMemory(result.virtualBytes, size);
+                SaturatedSum(result.virtualBytes, size);
         }
     }
     return result;
@@ -917,14 +913,14 @@ ProcessMemoryEvidence CollectProcessMemory() noexcept
         const std::uint64_t size = RegionSize(information);
         if (information.State == MEM_FREE)
         {
-            result.freeBytes = SaturatingAddMemory(result.freeBytes, size);
+            result.freeBytes = SaturatedSum(result.freeBytes, size);
             result.largestFreeRegion =
-                (std::max)(result.largestFreeRegion, size);
+                std::max(result.largestFreeRegion, size);
         }
         else
         {
             result.virtualBytes =
-                SaturatingAddMemory(result.virtualBytes, size);
+                SaturatedSum(result.virtualBytes, size);
         }
 
         const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(
@@ -962,39 +958,39 @@ void AppendAdapterReport(
         return;
     }
 
-    std::fprintf(
+    std::print(
         output,
-        "adapterCapture captureId=%u elapsedMs=%u frameCount=%llu fps=%.2f\n",
+        "adapterCapture captureId={} elapsedMs={} frameCount={} fps={:.2f}\n",
         metadata.captureId,
         metadata.elapsedMs,
-        static_cast<unsigned long long>(metadata.frameCount),
+        metadata.frameCount,
         metadata.fps);
 
     for (std::size_t index = 0; index < attribution.summaries.size(); ++index)
     {
         const AdapterSummary& summary = attribution.summaries[index];
-        const std::uint64_t totalEvidence = SaturatingAddMemory(
-            SaturatingAddMemory(
+        const std::uint64_t totalEvidence = SaturatedSum(
+            SaturatedSum(
                 summary.exclusiveSamples,
                 summary.attributedSharedSamples),
             summary.unresolvedSharedSamples);
-        std::fprintf(
+        std::print(
             output,
-            "adapterRank=%zu name=%s registrationOrder=%u "
-            "exclusiveSamples=%llu exclusivePercent=%.2f "
-            "attributedSharedSamples=%llu attributedSharedPercent=%.2f "
-            "unresolvedSharedSamples=%llu unresolvedSharedPercent=%.2f "
-            "totalPercent=%.2f\n",
+            "adapterRank={} name={} registrationOrder={} "
+            "exclusiveSamples={} exclusivePercent={:.2f} "
+            "attributedSharedSamples={} attributedSharedPercent={:.2f} "
+            "unresolvedSharedSamples={} unresolvedSharedPercent={:.2f} "
+            "totalPercent={:.2f}\n",
             index + 1,
-            EscapeReportValue(summary.name).c_str(),
+            EscapeReportValue(summary.name),
             summary.registrationOrder,
-            static_cast<unsigned long long>(summary.exclusiveSamples),
+            summary.exclusiveSamples,
             Percentage(summary.exclusiveSamples, attribution.rawTotalSamples),
-            static_cast<unsigned long long>(summary.attributedSharedSamples),
+            summary.attributedSharedSamples,
             Percentage(
                 summary.attributedSharedSamples,
                 attribution.rawTotalSamples),
-            static_cast<unsigned long long>(summary.unresolvedSharedSamples),
+            summary.unresolvedSharedSamples,
             Percentage(
                 summary.unresolvedSharedSamples,
                 attribution.rawTotalSamples),
@@ -1003,39 +999,39 @@ void AppendAdapterReport(
 
     for (const AdapterMetricRow& metric : metrics)
     {
-        std::fprintf(
+        std::print(
             output,
-            "adapterMetric name=%s key=%s value=%llu\n",
-            EscapeReportValue(metric.adapter).c_str(),
-            EscapeReportValue(metric.key).c_str(),
-            static_cast<unsigned long long>(metric.value));
+            "adapterMetric name={} key={} value={}\n",
+            EscapeReportValue(metric.adapter),
+            EscapeReportValue(metric.key),
+            metric.value);
     }
 
     for (const AdapterConfigRow& config : configs)
     {
-        std::fprintf(
+        std::print(
             output,
-            "adapterConfig name=%s key=%s value=%s source=%s\n",
-            EscapeReportValue(config.adapter).c_str(),
-            EscapeReportValue(config.key).c_str(),
-            EscapeReportValue(config.value).c_str(),
-            EscapeReportValue(config.source).c_str());
+            "adapterConfig name={} key={} value={} source={}\n",
+            EscapeReportValue(config.adapter),
+            EscapeReportValue(config.key),
+            EscapeReportValue(config.value),
+            EscapeReportValue(config.source));
     }
 
-    std::fprintf(
+    std::print(
         output,
-        "processMemory privateBytes=%llu workingSet=%llu virtualBytes=%llu "
-        "freeBytes=%llu largestFreeRegion=%llu userAddressSpaceBytes=%llu\n",
-        static_cast<unsigned long long>(memory.privateBytes),
-        static_cast<unsigned long long>(memory.workingSet),
-        static_cast<unsigned long long>(memory.virtualBytes),
-        static_cast<unsigned long long>(memory.freeBytes),
-        static_cast<unsigned long long>(memory.largestFreeRegion),
-        static_cast<unsigned long long>(memory.userAddressSpaceBytes));
+        "processMemory privateBytes={} workingSet={} virtualBytes={} "
+        "freeBytes={} largestFreeRegion={} userAddressSpaceBytes={}\n",
+        memory.privateBytes,
+        memory.workingSet,
+        memory.virtualBytes,
+        memory.freeBytes,
+        memory.largestFreeRegion,
+        memory.userAddressSpaceBytes);
 
     if (memory.queryFailed)
     {
-        std::fprintf(
+        std::print(
             output,
             "adapterWarning name=processMemory code=query-failed "
             "detail=one or more process memory queries failed\n");
@@ -1046,12 +1042,12 @@ void AppendAdapterReport(
         const std::string warningName = warning.adapter.empty()
             ? "global"
             : warning.adapter;
-        std::fprintf(
+        std::print(
             output,
-            "adapterWarning name=%s code=%s detail=\"%s\"\n",
-            EscapeReportValue(warningName).c_str(),
-            EscapeReportValue(warning.code).c_str(),
-            EscapeReportValue(warning.detail).c_str());
+            "adapterWarning name={} code={} detail=\"{}\"\n",
+            EscapeReportValue(warningName),
+            EscapeReportValue(warning.code),
+            EscapeReportValue(warning.detail));
     }
 }
 }
@@ -1132,8 +1128,8 @@ ValidationResult ValidateSnapshot(const Snapshot& snapshot) noexcept
             return {ValidationCode::UnterminatedMetricName, index};
         }
 
-        if (metric.kind != static_cast<std::uint32_t>(MetricKind::Counter) &&
-            metric.kind != static_cast<std::uint32_t>(MetricKind::Microseconds))
+        if (metric.kind != std::to_underlying(MetricKind::Counter) &&
+            metric.kind != std::to_underlying(MetricKind::Microseconds))
         {
             return {ValidationCode::UnknownMetricKind, index};
         }
