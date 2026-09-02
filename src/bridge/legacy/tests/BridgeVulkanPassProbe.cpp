@@ -8,12 +8,13 @@
 #include <cstring>
 #include <format>
 #include <string>
+#include <atomic>
 
 struct ProbePassState
 {
     char id;
     bool failFirstCall;
-    volatile LONG calls;
+    std::atomic<LONG> calls{ 0 };
 };
 
 static BridgeD3D9PluginApi2 g_api{};
@@ -39,7 +40,7 @@ static HRESULT STDMETHODCALLTYPE RecordProbePass(
         return E_INVALIDARG;
     }
 
-    LONG call = InterlockedIncrement(&pass->calls);
+    LONG call = pass->calls.fetch_add(1) + 1;
     if (g_output != INVALID_HANDLE_VALUE) {
         const std::string line = std::format(
             "{} frame={} call={}\r\n",

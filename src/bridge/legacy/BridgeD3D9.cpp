@@ -69,10 +69,10 @@ static int g_cpuHotspotTriggerKey = VK_F8;
 static DWORD g_cpuHotspotDurationMs = 10000;
 static DWORD g_cpuHotspotIntervalMs = 2;
 static bool g_cpuHotspotChainD3D9CallsiteProfile = false;
-static volatile LONG g_cpuHotspotActive = 0;
-static volatile LONG g_cpuHotspotCaptureId = 0;
-static volatile LONG g_cpuHotspotPresents = 0;
-static volatile LONG g_cpuHotspotCallsitePending = 0;
+static std::atomic<LONG> g_cpuHotspotActive{ 0 };
+static std::atomic<LONG> g_cpuHotspotCaptureId{ 0 };
+static std::atomic<LONG> g_cpuHotspotPresents{ 0 };
+static std::atomic<LONG> g_cpuHotspotCallsitePending{ 0 };
 static bool g_enableProperShadersEffectProfile = false;
 static int g_properShadersEffectProfileTriggerKey = VK_F7;
 static DWORD g_properShadersEffectProfileDurationMs = 3000;
@@ -306,7 +306,7 @@ struct ProperShadersEffectProfileState
     DWORD beginOriginalFlagsOr = 0;
     DWORD beginAppliedFlagsOr = 0;
     uint64_t beginFlagsModifiedCalls = 0;
-    volatile LONG foreignThreadCalls = 0;
+    std::atomic<LONG> foreignThreadCalls{ 0 };
 };
 
 struct ProperShadersCallPatch
@@ -1602,7 +1602,7 @@ static bool ShouldRecordProperShadersEffectCall()
 {
     if (!g_properShadersEffectProfile.active) return false;
     if (GetCurrentThreadId() == g_properShadersEffectProfile.threadId) return true;
-    InterlockedIncrement(&g_properShadersEffectProfile.foreignThreadCalls);
+    g_properShadersEffectProfile.foreignThreadCalls.fetch_add(1);
     return false;
 }
 
@@ -3748,7 +3748,7 @@ static void FinishProperShadersEffectProfile(const char* reason)
             elapsedMs,
             static_cast<unsigned long long>(g_properShadersEffectProfile.frames),
             g_properShadersEffectProfile.threadId,
-            static_cast<LONG>(g_properShadersEffectProfile.foreignThreadCalls), reinterpret_cast<std::uintptr_t>(g_properShadersEffectProfile.module),
+            g_properShadersEffectProfile.foreignThreadCalls.load(), reinterpret_cast<std::uintptr_t>(g_properShadersEffectProfile.module),
             g_properShadersEffectProfileTestNoSaveState ? 1 : 0,
             g_properShadersEffectProfileTestSkipDuplicateMatrices ? 1 : 0,
             static_cast<unsigned>(stateRestoreHr));
@@ -5416,7 +5416,7 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
 {
     CpuHotspotWorkerContext* context = static_cast<CpuHotspotWorkerContext*>(parameter);
     if (!context) {
-        InterlockedExchange(&g_cpuHotspotActive, 0);
+        g_cpuHotspotActive.store(0);
         return 0;
     }
 
@@ -5428,7 +5428,7 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
         Log("cpuhotspots: capture={} OpenThread failed targetThread={} err={}",
             context->captureId, context->targetThreadId, GetLastError());
         delete context;
-        InterlockedExchange(&g_cpuHotspotActive, 0);
+        g_cpuHotspotActive.store(0);
         return 0;
     }
 
@@ -5525,7 +5525,7 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
     const uint32_t capturedFrames = gameFrameCounterValid
         ? static_cast<uint32_t>(gameFrameEnd - gameFrameStart)
         : 0;
-    const LONG capturedPresents = InterlockedCompareExchange(&g_cpuHotspotPresents, 0, 0);
+    const LONG capturedPresents = g_cpuHotspotPresents.load();
     const double capturedFps = elapsedMs && gameFrameCounterValid
         ? 1000.0 * static_cast<double>(capturedFrames) / static_cast<double>(elapsedMs)
         : 0.0;
@@ -5729,9 +5729,9 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
 
     const UINT completedCaptureId = context->captureId;
     delete context;
-    InterlockedExchange(&g_cpuHotspotActive, 0);
+    g_cpuHotspotActive.store(0);
     if (g_enableD3D9CallsiteProfile && g_cpuHotspotChainD3D9CallsiteProfile) {
-        InterlockedExchange(&g_cpuHotspotCallsitePending, static_cast<LONG>(completedCaptureId));
+        g_cpuHotspotCallsitePending.store(static_cast<LONG>(completedCaptureId));
         Log("cpuhotspots: capture={} queued sequential D3D9 callsite stage",
             completedCaptureId);
     }
@@ -5767,8 +5767,8 @@ static bool ShouldWrapD3D9Device()
 static IDirect3DDevice9* g_unwrappedDevice = nullptr;
 static VulkanHostDevice* g_unwrappedVulkanHost = nullptr;
 static DWORD g_unwrappedRenderThreadId = 0;
-static volatile LONG g_unwrappedDeviceClaimed = 0;
-static volatile LONG g_unwrappedWorkerStarted = 0;
+static std::atomic<LONG> g_unwrappedDeviceClaimed{ 0 };
+static std::atomic<LONG> g_unwrappedWorkerStarted{ 0 };
 static bool g_unwrappedHotspotTriggerWasDown = false;
 static bool g_unwrappedStateAttributionTriggerWasDown = false;
 
@@ -5799,27 +5799,28 @@ static void MaybeArmCpuHotspotProfileUnwrapped()
     Log("cpuhotspots: trigger observed on unwrapped support worker key={}",
         g_cpuHotspotTriggerKey);
 
-    if (InterlockedCompareExchange(&g_cpuHotspotCallsitePending, 0, 0) != 0) {
+    if (g_cpuHotspotCallsitePending.load() != 0) {
         Log("cpuhotspots: trigger ignored because a D3D9 callsite stage is pending");
         return;
     }
-    if (InterlockedCompareExchange(&g_cpuHotspotActive, 1, 0) != 0) {
+    if (g_cpuHotspotActive.exchange(1) != 0) {
         Log("cpuhotspots: trigger ignored because a capture is already active");
         return;
     }
-    InterlockedExchange(&g_cpuHotspotPresents, 0);
+    g_cpuHotspotPresents.store(0);
 
     CpuHotspotWorkerContext* context = new (std::nothrow) CpuHotspotWorkerContext();
     if (!context) {
         Log("cpuhotspots: failed to allocate worker context");
-        InterlockedExchange(&g_cpuHotspotActive, 0);
+        g_cpuHotspotActive.store(0);
         return;
     }
 
     context->targetThreadId = g_unwrappedRenderThreadId
         ? g_unwrappedRenderThreadId
         : GetCurrentThreadId();
-    context->captureId = static_cast<UINT>(InterlockedIncrement(&g_cpuHotspotCaptureId));
+    context->captureId = static_cast<UINT>(
+        g_cpuHotspotCaptureId.fetch_add(1) + 1);
     context->durationMs = g_cpuHotspotDurationMs;
     context->intervalMs = g_cpuHotspotIntervalMs;
     FormatTo(context->outputPath, sizeof(context->outputPath),
@@ -5836,7 +5837,7 @@ static void MaybeArmCpuHotspotProfileUnwrapped()
         Log("cpuhotspots: capture={} CreateThread failed err={}",
             captureId, GetLastError());
         delete context;
-        InterlockedExchange(&g_cpuHotspotActive, 0);
+        g_cpuHotspotActive.store(0);
         return;
     }
     CloseHandle(worker);
@@ -5906,19 +5907,19 @@ static void OnUnwrappedDeviceCreated(IDirect3DDevice9* device)
 {
     // Only the first device is the game's render device. D3DX9 helper devices
     // created later must not steal the render-thread id or the Vulkan host.
-    if (InterlockedCompareExchange(&g_unwrappedDeviceClaimed, 1, 0) != 0) {
+    if (g_unwrappedDeviceClaimed.exchange(1) != 0) {
         Log("postfx: additional device left unwrapped inner=0x{:08X} (not claimed)", reinterpret_cast<std::uintptr_t>(device));
         return;
     }
     g_unwrappedDevice = device;
     g_unwrappedRenderThreadId = GetCurrentThreadId();
     g_unwrappedVulkanHost = AttachVulkanHost(device);
-    if (InterlockedCompareExchange(&g_unwrappedWorkerStarted, 1, 0) == 0) {
+    if (g_unwrappedWorkerStarted.exchange(1) == 0) {
         HANDLE thread = CreateThread(nullptr, 0, UnwrappedSupportThread, nullptr, 0, nullptr);
         if (thread) {
             CloseHandle(thread);
         } else {
-            InterlockedExchange(&g_unwrappedWorkerStarted, 0);
+            g_unwrappedWorkerStarted.store(0);
             Log("postfx: unwrapped support worker CreateThread failed err={}", GetLastError());
         }
     }
@@ -7806,12 +7807,12 @@ public:
 
     ULONG STDMETHODCALLTYPE AddRef() override
     {
-        return InterlockedIncrement(&m_refs);
+        return m_refs.fetch_add(1) + 1;
     }
 
     ULONG STDMETHODCALLTYPE Release() override
     {
-        ULONG refs = InterlockedDecrement(&m_refs);
+        ULONG refs = m_refs.fetch_sub(1) - 1;
         if (refs == 0) delete this;
         return refs;
     }
@@ -7858,8 +7859,8 @@ public:
             SafePluginCall("OnPresentBefore", plugin.onPresentBefore, m_inner, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
         }
         HRESULT hr = m_inner->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
-        if (InterlockedCompareExchange(&g_cpuHotspotActive, 0, 0) != 0) {
-            InterlockedIncrement(&g_cpuHotspotPresents);
+        if (g_cpuHotspotActive.load() != 0) {
+            g_cpuHotspotPresents.fetch_add(1);
         }
         if (g_enableD3D9Stats) {
             ++m_stats.present;
@@ -8771,26 +8772,27 @@ private:
         m_cpuHotspotTriggerWasDown = true;
 
         if (m_callsiteProfileActive ||
-            InterlockedCompareExchange(&g_cpuHotspotCallsitePending, 0, 0) != 0) {
+            g_cpuHotspotCallsitePending.load() != 0) {
             Log("cpuhotspots: trigger ignored because a D3D9 callsite stage is active or pending");
             return;
         }
 
-        if (InterlockedCompareExchange(&g_cpuHotspotActive, 1, 0) != 0) {
+        if (g_cpuHotspotActive.exchange(1) != 0) {
             Log("cpuhotspots: trigger ignored because a capture is already active");
             return;
         }
-        InterlockedExchange(&g_cpuHotspotPresents, 0);
+        g_cpuHotspotPresents.store(0);
 
         CpuHotspotWorkerContext* context = new (std::nothrow) CpuHotspotWorkerContext();
         if (!context) {
             Log("cpuhotspots: failed to allocate worker context");
-            InterlockedExchange(&g_cpuHotspotActive, 0);
+            g_cpuHotspotActive.store(0);
             return;
         }
 
         context->targetThreadId = m_renderThreadId ? m_renderThreadId : GetCurrentThreadId();
-        context->captureId = static_cast<UINT>(InterlockedIncrement(&g_cpuHotspotCaptureId));
+        context->captureId = static_cast<UINT>(
+        g_cpuHotspotCaptureId.fetch_add(1) + 1);
         context->durationMs = g_cpuHotspotDurationMs;
         context->intervalMs = g_cpuHotspotIntervalMs;
         FormatTo(context->outputPath, sizeof(context->outputPath),
@@ -8834,7 +8836,7 @@ private:
             Log("cpuhotspots: capture={} CreateThread failed err={}",
                 captureId, GetLastError());
             delete context;
-            InterlockedExchange(&g_cpuHotspotActive, 0);
+            g_cpuHotspotActive.store(0);
             return;
         }
         CloseHandle(worker);
@@ -8877,13 +8879,13 @@ private:
         if (!g_enableD3D9CallsiteProfile) return;
 
         const bool triggerDown = (GetAsyncKeyState(g_d3d9CallsiteTriggerKey) & 0x8000) != 0;
-        if (InterlockedCompareExchange(&g_cpuHotspotActive, 0, 0) != 0) {
+        if (g_cpuHotspotActive.load() != 0) {
             m_callsiteTriggerWasDown = triggerDown;
             return;
         }
 
         if (!m_callsiteProfileActive) {
-            const LONG parentCpuCaptureId = InterlockedExchange(&g_cpuHotspotCallsitePending, 0);
+            const LONG parentCpuCaptureId = g_cpuHotspotCallsitePending.exchange(0);
             if (parentCpuCaptureId > 0) {
                 ArmCallsiteProfile("sequential-f8", static_cast<UINT>(parentCpuCaptureId));
                 return;
@@ -9587,7 +9589,7 @@ private:
 
     IDirect3DDevice9* m_inner = nullptr;
     VulkanHostDevice* m_vulkanHost = nullptr;
-    volatile LONG m_refs = 0;
+    std::atomic<LONG> m_refs{ 0 };
     D3D9CallCounters m_stats{};
     D3D9CallCounters m_lastStats{};
     DWORD m_lastStatsTick = 0;
@@ -9687,10 +9689,10 @@ public:
         return m_inner->QueryInterface(riid, ppvObj);
     }
 
-    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&m_refs); }
+    ULONG STDMETHODCALLTYPE AddRef() override { return m_refs.fetch_add(1) + 1; }
     ULONG STDMETHODCALLTYPE Release() override
     {
-        ULONG refs = InterlockedDecrement(&m_refs);
+        ULONG refs = m_refs.fetch_sub(1) - 1;
         if (refs == 0) delete this;
         return refs;
     }
@@ -9736,7 +9738,7 @@ public:
 
 private:
     IDirect3D9* m_inner = nullptr;
-    volatile LONG m_refs = 0;
+    std::atomic<LONG> m_refs{ 0 };
 };
 
 extern "C" __declspec(dllexport) IDirect3D9* __stdcall Direct3DCreate9(UINT SDKVersion)
