@@ -9432,7 +9432,7 @@ private:
             "rt=%p rtW=%u rtH=%u rtFmt=0x%08X depth=%p depthW=%u depthH=%u depthFmt=0x%08X "
             "vpX=%u vpY=%u vpW=%u vpH=%u vpMin=%.6f vpMax=%.6f\n",
             m_drawTraceDrawCount, reinterpret_cast<std::uintptr_t>(kind ? kind : "?"), reinterpret_cast<std::uintptr_t>(returnAddress),
-            returnRegion.AllocationBase,
+            reinterpret_cast<std::uintptr_t>(returnRegion.AllocationBase),
             static_cast<unsigned>(callerRva),
             psFading,
             psDepthPass,

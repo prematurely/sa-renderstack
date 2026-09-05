@@ -27,7 +27,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir)..\..\..\sdk\include;$(ProjectDir)..\..\..\backend\dxvk\include\vulkan\include;$(ProjectDir)api-projects\api1-status\include;$(ProjectDir)api-projects\api2-vulkan-pass\include;$(ProjectDir)api-projects\api3-state-batch\include;$(ProjectDir)api-projects\api4-state-journal\include;$(ProjectDir)api-projects\api5-effect-batch\include;$(ProjectDir)api-projects\api6-state-draw\include;$(ProjectDir)api-projects\api7-selective-journal\include;$(D3DX9IncludeDir);$(VULKAN_SDK)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpplatest</LanguageStandard>
