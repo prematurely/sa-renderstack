@@ -166,7 +166,8 @@ jobs:
             -Python '${{ steps.python.outputs.python-path }}' `
             -LlvmMingwBin $env:SA_RENDERSTACK_LLVM_MINGW_BIN `
             -Ninja '${{ steps.tools.outputs.ninja }}' `
-            -Glslang '${{ steps.tools.outputs.glslang }}'
+            -Glslang '${{ steps.tools.outputs.glslang }}' `
+            2>&1 | Tee-Object -FilePath out/logs/ci-build-step.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run tests
