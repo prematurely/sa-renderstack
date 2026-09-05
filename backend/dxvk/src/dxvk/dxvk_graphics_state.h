@@ -801,7 +801,7 @@ namespace dxvk {
     V* find(const K& k) const {
       // If the number of variants is small, avoid computing the
       // state hash since that is somewhat expensive to do
-      uint32_t mask = m_table.mask.load(std::memory_order::memory_order_acquire);
+      uint32_t mask = m_table.mask.load(std::memory_order_acquire);
 
       bool useSimple = !(mask & (mask - 1u));
 
