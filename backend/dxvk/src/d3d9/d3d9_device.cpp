@@ -9467,6 +9467,26 @@ namespace dxvk {
         StartRegister, pConstantData, Count);
     }
 
+    if (GetOptions()->gtaSaConstantDedup && AreConstantsEqual<ShaderType, ConstantType, T>(
+          &m_state, StartRegister, pConstantData, Count)) {
+      if constexpr (ShaderType == D3D9ShaderType::VertexShader) {
+        if constexpr (ConstantType == D3D9ConstantType::Float)
+          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::VertexFloatConstants, true, Count);
+        else if constexpr (ConstantType == D3D9ConstantType::Int)
+          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::VertexIntConstants, true, Count);
+        else
+          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::VertexBoolConstants, true, Count);
+      } else {
+        if constexpr (ConstantType == D3D9ConstantType::Float)
+          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::PixelFloatConstants, true, Count);
+        else if constexpr (ConstantType == D3D9ConstantType::Int)
+          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::PixelIntConstants, true, Count);
+        else
+          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::PixelBoolConstants, true, Count);
+      }
+      return D3D_OK;
+    }
+
     if (unlikely(ShouldCaptureGtaSaStateJournal())) {
       if constexpr (ShaderType == D3D9ShaderType::VertexShader) {
         if constexpr (ConstantType == D3D9ConstantType::Float)

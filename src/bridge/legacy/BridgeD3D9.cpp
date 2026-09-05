@@ -14,6 +14,7 @@
 #include "BridgePerformanceProviderV1.h"
 #include "PerformanceAdapterConfig.h"
 #include "PerformanceAdapters.h"
+#include "../../../backend/dxvk/src/util/util_thread_scheduling.h"
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -107,6 +108,7 @@ static DWORD g_affinityPriorityClass = NORMAL_PRIORITY_CLASS;
 static bool g_affinityReapply = false;
 static DWORD g_affinityReapplyCount = 60;
 static DWORD g_affinityReapplyIntervalMs = 2000;
+static renderstack::scheduling::Options g_threadSchedulingOptions{};
 static char g_dxvkBackendDir[MAX_PATH]{};
 static char g_gameDir[MAX_PATH]{};
 static char g_primaryProxyName[64]{};
@@ -259,6 +261,15 @@ static void Log(std::format_string<Args...> fmt, Args&&... args)
     std::vprint_nonunicode(f, fmt.get(), std::make_format_args(args...));
     fputc('\n', f);
     fflush(f);
+}
+
+static void ThreadSchedulingLog(const char* message) noexcept
+{
+    try {
+        Log("{}", message ? message : "");
+    } catch (...) {
+        // Scheduling diagnostics must not interrupt the host thread.
+    }
 }
 
 enum class ProperShadersMatrixSlot : uint32_t
@@ -5412,8 +5423,20 @@ static std::expected<void, std::string> SaveD3D9BackBufferBmp(
     return {};
 }
 
+// i9-14900HX: logical CPUs 0-15 are P-cores, 16-31 are E-cores. Sampling and
+// reapply workers are compute-bound and must never compete with the render
+// thread for P-core fetch/cache bandwidth.
+constexpr DWORD_PTR kEfficiencyCoreMask = 0xFFFF0000ull;
+
 static DWORD WINAPI CpuHotspotWorker(void* parameter)
 {
+    renderstack::scheduling::ThreadSchedulingScope scheduling(
+        g_threadSchedulingOptions, renderstack::scheduling::Role::Background,
+        &ThreadSchedulingLog);
+    if (!g_threadSchedulingOptions.enabled) {
+        // Preserve the existing worker affinity when the M1 policy is disabled.
+        SetThreadAffinityMask(GetCurrentThread(), kEfficiencyCoreMask);
+    }
     CpuHotspotWorkerContext* context = static_cast<CpuHotspotWorkerContext*>(parameter);
     if (!context) {
         g_cpuHotspotActive.store(0);
@@ -5848,6 +5871,13 @@ static void MaybeArmCpuHotspotProfileUnwrapped()
 
 static DWORD WINAPI UnwrappedSupportThread(LPVOID)
 {
+    renderstack::scheduling::ThreadSchedulingScope scheduling(
+        g_threadSchedulingOptions, renderstack::scheduling::Role::Background,
+        &ThreadSchedulingLog);
+    if (!g_threadSchedulingOptions.enabled) {
+        // Preserve the existing worker affinity when the M1 policy is disabled.
+        SetThreadAffinityMask(GetCurrentThread(), kEfficiencyCoreMask);
+    }
     Log("postfx: unwrapped support worker started renderThread={}",
         g_unwrappedRenderThreadId);
     const ULONGLONG installDeadline = GetTickCount64() + 180000ull;
@@ -6243,7 +6273,12 @@ static void ApplyAffinityAndPriority(const char* reason)
         targetMask &= systemMask;
     }
 
-    const bool affinityChanged = targetMask && (!gotMasks || processMask != targetMask);
+    // Apply the requested legacy process mask once, before thread selection.
+    // Later priority reapplication must not overwrite the per-thread policy.
+    const bool allowProcessAffinity = !g_threadSchedulingOptions.enabled ||
+        (reason && _stricmp(reason, "startup") == 0);
+    const bool affinityChanged = allowProcessAffinity && targetMask &&
+        (!gotMasks || processMask != targetMask);
     BOOL affinityOk = TRUE;
     DWORD affinityErr = 0;
     if (affinityChanged) {
@@ -6278,6 +6313,13 @@ static void ApplyAffinityAndPriority(const char* reason)
 
 static DWORD WINAPI AffinityReapplyThread(void*)
 {
+    renderstack::scheduling::ThreadSchedulingScope scheduling(
+        g_threadSchedulingOptions, renderstack::scheduling::Role::Background,
+        &ThreadSchedulingLog);
+    if (!g_threadSchedulingOptions.enabled) {
+        // Preserve the existing worker affinity when the M1 policy is disabled.
+        SetThreadAffinityMask(GetCurrentThread(), kEfficiencyCoreMask);
+    }
     Log("affinity: reapply worker started count={} intervalMs={}",
         g_affinityReapplyCount, g_affinityReapplyIntervalMs);
     for (DWORD i = 0; i < g_affinityReapplyCount; ++i) {
@@ -7096,8 +7138,16 @@ static void LoadBridgeConfig()
     }
 
     char iniPath[MAX_PATH]{};
-    FormatTo(iniPath, sizeof(iniPath), "{}\\scripts\\BridgeD3D9.ini", gameDir);
+    FormatTo(iniPath, sizeof(iniPath), "{}\\SA.RenderStack.ini", gameDir);
+    if (!FileExistsA(iniPath)) {
+        FormatTo(iniPath, sizeof(iniPath), "{}\\scripts\\BridgeD3D9.ini", gameDir);
+    }
     FormatTo(g_performanceIniPath, sizeof(g_performanceIniPath), "{}", iniPath);
+    g_threadSchedulingOptions = renderstack::scheduling::ReadOptions();
+    Log("config: source={}", iniPath);
+    Log("scheduling: PerThread={} Mmcss={} deviceOwnerMmcss=0",
+        g_threadSchedulingOptions.enabled ? 1 : 0,
+        g_threadSchedulingOptions.mmcss ? 1 : 0);
 
     ConfigureDxvkDiagnostics(iniPath);
 
@@ -9722,6 +9772,14 @@ public:
             if (ppReturnedDeviceInterface) *ppReturnedDeviceInterface = device;
             return hr;
         }
+
+        // The device creation thread is also used in unwrapped mode. Keep M1
+        // out of Present/Draw and apply it only once per creating thread.
+        // DeviceOwner uses CPU Sets only: this thread has no controlled MMCSS
+        // shutdown point in the current Bridge lifecycle.
+        static thread_local renderstack::scheduling::ThreadSchedulingScope scheduling(
+            renderstack::scheduling::Options{g_threadSchedulingOptions.enabled, false},
+            renderstack::scheduling::Role::DeviceOwner, &ThreadSchedulingLog);
 
         for (auto& plugin : g_plugins) {
             SafePluginCall("OnCreateDevice", plugin.onCreateDevice, device, pPresentationParameters);

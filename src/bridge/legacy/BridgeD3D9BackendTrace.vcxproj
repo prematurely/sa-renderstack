@@ -27,8 +27,8 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
-      <PreprocessorDefinitions>BRIDGE_D3D9_BACKEND_TRACE;WIN32;NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\..\sdk\include;$(ProjectDir)..\..\..\backend\dxvk\include\vulkan\include;$(D3DX9IncludeDir);$(VULKAN_SDK)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>BRIDGE_D3D9_BACKEND_TRACE;WIN32;NDEBUG;_WINDOWS;_USRDLL;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\..\sdk\include;$(ProjectDir)..\..\..\backend\dxvk\include\vulkan\include;$(ProjectDir)api-projects\api1-status\include;$(ProjectDir)api-projects\api2-vulkan-pass\include;$(ProjectDir)api-projects\api3-state-batch\include;$(ProjectDir)api-projects\api4-state-journal\include;$(ProjectDir)api-projects\api5-effect-batch\include;$(ProjectDir)api-projects\api6-state-draw\include;$(ProjectDir)api-projects\api7-selective-journal\include;$(D3DX9IncludeDir);$(VULKAN_SDK)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <LanguageStandard>stdcpplatest</LanguageStandard>
       <SDLCheck>false</SDLCheck>
@@ -45,8 +45,17 @@
     <ClCompile Include="ProperShadersStateJournal.cpp" />
     <ClCompile Include="PerformanceAdapters.cpp" />
     <ClCompile Include="PerformanceAdapterConfig.cpp" />
+    <ClCompile Include="api-projects\api1-status\src\status_client.cpp" />
+    <ClCompile Include="api-projects\api2-vulkan-pass\src\pass_registration.cpp" />
+    <ClCompile Include="api-projects\api3-state-batch\src\api3_state_batch.cpp" />
+    <ClCompile Include="api-projects\api4-state-journal\src\api4_journal_session.cpp" />
+    <ClCompile Include="api-projects\api5-effect-batch\src\api5_effect_batch.cpp" />
+    <ClCompile Include="api-projects\api6-state-draw\src\api6_state_draw.cpp" />
+    <ClCompile Include="api-projects\api7-selective-journal\src\api7_selective_journal.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\..\backend\dxvk\src\util\util_thread_scheduling.h" />
+    <ClInclude Include="..\..\..\backend\dxvk\src\util\util_thread_scheduling_policy.h" />
     <None Include="BridgeD3D9.def" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -9,6 +9,7 @@
 **/meson-private/
 **/meson-logs/
 **/meson-info/
+api-projects/**/build*/
 
 # Runtime and compiler artifacts
 *.dll

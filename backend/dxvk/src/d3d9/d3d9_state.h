@@ -24,12 +24,18 @@ namespace dxvk {
   struct D3D9ClipPlane {
     float coeff[4] = {};
 
-    bool operator == (const D3D9ClipPlane& other) {
-      return std::memcmp(this, &other, sizeof(D3D9ClipPlane)) == 0;
+    [[nodiscard]] bool operator == (const D3D9ClipPlane& other) const noexcept {
+      #if defined(DXVK_ARCH_X86)
+      const auto a = _mm_loadu_ps(coeff);
+      const auto b = _mm_loadu_ps(other.coeff);
+      return _mm_movemask_ps(_mm_cmpeq_ps(a, b)) == 0xf;
+      #else
+      return !std::memcmp(coeff, other.coeff, sizeof(coeff));
+      #endif
     }
 
-    bool operator != (const D3D9ClipPlane& other) {
-      return !this->operator == (other);
+    [[nodiscard]] bool operator != (const D3D9ClipPlane& other) const noexcept {
+      return !(*this == other);
     }
   };
 
@@ -623,6 +629,45 @@ namespace dxvk {
 
   using D3D9CapturableState = D3D9State<dynamic_item>;
   using D3D9DeviceState = D3D9State<static_item>;
+
+  template<D3D9ShaderType ShaderType, D3D9ConstantType ConstantType, typename T, typename StateType>
+  [[nodiscard]] inline bool AreConstantsEqual(
+          const StateType*           pState,
+          UINT                       StartRegister,
+          const T*                   pConstantData,
+          UINT                       Count) noexcept {
+    if constexpr (ConstantType == D3D9ConstantType::Bool) {
+      return false;
+    } else {
+      const Vector4Base<T>* dstData = nullptr;
+      if constexpr (ConstantType == D3D9ConstantType::Float) {
+        dstData = ShaderType == D3D9ShaderType::VertexShader
+          ? pState->vsConsts->fConsts
+          : pState->psConsts->fConsts;
+      } else if constexpr (ConstantType == D3D9ConstantType::Int) {
+        dstData = ShaderType == D3D9ShaderType::VertexShader
+          ? pState->vsConsts->iConsts
+          : pState->psConsts->iConsts;
+      }
+      dstData += StartRegister;
+
+      #if defined(DXVK_ARCH_X86) && (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER))
+      const auto* dstPtr = reinterpret_cast<const __m128i*>(dstData);
+      const auto* srcPtr = reinterpret_cast<const __m128i*>(pConstantData);
+
+      for (uint32_t i = 0u; i < Count; ++i) {
+        const __m128i srcData = _mm_loadu_si128(srcPtr + i);
+        const __m128i curData = _mm_loadu_si128(dstPtr + i);
+        const __m128i eqMask  = _mm_cmpeq_epi32(srcData, curData);
+        if (_mm_movemask_epi8(eqMask) != 0xffff) [[unlikely]]
+          return false;
+      }
+      return true;
+      #else
+      return !std::memcmp(&dstData->data, pConstantData, Count * sizeof(*dstData));
+      #endif
+    }
+  }
 
   template<D3D9ShaderType ShaderType, D3D9ConstantType ConstantType, typename T, typename StateType>
   bool UpdateStateConstants(

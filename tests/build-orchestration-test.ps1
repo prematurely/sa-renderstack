@@ -108,10 +108,11 @@ try {
         'renderstack-d3d9-batch-audit-test',
         'renderstack-d3d9-deferred-shader-binding-test',
         'renderstack-dxvk-state-dedup-test',
+        'renderstack-thread-scheduling-test',
         'renderstack-stateblock-prefilter-probe',
         'renderstack-gta-sa-compat-probe'
     )
-    $expectedTests = $expectedTargets[0..2]
+    $expectedTests = $expectedTargets[0..3]
     $targets = @(Get-Content -LiteralPath (Join-Path $root 'out/build/dxvk-x86/meson-info/intro-targets.json') -Raw |
         ConvertFrom-Json | Where-Object { $_.name -like 'renderstack-*' } | ForEach-Object { $_.name } | Sort-Object)
     $tests = @(Get-Content -LiteralPath (Join-Path $root 'out/build/dxvk-x86/meson-info/intro-tests.json') -Raw |

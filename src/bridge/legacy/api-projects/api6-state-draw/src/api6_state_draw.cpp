@@ -1,0 +1,2 @@
+#include "api6_state_draw.hpp"
+namespace api6 { std::expected<HRESULT,std::string> StateDrawTransaction::submit(const D3D9GtaSaStateBatch&s,DrawKind k,D3DPRIMITIVETYPE t,UINT start,UINT count,INT base,UINT min,UINT verts)noexcept { if(!api_)return std::unexpected("null API6"); if(count==0|| (k!=DrawKind::Primitive&&k!=DrawKind::Indexed))return std::unexpected("only one DP/DIP is allowed"); batch_={sizeof(batch_),6,&s,{sizeof(D3D9GtaSaDrawDesc),UINT(k),t,0,base,min,verts,start,count}}; HRESULT hr=api_->SubmitStateDrawBatch(&batch_); return hr; } }

@@ -1,5 +1,12 @@
 # SA RenderStack Module Map
 
+## Attached API subprojects
+
+`src/bridge/legacy/api-projects/` contains seven API-version subprojects owned by
+the Bridge main program. Their library implementations are compiled into the
+Bridge Win32 projects; demos and unit tests are development targets from the
+aggregate CMake file. They are separate code units, not separate runtime DLLs.
+
 ## Runtime Graph
 
 ```text

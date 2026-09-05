@@ -216,6 +216,10 @@ namespace dxvk {
     /// effective binding is already the last binding queued for that slot.
     /// The cache is invalidated on device reset and never changes D3D9 state.
     bool gtaSaResourceBindingCache;
+
+    /// Enables SIMD-accelerated authoritative constant de-duplication in the
+    /// D3D9 device layer, skipping redundant constant writes and push operations.
+    bool gtaSaConstantDedup;
   };
 
 }

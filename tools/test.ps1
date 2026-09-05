@@ -346,10 +346,11 @@ function Add-TargetAndRegistrationGates {
     foreach ($path in @($targetInfo, $testInfo)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Meson introspection file is missing: $path" } }
     $targets = @(Get-Content -LiteralPath $targetInfo -Raw | ConvertFrom-Json)
     $expectedTargets = @('renderstack-d3d9-batch-audit-test', 'renderstack-d3d9-deferred-shader-binding-test',
-        'renderstack-dxvk-state-dedup-test', 'renderstack-stateblock-prefilter-probe', 'renderstack-gta-sa-compat-probe')
+        'renderstack-dxvk-state-dedup-test', 'renderstack-thread-scheduling-test',
+        'renderstack-stateblock-prefilter-probe', 'renderstack-gta-sa-compat-probe')
     $actualTargets = @($targets | Where-Object { $_.name -in $expectedTargets } | ForEach-Object { $_.name })
-    if (@(Compare-Object ($expectedTargets | Sort-Object) ($actualTargets | Sort-Object)).Count -ne 0 -or @($actualTargets).Count -ne 5) {
-        throw 'Meson target introspection did not resolve exactly five required probe targets'
+    if (@(Compare-Object ($expectedTargets | Sort-Object) ($actualTargets | Sort-Object)).Count -ne 0 -or @($actualTargets).Count -ne $expectedTargets.Count) {
+        throw 'Meson target introspection did not resolve all required probe/test targets'
     }
     foreach ($target in $targets | Where-Object { $_.name -in $expectedTargets }) {
         if ($target.type -cne 'executable' -or @($target.filename).Count -ne 1) { throw "Invalid introspection record for $($target.name)" }
@@ -360,10 +361,10 @@ function Add-TargetAndRegistrationGates {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Introspected target output is missing: $path" }
     }
     $registered = @(Get-Content -LiteralPath $testInfo -Raw | ConvertFrom-Json)
-    $expectedTests = $expectedTargets[0..2]
+    $expectedTests = $expectedTargets[0..3]
     $actualTests = @($registered | ForEach-Object { $_.name })
-    if (@(Compare-Object ($expectedTests | Sort-Object) ($actualTests | Sort-Object)).Count -ne 0 -or @($actualTests).Count -ne 3) {
-        throw 'Meson introspection did not report exactly three registered tests'
+    if (@(Compare-Object ($expectedTests | Sort-Object) ($actualTests | Sort-Object)).Count -ne 0 -or @($actualTests).Count -ne $expectedTests.Count) {
+        throw 'Meson introspection did not report all required registered tests'
     }
     foreach ($test in $registered) {
         if (@($test.cmd).Count -lt 1 -or -not (Test-Path -LiteralPath (Get-RenderStackFullPath -Path $test.cmd[0]) -PathType Leaf)) {
@@ -478,6 +479,7 @@ try {
 
     $scriptsRoot = Join-Path $root 'tests'
     $layout = Invoke-ScriptGate -Name 'repository-layout' -ScriptPath (Join-Path $scriptsRoot 'repository-layout-test.ps1') -Category 'layout'
+    [void](Invoke-ScriptGate -Name 'attached-api-project-layout' -ScriptPath (Join-Path $scriptsRoot 'api-project-layout-test.ps1') -Category 'layout')
     [void](Invoke-ScriptGate -Name 'windows-ci-workflow' -ScriptPath (Join-Path $scriptsRoot 'windows-ci-workflow-test.ps1') -Category 'automation')
     [void](Invoke-ScriptGate -Name 'hosted-ci-boundary-regression' -ScriptPath (Join-Path $scriptsRoot 'hosted-ci-boundary-regression-test.ps1') -Category 'automation')
     [void](Invoke-ScriptGate -Name 'package-manifest-regression' -ScriptPath (Join-Path $scriptsRoot 'package-manifest-regression-test.ps1') -Category 'packaging')
@@ -530,6 +532,7 @@ try {
                 '-Candidate', (Get-OutputPath -RelativePath 'out/build/bridge/d3d9.dll')) -Category 'bridge-regression')
     }
     [void](Invoke-ScriptGate -Name 'backend-api-source' -ScriptPath (Join-Path $scriptsRoot 'backend-api-source-test.ps1') -Category 'api')
+    [void](Invoke-ScriptGate -Name 'gta-sa-api1-api7-contract' -ScriptPath (Join-Path $scriptsRoot 'gta-sa-api-contract-test.ps1') -Category 'api')
 
     $toolchain = Get-RenderStackToolchain -RepoRoot $root -Component Dxvk -MSBuildPath $MSBuild -PythonPath $Python `
         -LlvmMingwBin $LlvmMingwBin -NinjaPath $Ninja -GlslangPath $Glslang `
@@ -565,6 +568,7 @@ try {
     $moduleDirectory = [string]$metadata.tools.meson.moduleDirectory
     $mesonEnvironment = Get-MesonEnvironment -Toolchain $toolchain -PythonPath $pythonPath -ModuleDirectory $moduleDirectory
     Add-TargetAndRegistrationGates -Toolchain $toolchain -PythonPath $pythonPath -MesonEnvironment $mesonEnvironment
+    [void](Invoke-ScriptGate -Name 'thread-scheduling-config' -ScriptPath (Join-Path $scriptsRoot 'thread-scheduling-config-test.ps1') -Category 'runtime-config')
     [void](Invoke-Gate -Name 'backend-api-msvc-executable' -Category 'api' -FilePath (Get-OutputPath -RelativePath 'out/build/sdk-tests/backend-api-layout-test.exe') -Required $true)
     $llvmSyntaxDirectory = New-TestRunDirectory -Name 'backend-api-llvm-syntax'
     [void](Invoke-Gate -Name 'backend-api-llvm-syntax' -Category 'api' -FilePath $toolchain.LlvmMingw.CompilerPath `

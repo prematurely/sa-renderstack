@@ -41,3 +41,11 @@ executable(
 test('renderstack-d3d9-batch-audit-test', renderstack_d3d9_batch_audit_test)
 test('renderstack-d3d9-deferred-shader-binding-test', renderstack_d3d9_deferred_shader_binding_test)
 test('renderstack-dxvk-state-dedup-test', renderstack_dxvk_state_dedup_test)
+
+renderstack_thread_scheduling_test = executable(
+  'renderstack-thread-scheduling-test',
+  'thread_scheduling_test.cpp',
+  include_directories: dxvk_include_path,
+  install: false,
+)
+test('renderstack-thread-scheduling-test', renderstack_thread_scheduling_test)

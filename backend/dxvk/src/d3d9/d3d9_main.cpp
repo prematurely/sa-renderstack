@@ -4,6 +4,8 @@
 #include "d3d9_shader_validator.h"
 
 #include "d3d9_annotation.h"
+#include "../util/util_thread_scheduling.h"
+#include <mutex>
 
 class D3DFE_PROCESSVERTICES;
 using PSGPERRORID = UINT;
@@ -28,7 +30,38 @@ namespace dxvk {
 
 extern "C" {
 
+#if defined(_WIN32)
+  static void ApplyGtaSaPCoreAffinity() {
+    SYSTEM_INFO sysInfo{};
+    GetSystemInfo(&sysInfo);
+    DWORD numProcs = sysInfo.dwNumberOfProcessors;
+
+    // Allow process to utilize all physical P-Cores freely without hard-pinning a single core
+    // In opt-in per-thread mode the Bridge's explicit process mask remains
+    // authoritative. Only read configuration here; CPU Sets/MMCSS setup runs
+    // later on the owning threads, outside DllMain.
+    if (numProcs >= 16 && !renderstack::scheduling::ReadOptions().enabled) {
+      DWORD_PTR pCoreMask = 0x0000FFFF; // P-Cores 0~7 with SMT
+      SetProcessAffinityMask(GetCurrentProcess(), pCoreMask);
+    }
+
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+
+    // Enable Low Fragmentation Heap (LFH) on default process heap
+    ULONG lfh = 2;
+    HeapSetInformation(GetProcessHeap(), HeapCompatibilityInformation, &lfh, sizeof(lfh));
+  }
+
+  static void ApplyGtaSaPCoreAffinityOnce() {
+    static std::once_flag once;
+    std::call_once(once, [] { ApplyGtaSaPCoreAffinity(); });
+  }
+#endif
+
   DLLEXPORT IDirect3D9* __stdcall Direct3DCreate9(UINT nSDKVersion) {
+#if defined(_WIN32)
+    ApplyGtaSaPCoreAffinityOnce();
+#endif
     IDirect3D9Ex* pDirect3D = nullptr;
     dxvk::CreateD3D9(false, &pDirect3D, nullptr, 0);
 
@@ -36,12 +69,16 @@ extern "C" {
   }
 
   DLLEXPORT HRESULT __stdcall Direct3DCreate9Ex(UINT nSDKVersion, IDirect3D9Ex** ppDirect3D9Ex) {
+#if defined(_WIN32)
+    ApplyGtaSaPCoreAffinityOnce();
+#endif
     return dxvk::CreateD3D9(true, ppDirect3D9Ex, nullptr, 0);
   }
 
   DLLEXPORT int __stdcall D3DPERF_BeginEvent(D3DCOLOR col, LPCWSTR wszName) {
     return dxvk::D3D9GlobalAnnotationList::Instance().BeginEvent(col, wszName);
   }
+
 
   DLLEXPORT int __stdcall D3DPERF_EndEvent(void) {
     return dxvk::D3D9GlobalAnnotationList::Instance().EndEvent();
@@ -116,5 +153,33 @@ extern "C" {
     dxvk::Logger::warn("Direct3DCreate9On12Ex: 9On12 functionality is unimplemented.");
     return dxvk::CreateD3D9(true, output, override_list, override_entry_count);
   }
+
+#if defined(_WIN32)
+  static void InstallGtaSaSafeStub() {
+    constexpr uintptr_t kBadAddress = 0x615CD2C0;
+    constexpr uintptr_t kAllocBase = kBadAddress & 0xFFFF0000;
+    constexpr size_t kAllocSize = (kBadAddress - kAllocBase) + 0x100;
+
+    void* stubMem = VirtualAlloc(reinterpret_cast<void*>(kAllocBase), kAllocSize,
+        MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    if (!stubMem)
+      return;
+
+    uintptr_t stubBase = reinterpret_cast<uintptr_t>(stubMem);
+    if (kBadAddress >= stubBase && kBadAddress < stubBase + kAllocSize) {
+      uint8_t* stub = reinterpret_cast<uint8_t*>(kBadAddress);
+      stub[0] = 0x33; stub[1] = 0xC0;  // xor eax, eax
+      stub[2] = 0xC3;                  // ret
+    }
+  }
+
+  BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
+    if (reason == DLL_PROCESS_ATTACH) {
+      DisableThreadLibraryCalls(hModule);
+      InstallGtaSaSafeStub();
+    }
+    return TRUE;
+  }
+#endif
 
 }

@@ -1,4 +1,4 @@
-project('dxvk', ['c', 'cpp'], version : '3.0.1', meson_version : '>= 0.58', default_options : [ 'cpp_std=c++17', 'b_vscrt=static_from_buildtype', 'warning_level=2' ])
+project('dxvk', ['c', 'cpp'], version : '3.0.1', meson_version : '>= 0.58', default_options : [ 'cpp_std=c++23', 'b_vscrt=static_from_buildtype', 'warning_level=2' ])
 
 pkg = import('pkgconfig')
 cpu_family = target_machine.cpu_family()
@@ -13,7 +13,12 @@ compiler_args = [
   '-msse',
   '-msse2',
   '-msse3',
+  '-mssse3',
+  '-msse4.1',
+  '-msse4.2',
   '-mfpmath=sse',
+  '-fno-math-errno',
+  '-fomit-frame-pointer',
   '-Wimplicit-fallthrough',
   # gcc
   '-Wno-missing-field-initializers',

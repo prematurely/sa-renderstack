@@ -2,6 +2,7 @@
 
 #include "dxvk_device.h"
 #include "dxvk_pipemanager.h"
+#include "../util/util_thread_scheduling.h"
 
 namespace dxvk {
   
@@ -131,6 +132,11 @@ namespace dxvk {
 
     const uint32_t maxPriorityIndex = uint32_t(maxPriority);
     env::setThreadName(str::format("dxvk-shader-", suffixes.at(maxPriorityIndex)));
+
+    renderstack::scheduling::ThreadSchedulingScope scheduling(
+      renderstack::scheduling::ReadOptions(),
+      renderstack::scheduling::Role::Background,
+      [] (const char* message) { Logger::info(message); });
 
     while (true) {
       PipelineEntry entry;

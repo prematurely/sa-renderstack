@@ -88,6 +88,7 @@ namespace dxvk {
     this->gtaSaCoalesceSamplerBindings  = config.getOption<bool>        ("d3d9.gtaSaCoalesceSamplerBindings",  false);
     this->gtaSaCoalesceTextureBindings  = config.getOption<bool>        ("d3d9.gtaSaCoalesceTextureBindings",  false);
     this->gtaSaResourceBindingCache     = config.getOption<bool>        ("d3d9.gtaSaResourceBindingCache",     false);
+    this->gtaSaConstantDedup            = config.getOption<bool>        ("d3d9.gtaSaConstantDedup",            true);
 
     // D3D8 options
     this->drefScaling = config.getOption<int32_t>("d3d8.scaleDref", 0);

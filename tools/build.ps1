@@ -21,7 +21,7 @@ Usage: pwsh -NoProfile -File tools/build.ps1 [-Help] [-Configuration Release] [-
        [-MSBuild <path>] [-Python <path>] [-LlvmMingwBin <path>]
        [-Ninja <path>] [-Glslang <path>] [-AllowNonV18MsBuild]
 
-Builds the x86 DXVK backend, five Meson probe targets, the Bridge DLLs, the
+Builds the x86 DXVK backend, six Meson probe/test targets, the Bridge DLLs, the
 seven Bridge test projects, and the backend ABI executable into out/build.
 The non-VS18 MSBuild switch is intended for hosted CI only.
 '@ | Write-Output
@@ -247,6 +247,7 @@ try {
             'renderstack-d3d9-batch-audit-test',
             'renderstack-d3d9-deferred-shader-binding-test',
             'renderstack-dxvk-state-dedup-test',
+            'renderstack-thread-scheduling-test',
             'renderstack-stateblock-prefilter-probe',
             'renderstack-gta-sa-compat-probe'
         )
@@ -260,6 +261,7 @@ try {
             (Join-Path $dxvkBuild 'tools/renderstack-d3d9-batch-audit-test.exe'),
             (Join-Path $dxvkBuild 'tools/renderstack-d3d9-deferred-shader-binding-test.exe'),
             (Join-Path $dxvkBuild 'tools/renderstack-dxvk-state-dedup-test.exe'),
+            (Join-Path $dxvkBuild 'tools/renderstack-thread-scheduling-test.exe'),
             (Join-Path $dxvkBuild 'tools/renderstack-stateblock-prefilter-probe.exe'),
             (Join-Path $dxvkBuild 'tools/renderstack-gta-sa-compat-probe.exe')
         )

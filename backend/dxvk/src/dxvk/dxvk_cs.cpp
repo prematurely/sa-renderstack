@@ -1,4 +1,5 @@
 #include "dxvk_cs.h"
+#include "../util/util_thread_scheduling.h"
 
 namespace dxvk {
   
@@ -192,6 +193,12 @@ namespace dxvk {
   
   void DxvkCsThread::threadFunc() {
     env::setThreadName("dxvk-cs");
+
+    // Registration and cleanup belong to this worker, not its creator.
+    renderstack::scheduling::ThreadSchedulingScope scheduling(
+      renderstack::scheduling::ReadOptions(),
+      renderstack::scheduling::Role::CommandStream,
+      [] (const char* message) { Logger::info(message); });
 
     // Local chunk queues, we use two queues and swap between
     // them in order to potentially reduce lock contention.

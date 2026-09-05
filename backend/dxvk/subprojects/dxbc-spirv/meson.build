@@ -1,7 +1,7 @@
 project('dxbc-spirv', ['cpp'],
   version         : '0.1.0',
   meson_version   : '>= 1.0',
-  default_options : [ 'cpp_std=c++17', 'warning_level=2', 'cpp_eh=none' ])
+  default_options : [ 'cpp_std=c++23', 'warning_level=2', 'cpp_eh=none' ])
 
 sm3_files = files([
   'sm3/sm3_types.cpp',

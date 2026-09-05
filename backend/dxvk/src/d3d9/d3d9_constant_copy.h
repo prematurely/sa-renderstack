@@ -43,12 +43,20 @@ namespace dxvk {
      *  Only useful with dynamic indexing. */
     bool isShaderDefined = false;
 
-    bool eq(const D3D9ConstantRange& other) const {
+    [[nodiscard]] bool operator == (const D3D9ConstantRange& other) const noexcept {
       return dstIndex             == other.dstIndex
           && srcIndex             == other.srcIndex
           && count                == other.count
           && isDynamicallyIndexed == other.isDynamicallyIndexed
           && isShaderDefined      == other.isShaderDefined;
+    }
+
+    [[nodiscard]] bool operator != (const D3D9ConstantRange& other) const noexcept {
+      return !(*this == other);
+    }
+
+    [[nodiscard]] bool eq(const D3D9ConstantRange& other) const noexcept {
+      return *this == other;
     }
 
     size_t hash() const {

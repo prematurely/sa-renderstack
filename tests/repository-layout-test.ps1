@@ -15,6 +15,7 @@ $required = @(
     'sdk',
     'sdk/include/sa_renderstack',
     'src',
+    'src/bridge/legacy/api-projects',
     'tests',
     'third_party',
     'third_party/licenses/mingw-w64',
