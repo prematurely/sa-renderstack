@@ -39,7 +39,7 @@ merged DXVK backend build.
 | D3D9 entry point and proxy chain | Bridge | Loads the configured primary backend and optional registered modules. |
 | D3D9 implementation | DXVK backend | Implements the exported D3D9 interfaces expected by the game. |
 | Vulkan device and queue | DXVK backend | Owns Vulkan object lifetime and command submission. |
-| ProperShaders observation | Bridge adapter | Observes the configured ASI/device claims; it does not add a second D3D9 proxy. |
+| Third-party module observation | Bridge adapter | Observes configured ASI/device claims; it does not add a second D3D9 proxy. |
 | ReShade/ENB entries | Bridge registry metadata | Disabled placeholders unless the external component is installed and explicitly enabled. |
 | Native post-process passes | Bridge host plus DXVK API | Registers ordered callbacks into the existing Present command buffer. |
 | Performance diagnostics | Bridge | F7/F8/F9/F10 captures and config snapshots; disabled or read-only by default. |
@@ -118,8 +118,9 @@ bindings, input-layout caching, push-data and resource-binding coalescing, and
 the API v7 selective state-journal path. These switches are `d3d9.gtaSa*`
 options in `config/dxvk.conf`.
 
-The Bridge-side ProperShaders journal remains a compatibility and observation
-layer. It must not maintain a stale cache that bypasses state changes made by
+The Bridge-side third-party effect journal remains a compatibility and
+observation layer. The current profile exercises it through a configured
+external integration. It must not maintain a stale cache that bypasses state changes made by
 DXVK-native restores or unwrapped state blocks. Experimental direct-effect
 and batch modes remain disabled unless a separate test proves them safe.
 

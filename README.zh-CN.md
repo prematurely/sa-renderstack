@@ -20,7 +20,7 @@ D3D9 兼容接入 · Vulkan 后端执行 · 可追踪的渲染诊断
 
 ---
 
-SA RenderStack 将 D3D9 桥接层、面向 GTA 的 DXVK 分支和渲染诊断纳入同一个源码工程。Bridge 管理入口、已配置的代理与插件集成，以及 ProperShaders 适配；DXVK 实现 D3D9，并负责 Vulkan 执行。
+SA RenderStack 将 D3D9 桥接层、面向 GTA 的 DXVK 分支和渲染诊断纳入同一个源码工程。Bridge 管理入口、已配置的第三方集成与兼容适配层；DXVK 实现 D3D9，并负责 Vulkan 执行。
 
 > **发布基线：** `v0.1.0-alpha.1`，面向 GTA San Andreas **1.0 US / x86**，采用**两个运行时 DLL**。本说明同时介绍当前开发源码，包括其中的 C++23 API 子项目；源码已有的功能不代表已发布压缩包一定包含。
 
@@ -31,7 +31,7 @@ SA RenderStack 将 D3D9 桥接层、面向 GTA 的 DXVK 分支和渲染诊断纳
 | :--- | :--- |
 | **Bridge 桥接层** | 游戏根目录的统一 D3D9 入口、有序模块注册、钩子归属声明，以及可选的插件生命周期回调。 |
 | **DXVK 后端** | 将 D3D9 转换为 Vulkan，并将 DXGI 工厂导出合入后端 DLL。 |
-| **ProperShaders 适配** | 选择性原生状态日志，以及满足条件时使用的 DirectConstants 状态批量提交路径。 |
+| **第三方集成** | 兼容适配层、选择性原生状态日志，以及满足条件时使用的 DirectConstants 状态批量提交路径。 |
 | **API1–API7** | 附属于 Bridge 的七个 C++23 子项目，包含库源码、开发示例和测试。 |
 | **诊断体系** | 状态归因、CPU 热点采样、逐次绘制跟踪和后端执行统计。 |
 | **发布工具链** | 源码来源追踪、ABI 与导出检查、构建元数据、包清单和回滚文件校验。 |
@@ -76,7 +76,7 @@ flowchart TD
     bridge --> backend["DXVK · backend/dxvk-gta/d3d9.dll"]
     backend --> gpu["Vulkan 驱动 · GPU"]
     bridge --- modules["API1–API7 · 附属 C++23 模块"]
-    bridge -.-> adapters["ProperShaders 适配 · 可选插件"]
+    bridge -.-> adapters["第三方适配 · 可选插件"]
     adapters -. "支持的兼容接口调用" .-> backend
     classDef application fill:#f0f9ff,stroke:#0284c7,color:#0c4a6e
     classDef control fill:#f0fdf4,stroke:#15803d,color:#14532d
@@ -105,7 +105,7 @@ API2 回调将命令录入现有的 Present 命令缓冲区，必须恢复自己
 | **6** | [状态与绘制](src/bridge/legacy/api-projects/api6-state-draw/) | 提交状态批次及紧随其后的一个 DP/DIP 调用。 |
 | **7** | [选择性状态日志](src/bridge/legacy/api-projects/api7-selective-journal/) | 将捕获范围限制在所属效果操作内。 |
 
-接口可用、编译纳入 Bridge、实际进入生产路径是不同事实。已有的 ProperShaders 路径使用 API3 和 API7；API2 需要注册实际通道，API5/API6 的库与示例也不代表游戏热点路径已经采用。API6 是**单次绘制**接口，不是多对象或多次绘制队列。
+接口可用、编译纳入 Bridge、实际进入生产路径是不同事实。当前配置通过一条已配置的第三方集成路径使用 API3 和 API7；API2 需要注册实际通道，API5/API6 的库与示例也不代表游戏热点路径已经采用。API6 是**单次绘制**接口，不是多对象或多次绘制队列。
 
 以上属于后端兼容 API 版本；另一个[Bridge 插件 API](src/bridge/legacy/BridgeD3D9Plugin.h)采用自身的 v1/v2 版本体系。
 
@@ -119,7 +119,7 @@ API2 回调将命令录入现有的 Present 命令缓冲区，必须恢复自己
 
 当前 Bridge 优先读取根目录 `SA.RenderStack.ini`，不存在时回退到 `scripts/BridgeD3D9.ini`。使用旧构建时应保持两份配置同步，并以所选发布版本随附的配置作为基线。
 
-注册表用于观察 ProperShaders，并提供默认禁用的 ReShade/ENB 条目供可选集成。它不会安装缺失的第三方组件，详见[代理与插件托管说明（英文）](src/bridge/legacy/POSTFX_CHAIN.md)。
+注册表用于观察已配置的第三方模块，并提供默认禁用的 ReShade/ENB 条目供可选集成。它不会安装缺失的第三方组件，详见[代理与插件托管说明（英文）](src/bridge/legacy/POSTFX_CHAIN.md)。
 
 > **开发配置：** `[Affinity] PerThread` 和 `Mmcss` 默认均为 `0`。启用它们属于实验，不保证硬实时或核心独占。诊断界面内容、优化开关也可能与已发布的 alpha 配置不同。
 

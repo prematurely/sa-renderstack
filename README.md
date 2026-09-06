@@ -20,7 +20,7 @@ D3D9 compatibility. Vulkan execution. Inspectable rendering.
 
 ---
 
-SA RenderStack brings a D3D9 Bridge, a GTA-compatible DXVK fork, and rendering diagnostics into one source project. The Bridge manages the entry point, configured proxy/plugin integration, and ProperShaders adapters. DXVK implements D3D9 and owns Vulkan execution.
+SA RenderStack brings a D3D9 Bridge, a GTA-compatible DXVK fork, and rendering diagnostics into one source project. The Bridge manages the entry point, configured third-party integration, and compatibility adapters. DXVK implements D3D9 and owns Vulkan execution.
 
 > **Release baseline:** `v0.1.0-alpha.1`, GTA San Andreas **1.0 US / x86**, with **two runtime DLLs**. This README also describes the current development tree, including its C++23 API subprojects. A source feature is not proof that the published archive contains it.
 
@@ -31,7 +31,7 @@ SA RenderStack brings a D3D9 Bridge, a GTA-compatible DXVK fork, and rendering d
 | :--- | :--- |
 | **Bridge** | One root D3D9 entry point, ordered module registration, hook-ownership metadata, and optional plugin lifecycle callbacks. |
 | **DXVK Backend** | D3D9-to-Vulkan translation with DXGI factory exports merged into the backend DLL. |
-| **ProperShaders Integration** | Selective native state journaling and a DirectConstants state-batch path where eligible. |
+| **Third-Party Integration** | Compatibility adapters, selective native state journaling, and DirectConstants state batching where eligible. |
 | **API1–API7** | Seven C++23 subprojects attached to Bridge, with library sources, development examples, and tests. |
 | **Diagnostics** | State attribution, CPU hotspot sampling, draw traces, and backend execution statistics. |
 | **Release Tooling** | Source provenance, ABI/export checks, build metadata, package manifests, and rollback-file verification. |
@@ -76,7 +76,7 @@ flowchart TD
     bridge --> backend["DXVK · backend/dxvk-gta/d3d9.dll"]
     backend --> gpu["Vulkan driver · GPU"]
     bridge --- modules["API1–API7 · attached C++23 modules"]
-    bridge -.-> adapters["ProperShaders adapters · optional plugins"]
+    bridge -.-> adapters["Third-party adapters · optional plugins"]
     adapters -. "supported compatibility calls" .-> backend
     classDef application fill:#f0f9ff,stroke:#0284c7,color:#0c4a6e
     classDef control fill:#f0fdf4,stroke:#15803d,color:#14532d
@@ -105,7 +105,7 @@ API2 callbacks record into the existing Present command buffer. They must restor
 | **6** | [State + Draw](src/bridge/legacy/api-projects/api6-state-draw/) | Submit a state batch and one immediate DP/DIP call. |
 | **7** | [Selective Journal](src/bridge/legacy/api-projects/api7-selective-journal/) | Scope capture to owned effect operations. |
 
-Interface availability, compilation into Bridge, and production adoption are separate facts. The established ProperShaders paths use API3 and API7. API2 needs a registered pass; API5/API6 libraries and examples do not establish adoption in the game's hot path. API6 is a **single-draw** interface, not a multi-object or multi-draw queue.
+Interface availability, compilation into Bridge, and production adoption are separate facts. The current profile exercises API3 and API7 through a configured third-party integration path. API2 needs a registered pass; API5/API6 libraries and examples do not establish adoption in the game's hot path. API6 is a **single-draw** interface, not a multi-object or multi-draw queue.
 
 These are backend compatibility API versions. The separate [Bridge plugin API](src/bridge/legacy/BridgeD3D9Plugin.h) uses its own v1/v2 versioning.
 
@@ -119,7 +119,7 @@ These are backend compatibility API versions. The separate [Bridge plugin API](s
 
 The current Bridge reads the root `SA.RenderStack.ini` first and falls back to `scripts/BridgeD3D9.ini`. Keep the two copies synchronized when using older builds. Use the configuration shipped with the selected release as its baseline.
 
-The registry observes ProperShaders and contains disabled ReShade/ENB entries for optional integration. Missing third-party components are not installed by the registry. Details are in [proxy and plugin hosting](src/bridge/legacy/POSTFX_CHAIN.md).
+The registry observes configured third-party modules and contains disabled ReShade/ENB entries for optional integration. Missing third-party components are not installed by the registry. Details are in [proxy and plugin hosting](src/bridge/legacy/POSTFX_CHAIN.md).
 
 > **Development configuration:** Optional `[Affinity] PerThread` and `Mmcss` default to `0`. Enabling them is an experiment, not a real-time or exclusive-core guarantee. Diagnostic HUD contents and optimization switches can differ from the published alpha profile.
 
