@@ -44,7 +44,7 @@ State-block filtering, deferred bindings, resource caches, and optional thread s
 1. Download **`SA-RenderStack-v0.1.0-alpha.1-split.zip`** from the [release page](https://github.com/prematurely/sa-renderstack/releases/tag/v0.1.0-alpha.1).
 2. Close the game and loader processes. Back up every file that the package will replace, including both runtime DLLs and configuration files.
 3. Extract into the game directory containing `gta_sa.exe`, preserving the archive's paths.
-4. Verify menu-to-save loading, then test your usual scenes and mod configuration.
+4. Verify menu-to-save loading, then validate representative scenes and the intended mod configuration.
 
 The split archive is the runtime package. The SDK and symbols archives are development aids; installation does not require a compiler or PowerShell.
 
@@ -119,7 +119,7 @@ These are backend compatibility API versions. The separate [Bridge plugin API](s
 
 The current Bridge reads the root `SA.RenderStack.ini` first and falls back to `scripts/BridgeD3D9.ini`. Keep the two copies synchronized when using older builds. Use the configuration shipped with the selected release as its baseline.
 
-The registry observes configured third-party modules and contains disabled ReShade/ENB entries for optional integration. Missing third-party components are not installed by the registry. Details are in [proxy and plugin hosting](src/bridge/legacy/POSTFX_CHAIN.md).
+The registry observes configured third-party modules and provides disabled entries for optional integration. Missing third-party components are not installed by the registry. Details are in [proxy and plugin hosting](src/bridge/legacy/POSTFX_CHAIN.md).
 
 > **Development configuration:** Optional `[Affinity] PerThread` and `Mmcss` default to `0`. Enabling them is an experiment, not a real-time or exclusive-core guarantee. Diagnostic HUD contents and optimization switches can differ from the published alpha profile.
 
@@ -203,7 +203,7 @@ Keys and outputs depend on enabled configuration. Detailed captures and HUD quer
 
 The baseline is **GTA San Andreas 1.0 US, 32-bit**, using the Bridge entry point and a DXVK v3.0.1-derived Vulkan backend. A working Vulkan driver is required for that backend.
 
-ReShade, ENB, FLA++, OLA, Project2DFX, Urbanize, and other third-party mods are not bundled. Arbitrary proxy chains and mod combinations need their own validation. The single-DLL runtime remains outside the supported split release.
+The published package targets the x86 split-DLL runtime for GTA San Andreas 1.0 US. The registry and compatibility APIs provide extension points for third-party integrations; support for a particular combination depends on its interface contract and validation results. The single-DLL runtime remains a separate development target.
 
 FPS, texture streaming, shader appearance, input latency, and long-session stability must be measured with a fixed workload. See [known findings and manual checks](docs/development/known-audit-findings.md).
 

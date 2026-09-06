@@ -44,7 +44,7 @@ SA RenderStack 将 D3D9 桥接层、面向 GTA 的 DXVK 分支和渲染诊断纳
 1. 从[发布页面](https://github.com/prematurely/sa-renderstack/releases/tag/v0.1.0-alpha.1)下载 **`SA-RenderStack-v0.1.0-alpha.1-split.zip`**。
 2. 关闭游戏及加载器进程，备份压缩包将覆盖的全部文件，包括两个运行时 DLL 和配置文件。
 3. 解压到包含 `gta_sa.exe` 的游戏目录，保留压缩包中的相对路径。
-4. 先确认菜单与存档能够加载，再测试常用场景和模组配置。
+4. 先确认菜单与存档能够加载，再验证代表性场景和目标模组配置。
 
 `split` 压缩包是运行时安装包。SDK 和符号包用于开发与诊断；安装不需要编译器或 PowerShell。
 
@@ -119,7 +119,7 @@ API2 回调将命令录入现有的 Present 命令缓冲区，必须恢复自己
 
 当前 Bridge 优先读取根目录 `SA.RenderStack.ini`，不存在时回退到 `scripts/BridgeD3D9.ini`。使用旧构建时应保持两份配置同步，并以所选发布版本随附的配置作为基线。
 
-注册表用于观察已配置的第三方模块，并提供默认禁用的 ReShade/ENB 条目供可选集成。它不会安装缺失的第三方组件，详见[代理与插件托管说明（英文）](src/bridge/legacy/POSTFX_CHAIN.md)。
+注册表用于观察已配置的第三方模块，并提供默认禁用的条目供可选集成。它不会安装缺失的第三方组件，详见[代理与插件托管说明（英文）](src/bridge/legacy/POSTFX_CHAIN.md)。
 
 > **开发配置：** `[Affinity] PerThread` 和 `Mmcss` 默认均为 `0`。启用它们属于实验，不保证硬实时或核心独占。诊断界面内容、优化开关也可能与已发布的 alpha 配置不同。
 
@@ -203,7 +203,7 @@ pwsh -NoProfile -File tools/release-gate.ps1 `
 
 支持基线为 **GTA San Andreas 1.0 US，32 位**，使用 Bridge 入口和基于 DXVK v3.0.1 的 Vulkan 后端。该后端需要可用的 Vulkan 驱动。
 
-项目不捆绑 ReShade、ENB、FLA++、OLA、Project2DFX、Urbanize 等第三方模组。任意代理链和模组组合需要单独验证，单 DLL 运行时尚不属于当前双 DLL 发布的支持范围。
+发布包面向 GTA San Andreas 1.0 US 的 x86 双 DLL 运行模式。模块注册和兼容 API 为第三方集成提供接入点，具体组合是否可用取决于相应接口契约和验证结果。单 DLL 运行时属于独立的开发目标。
 
 帧率、纹理流式加载、着色器外观、输入延迟和长时间稳定性，都需要针对固定负载测量。详见[已知问题与人工检查项（英文）](docs/development/known-audit-findings.md)。
 
