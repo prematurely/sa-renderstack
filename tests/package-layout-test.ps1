@@ -184,6 +184,7 @@ try {
         'scripts/BridgeD3D9.ini',
         'backend/dxvk-gta/d3d9.dll',
         'docs/README.md',
+        'docs/README.zh-CN.md',
         'docs/INSTALL.md',
         'docs/LICENSE-SA-RENDERSTACK',
         'docs/THIRD_PARTY_NOTICES.md',
@@ -271,6 +272,7 @@ try {
         -Description 'SDK package header'
     foreach ($relative in @(
             'docs/README.md',
+            'docs/README.zh-CN.md',
             'docs/INSTALL.md',
             'docs/LICENSE-SA-RENDERSTACK',
             'docs/THIRD_PARTY_NOTICES.md',

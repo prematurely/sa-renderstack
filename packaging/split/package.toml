@@ -23,6 +23,10 @@ source = "README.md"
 destination = "docs/README.md"
 
 [[file]]
+source = "README.zh-CN.md"
+destination = "docs/README.zh-CN.md"
+
+[[file]]
 source = "docs/installation.md"
 destination = "docs/INSTALL.md"
 

@@ -224,6 +224,7 @@ function Copy-SdkStage {
     $files = @(
         [pscustomobject]@{ Source = 'sdk/include/sa_renderstack/backend_api.h'; Destination = 'include/sa_renderstack/backend_api.h' },
         [pscustomobject]@{ Source = 'README.md'; Destination = 'docs/README.md' },
+        [pscustomobject]@{ Source = 'README.zh-CN.md'; Destination = 'docs/README.zh-CN.md' },
         [pscustomobject]@{ Source = 'docs/installation.md'; Destination = 'docs/INSTALL.md' },
         [pscustomobject]@{ Source = 'LICENSE'; Destination = 'docs/LICENSE-SA-RENDERSTACK' },
         [pscustomobject]@{ Source = 'THIRD_PARTY_NOTICES.md'; Destination = 'docs/THIRD_PARTY_NOTICES.md' },
@@ -360,6 +361,7 @@ try {
         'config/dxvk.conf|dxvk.conf',
         'out/build/dxvk-x86/src/d3d9/d3d9.dll|backend/dxvk-gta/d3d9.dll',
         'README.md|docs/README.md',
+        'README.zh-CN.md|docs/README.zh-CN.md',
         'docs/installation.md|docs/INSTALL.md',
         'LICENSE|docs/LICENSE-SA-RENDERSTACK',
         'THIRD_PARTY_NOTICES.md|docs/THIRD_PARTY_NOTICES.md',

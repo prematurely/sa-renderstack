@@ -1,173 +1,141 @@
+<div align="center">
+
 # SA RenderStack
 
-SA RenderStack is a GTA San Andreas rendering runtime built around a modular
-D3D9 Bridge and a GTA-compatible DXVK Vulkan backend. It provides a single
-root D3D9 entry point for the current profile, ordered proxy/plugin metadata,
-native compatibility APIs, and diagnostics for investigating rendering and
-frame-time behavior.
+**A modular rendering runtime for Grand Theft Auto: San Andreas.**
 
-The current release is an **x86 split-DLL alpha**. It is a real, installable
-runtime, but it is not a universal replacement for every GTA mod combination.
+D3D9 compatibility. Vulkan execution. Inspectable rendering.
 
-## Current Release
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-- Release: [v0.1.0-alpha.1](https://github.com/prematurely/sa-renderstack/releases/tag/v0.1.0-alpha.1)
-- Game: GTA San Andreas 1.0.0.0 US, 32-bit
-- Bridge: Win32 x86, MSVC Release
-- Backend: DXVK v3.0.1, LLVM-MinGW x86
-- Renderer: Vulkan through DXVK D3D9
-- Deployment: two DLLs
-- DXGI: merged into the D3D9 backend for this profile
+[![Windows CI](https://github.com/prematurely/sa-renderstack/actions/workflows/windows-ci.yml/badge.svg)](https://github.com/prematurely/sa-renderstack/actions/workflows/windows-ci.yml)
+[![Release](https://img.shields.io/badge/release-v0.1.0--alpha.1-22c55e?style=flat-square)](https://github.com/prematurely/sa-renderstack/releases/tag/v0.1.0-alpha.1)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-0284c7?style=flat-square)](#build)
+[![Vulkan](https://img.shields.io/badge/backend-Vulkan-c73545?style=flat-square)](#architecture)
+[![Windows x86](https://img.shields.io/badge/Windows-x86-64748b?style=flat-square)](#compatibility)
 
-The release is marked pre-release because third-party proxy combinations,
-long-session stability, and scene-independent performance still require
-workload-specific validation.
+[Download](https://github.com/prematurely/sa-renderstack/releases/tag/v0.1.0-alpha.1) | [Quick Start](#quick-start) | [Architecture](#architecture) | [API Modules](#api-modules) | [Build](#build) | [Documentation](#documentation)
 
+</div>
+
+---
+
+SA RenderStack brings a D3D9 Bridge, a GTA-compatible DXVK fork, and rendering diagnostics into one source project. The Bridge manages the entry point, configured proxy/plugin integration, and ProperShaders adapters. DXVK implements D3D9 and owns Vulkan execution.
+
+> **Release baseline:** `v0.1.0-alpha.1`, GTA San Andreas **1.0 US / x86**, with **two runtime DLLs**. This README also describes the current development tree, including its C++23 API subprojects. A source feature is not proof that the published archive contains it.
+
+<a id="capabilities"></a>
+## Capabilities
+
+| Layer | What It Provides |
+| :--- | :--- |
+| **Bridge** | One root D3D9 entry point, ordered module registration, hook-ownership metadata, and optional plugin lifecycle callbacks. |
+| **DXVK Backend** | D3D9-to-Vulkan translation with DXGI factory exports merged into the backend DLL. |
+| **ProperShaders Integration** | Selective native state journaling and a DirectConstants state-batch path where eligible. |
+| **API1–API7** | Seven C++23 subprojects attached to Bridge, with library sources, development examples, and tests. |
+| **Diagnostics** | State attribution, CPU hotspot sampling, draw traces, and backend execution statistics. |
+| **Release Tooling** | Source provenance, ABI/export checks, build metadata, package manifests, and rollback-file verification. |
+
+State-block filtering, deferred bindings, resource caches, and optional thread scheduling are configurable experiments. Their presence does not establish a performance gain for every workload.
+
+<a id="quick-start"></a>
 ## Quick Start
 
-The runtime package does not depend on PowerShell or the source repository.
+1. Download **`SA-RenderStack-v0.1.0-alpha.1-split.zip`** from the [release page](https://github.com/prematurely/sa-renderstack/releases/tag/v0.1.0-alpha.1).
+2. Close the game and loader processes. Back up every file that the package will replace, including both runtime DLLs and configuration files.
+3. Extract into the game directory containing `gta_sa.exe`, preserving the archive's paths.
+4. Verify menu-to-save loading, then test your usual scenes and mod configuration.
 
-1. Download `SA-RenderStack-v0.1.0-alpha.1-split.zip` from the release page.
-2. Close GTA San Andreas and all loader or injector processes.
-3. Back up any existing `d3d9.dll`, `dxvk.conf`,
-   `scripts\BridgeD3D9.ini`, and `backend\dxvk-gta\d3d9.dll`.
-4. Extract the ZIP directly into the GTA game root and preserve its folders.
-5. Start the game and first verify menu-to-save loading before testing a
-   larger mod workload.
+The split archive is the runtime package. The SDK and symbols archives are development aids; installation does not require a compiler or PowerShell.
 
-The complete manual procedure, expected paths, hash verification, and
-rollback steps are in [docs/installation.md](docs/installation.md). The SDK
-and symbols archives are for development and diagnosis; they are not runtime
-dependencies.
+Read the [installation and rollback guide](docs/installation.md) before replacing an existing setup.
 
+<a id="runtime-layout"></a>
 ## Runtime Layout
 
 ```text
-<GTA root>\
+<GTA directory>/
   gta_sa.exe
-  d3d9.dll                         # SA RenderStack Bridge proxy
-  SA.RenderStack.ini               # Bridge and module registry
-  dxvk.conf                        # DXVK and GTA compatibility options
-  backend\dxvk-gta\d3d9.dll       # x86 DXVK D3D9/Vulkan backend
-  scripts\BridgeD3D9.ini          # legacy configuration alias
+  d3d9.dll                       # Bridge entry point
+  SA.RenderStack.ini             # Bridge configuration
+  dxvk.conf                      # Backend configuration
+  backend/
+    dxvk-gta/d3d9.dll            # DXVK D3D9 + DXGI backend
+  scripts/
+    BridgeD3D9.ini               # Legacy configuration location
 ```
 
-The archive also includes `manifest.json`, `docs\INSTALL.md`,
-`docs\README.md`, `docs\LICENSE-SA-RENDERSTACK`, `docs\LICENSE-DXVK`, and
-`docs\THIRD_PARTY_NOTICES.md`. These files do not participate in the D3D9 load
-chain.
+**Keep both DLLs at their assigned paths.** Copying the backend over the root `d3d9.dll` bypasses the Bridge. The merged DXGI exports belong to the backend; this is still a split-DLL runtime.
 
+<a id="architecture"></a>
 ## Architecture
 
-```text
-gta_sa.exe
-    |
-    v
-root d3d9.dll (Bridge)
-    |  ordered registry, diagnostics, adapters, compatibility API
-    v
-backend\dxvk-gta\d3d9.dll (DXVK)
-    |  D3D9 implementation, GTA overlay, Vulkan device and queue
-    v
-Vulkan driver and GPU
+```mermaid
+flowchart TD
+    game["GTA San Andreas · D3D9"] --> bridge["Bridge · root d3d9.dll"]
+    bridge --> backend["DXVK · backend/dxvk-gta/d3d9.dll"]
+    backend --> gpu["Vulkan driver · GPU"]
+    bridge --- modules["API1–API7 · attached C++23 modules"]
+    bridge -.-> adapters["ProperShaders adapters · optional plugins"]
+    adapters -. "supported compatibility calls" .-> backend
+    classDef application fill:#f0f9ff,stroke:#0284c7,color:#0c4a6e
+    classDef control fill:#f0fdf4,stroke:#15803d,color:#14532d
+    classDef execution fill:#fff1f2,stroke:#be123c,color:#881337
+    class game application
+    class bridge,modules,adapters control
+    class backend,gpu execution
 ```
 
-The Bridge selects the backend through `[Backend]` in
-`SA.RenderStack.ini`:
+The Bridge manages integration and diagnostics. DXVK owns the authoritative D3D9 state, Vulkan device, resources, command stream, and queue submission. State optimizations must account for native journal restoration and state-block changes in that authoritative layer.
 
-```ini
-[Backend]
-Backend=DXVK
-DxvkBackendDir=backend\dxvk-gta
-```
+API2 callbacks record into the existing Present command buffer. They must restore any image layouts they change and must not independently submit, end, reset, or recursively register from their callback. See the [module map](docs/architecture/module-map.md) and [backend API contract](sdk/include/sa_renderstack/backend_api.h).
 
-The backend owns the Vulkan device and the existing DXVK command submission.
-Bridge-native Vulkan passes are recorded into that submission and must not
-flush, submit, end, reset, or lock the backend command buffer themselves.
-Passes are ordered by priority and then registration order.
+<a id="api-modules"></a>
+## API1–API7 Subprojects
 
-More detail is available in
-[docs/architecture/module-map.md](docs/architecture/module-map.md).
+**One parent runtime, seven code modules.** Both Bridge Win32 projects include these implementations from `src/bridge/legacy/api-projects/`. Their examples and tests are development targets, not seven independently deployed programs.
 
-## Proxy Registry
+| API | Attached Subproject | Responsibility |
+| :---: | :--- | :--- |
+| **1** | [Status](src/bridge/legacy/api-projects/api1-status/) | Version/capability inspection and Vulkan interop access. |
+| **2** | [Vulkan Pass](src/bridge/legacy/api-projects/api2-vulkan-pass/) | Pass registration, ordering, and unregistration. |
+| **3** | [State Batch](src/bridge/legacy/api-projects/api3-state-batch/) | Shader-constant ranges and texture-binding submission. |
+| **4** | [State Journal](src/bridge/legacy/api-projects/api4-state-journal/) | Capture and restore supported pipeline state. |
+| **5** | [Effect Batch](src/bridge/legacy/api-projects/api5-effect-batch/) | Submit final effect-pass state as a batch. |
+| **6** | [State + Draw](src/bridge/legacy/api-projects/api6-state-draw/) | Submit a state batch and one immediate DP/DIP call. |
+| **7** | [Selective Journal](src/bridge/legacy/api-projects/api7-selective-journal/) | Scope capture to owned effect operations. |
 
-The Bridge uses an ordered registry rather than implicitly loading every
-possible D3D9 wrapper:
+Interface availability, compilation into Bridge, and production adoption are separate facts. The established ProperShaders paths use API3 and API7. API2 needs a registered pass; API5/API6 libraries and examples do not establish adoption in the game's hot path. API6 is a **single-draw** interface, not a multi-object or multi-draw queue.
 
-```ini
-[ProxyChain]
-Enable=1
+These are backend compatibility API versions. The separate [Bridge plugin API](src/bridge/legacy/BridgeD3D9Plugin.h) uses its own v1/v2 versioning.
 
-[register]
-1=ProperShaders
-2=ReShade
-3=ENB
-```
-
-Each registered component has its own section with a type, `dll=` or `asi=`
-path, lifecycle stage, claimed hooks, and conflict policy. Relative paths are
-resolved below the GTA root. Missing optional components are skipped. A later
-component that claims an already-owned hook is skipped when its policy is
-`SkipIfClaimed`.
-
-The shipped profile observes the installed ProperShaders ASI and leaves
-ReShade and ENB disabled unless they are installed and explicitly enabled.
-The registry does not download or manufacture absent third-party modules.
-
+<a id="configuration"></a>
 ## Configuration
 
-`SA.RenderStack.ini` controls the Bridge and its diagnostic/adaptation layers.
-`dxvk.conf` controls DXVK and the GTA compatibility overlay. The current
-profile includes these categories:
+| File | Ownership |
+| :--- | :--- |
+| [SA.RenderStack.ini](config/SA.RenderStack.ini) | Bridge integration, module registry, diagnostics, and optional scheduling. |
+| [dxvk.conf](config/dxvk.conf) | DXVK options, GTA compatibility features, frame pacing, and HUD. |
 
-- DXVK backend selection and frame pacing
-- x86 affinity and startup priority handling
-- ordered proxy and ASI metadata
-- ProperShaders incremental state journal integration
-- D3D9 state-block prefiltering and fast-skip experiments
-- shader, scalar, input-layout, push-data, sampler, and texture coalescing
-- resource binding cache
-- DXVK HUD and per-session diagnostic output
+The current Bridge reads the root `SA.RenderStack.ini` first and falls back to `scripts/BridgeD3D9.ini`. Keep the two copies synchronized when using older builds. Use the configuration shipped with the selected release as its baseline.
 
-Experimental options that can change rendering semantics are kept disabled in
-the release profile unless their tests and workload evidence justify enabling
-them. Do not copy benchmark settings into a release profile without
-regenerating the package manifest and rerunning the release gate.
+The registry observes ProperShaders and contains disabled ReShade/ENB entries for optional integration. Missing third-party components are not installed by the registry. Details are in [proxy and plugin hosting](src/bridge/legacy/POSTFX_CHAIN.md).
 
-## Diagnostics
+> **Development configuration:** Optional `[Affinity] PerThread` and `Mmcss` default to `0`. Enabling them is an experiment, not a real-time or exclusive-core guarantee. Diagnostic HUD contents and optimization switches can differ from the published alpha profile.
 
-The normal profile keeps diagnostics lightweight:
-
-- DXVK sessions: `Diagnostics\DXVK\<timestamp>-pid<id>\`
-- Bridge aggregate log: `scripts\BridgeD3D9.log`
-- F7 state attribution: `scripts\BridgeD3D9.state-attribution.log`
-- F8 CPU hotspot capture: `scripts\BridgeD3D9.cpuhotspots.log` and
-  `Diagnostics\CPU\`
-- F9 callsite profile: `scripts\BridgeD3D9.callsites.log` when enabled
-- F10 draw trace: `scripts\BridgeD3D9.drawtrace.log` when enabled
-
-F7 is a read-only but high-overhead capture and is not a valid normal FPS
-benchmark. F8 samples the GTA render/main thread for the configured window;
-if its log timestamp does not change, the trigger was not received and the
-capture did not run.
-
-The release DXVK HUD is `fps,frametimes`. Shader dumping, full trace output,
-and detailed statistics should be enabled only for a deliberate diagnostic
-run because they alter the workload being measured.
-
+<a id="build"></a>
 ## Build From Source
 
-The source build is Windows-only for this release and produces x86 binaries.
-Required tools are:
+The main build targets **Windows / Release / x86**. The current source uses **C++23**; the Bridge projects select MSVC's `stdcpplatest` mode, and the API CMake targets require `cxx_std_23`.
 
-- PowerShell 7 (`pwsh`)
-- Visual Studio MSBuild with C++ support
-- Python 3
-- Meson and Ninja
-- LLVM-MinGW with the i686 compiler and binutils
-- `glslangValidator`
+| Toolchain | Purpose |
+| :--- | :--- |
+| PowerShell 7 and Git | Build orchestration and historical provenance checks. |
+| Visual Studio 18 C++ Build Tools | Bridge and MSVC test targets; toolset `v145`. |
+| LLVM-MinGW, Python 3, Meson, Ninja, glslang | x86 DXVK backend and shader build. |
+| CMake 3.25+ | Optional aggregate build of API examples and unit tests. |
 
-From the repository root:
+Run from the repository root:
 
 ```powershell
 pwsh -NoProfile -File tools/build.ps1 `
@@ -177,145 +145,95 @@ pwsh -NoProfile -File tools/test.ps1 `
   -Configuration Release -Architecture x86
 ```
 
-The build writes only to `out/`. It does not deploy files to a game
-installation. Toolchain paths can be supplied explicitly; see `-Help` on the
-build and test scripts.
+Build outputs go to `out/`; these commands do not deploy to the game directory. Use each script's `-Help` for explicit tool paths and environment-specific options.
 
-## Test And Package
+<details>
+<summary><strong>Build the attached API examples and tests</strong></summary>
 
-The complete release candidate sequence is:
+Configure the parent aggregate, not an individual API directory:
 
 ```powershell
-pwsh -NoProfile -File tools/build.ps1 `
-  -Configuration Release -Architecture x86 -Component All -Clean
+cmake -S src/bridge/legacy/api-projects -B out/api-project-build/all `
+  -G "Visual Studio 18 2026" -A Win32
+cmake --build out/api-project-build/all --config Release
+ctest --test-dir out/api-project-build/all -C Release --output-on-failure
+```
 
-pwsh -NoProfile -File tools/test.ps1 `
-  -Configuration Release -Architecture x86
+The main MSBuild path compiles the API library sources into Bridge. This optional CMake path additionally builds the examples and their unit tests. Run GPU examples against the intended backend with an explicit DXVK compatibility configuration.
 
+</details>
+
+<a id="validation"></a>
+## Validation and Packaging
+
+After a successful build and test run:
+
+```powershell
 pwsh -NoProfile -File tools/package.ps1 `
   -Version 0.1.0-alpha.1 -Configuration Release
-
 pwsh -NoProfile -File tests/package-layout-test.ps1
-
 pwsh -NoProfile -File tools/release-gate.ps1 `
   -Version 0.1.0-alpha.1 -Configuration Release
 ```
 
-The gate checks source hygiene, provenance, clean build output, required
-tests, ABI and export sets, package layout, artifact hashes, and protected
-game-root rollback hashes. A release candidate is valid only when the report
-ends with `Verdict: PASS`.
+| Evidence | Output |
+| :--- | :--- |
+| Build identity and binary hashes | `out/build-metadata.json` |
+| Per-test results, failures, and skips | `out/test-results.json` |
+| Split, SDK, symbols, and source manifest | `out/packages/` |
+| Local release-gate verdict | `out/reports/phase-1-release-gate.md` |
 
-## GitHub Actions
+[Windows CI](.github/workflows/windows-ci.yml) runs build, test, packaging, and package checks. Hosted runs explicitly skip GPU probes and local-game evidence checks, recording reasons in the test report. A green CI badge does not replace game testing or the local release gate.
 
-The repository includes a custom Windows workflow at
-`.github/workflows/windows-ci.yml`. It runs on pull requests, pushes to
-`main`, and manual dispatches. The workflow bootstraps the pinned x86
-LLVM-MinGW toolchain, uses the hosted Visual Studio MSBuild installation, and
-the action-provided MSYS2 path, and executes the same build, test, package,
-and package-layout stages used by the local workflow.
+<a id="diagnostics"></a>
+## Diagnostics
 
-Hosted CI passes the explicit `-SkipLocalBridgeEvidence` option because a
-runner does not contain the user's pre-installation GTA Bridge reference. The
-two affected evidence checks are recorded as non-required skips; local runs
-and the release gate keep the original game-root checks.
+| Capture | Output | Use |
+| :--- | :--- | :--- |
+| **F7** | `scripts/BridgeD3D9.state-attribution.log` and DXVK session logs | Effect/state attribution and backend batching. |
+| **F8** | `scripts/BridgeD3D9.cpuhotspots.log`, `Diagnostics/CPU/` | CPU hotspot samples and capture images. |
+| **F9** | `scripts/BridgeD3D9.callsites.log` | Optional D3D9 call-site sampling. |
+| **F10** | `scripts/BridgeD3D9.drawtrace.log` | Optional per-draw state tracing. |
+| **Backend** | `Diagnostics/DXVK/` | Device, configuration, and session diagnostics. |
 
-Hosted runners also do not provide the Vulkan device and local fixture paths
-needed by the runtime-only probes. CI therefore passes
-`-SkipGpuRuntimeProbes` and `-SkipEnvironmentSensitiveBridgeTests`; every
-skipped check is written to `out/test-results.json` with `required=false` and a
-reason. The pure Meson, ABI, source, adapter-policy, packaging, and export
-checks remain required. The workflow checks out full Git history because the
-historical provenance tests compare against pinned commits. It passes the
-action-resolved Ninja and `glslangValidator` paths through every tool-discovery
-layer, and the backend API source test has a PowerShell fallback when
-`ripgrep` is unavailable.
+Keys and outputs depend on enabled configuration. Detailed captures and HUD queries add overhead; benchmark normal rendering separately using the same scene, binaries, and configuration.
 
-Each run uploads commit-scoped artifacts containing the split, SDK, and
-symbols archives, the source manifest, build metadata, test results, and
-diagnostic logs. CI does not install the runtime into GTA San Andreas, does
-not inspect the local game directory, and does not create tags or GitHub
-Releases. The local release gate remains necessary for protected game-root
-rollback checks and final in-game workload validation.
+<a id="compatibility"></a>
+## Compatibility and Scope
 
-## Why The DXVK DLL Is Not 20 MiB
+The baseline is **GTA San Andreas 1.0 US, 32-bit**, using the Bridge entry point and a DXVK v3.0.1-derived Vulkan backend. A working Vulkan driver is required for that backend.
 
-A full upstream DXVK distribution is a bundle, not one universal DLL. It can
-contain multiple API targets (`d3d8`, `d3d9`, `d3d10`, `d3d11`, and `dxgi`),
-both x86 and x64 builds, debug symbols, tools, and supporting files.
+ReShade, ENB, FLA++, OLA, Project2DFX, Urbanize, and other third-party mods are not bundled. Arbitrary proxy chains and mod combinations need their own validation. The single-DLL runtime remains outside the supported split release.
 
-This profile intentionally builds only:
+FPS, texture streaming, shader appearance, input latency, and long-session stability must be measured with a fixed workload. See [known findings and manual checks](docs/development/known-audit-findings.md).
+
+<a id="documentation"></a>
+## Documentation
+
+| Guide | Focus |
+| :--- | :--- |
+| [Installation](docs/installation.md) | Archive layout, first launch, and rollback. |
+| [Architecture](docs/architecture/module-map.md) | Module ownership and rendering contracts. |
+| [API Subprojects](src/bridge/legacy/api-projects/README.md) | The seven Bridge-owned code modules. |
+| [Maintainer Handoff](docs/development/phase-1-handoff.md) | Build and release context. |
+| [Audit Findings](docs/development/known-audit-findings.md) | Known limits and validation requirements. |
+| [Release Notes](docs/releases/0.1.0-alpha.1.md) | Published alpha scope. |
 
 ```text
-enable_d3d8=false
-enable_d3d9=true
-enable_d3d10=false
-enable_d3d11=false
-enable_dxgi=false
-merge_dxgi_into_d3d9=true
+backend/dxvk/                    Vulkan backend and GTA compatibility layer
+src/bridge/legacy/               Main Bridge runtime and adapters
+  api-projects/                  Seven attached C++23 API subprojects
+sdk/include/sa_renderstack/      Public backend API
+config/                         Versioned runtime profiles
+docs/                           Architecture, development, and release notes
+packaging/                      Package layout contracts
+tests/                          Source, ABI, packaging, and regression checks
+tools/                          Build, test, package, and release automation
 ```
 
-Therefore the release backend is approximately 7.7 MiB uncompressed, while
-the Bridge is approximately 1.0 MiB. The split ZIP is smaller because it is
-compressed. This is expected for the selected x86 D3D9-only target and does
-not mean the Vulkan backend was omitted.
+<a id="licenses"></a>
+## Provenance and Licenses
 
-## Compatibility And Scope
+The backend derives from [official DXVK v3.0.1](https://github.com/doitsujin/dxvk/tree/v3.0.1). Its [upstream identity](backend/dxvk/SA_RENDERSTACK_UPSTREAM.toml) and [dependency revisions](backend/dxvk/SA_RENDERSTACK_DEPENDENCIES.toml) are recorded in the source tree.
 
-Supported baseline:
-
-- GTA San Andreas 1.0.0.0 US, 32-bit
-- x86 D3D9 entry through the root Bridge
-- DXVK v3.0.1 with the audited SA RenderStack compatibility overlay
-- ProperShaders observation and API v7 native compatibility path
-
-Not bundled or universally validated:
-
-- ReShade and ENB
-- FLA++, OLA, Project2DFX, Urbanize, and other third-party mods
-- arbitrary D3D9 proxy chains
-- the planned single-DLL runtime
-
-This alpha makes no universal claim about FPS, frame pacing, texture
-streaming, distant LODs, shader appearance, or long-session stability. Those
-properties must be recorded against a fixed workload and exact mod set.
-
-Known findings and release test requirements are maintained in
-[docs/development/known-audit-findings.md](docs/development/known-audit-findings.md).
-
-## Repository Map
-
-```text
-backend/dxvk/                 DXVK source and GTA compatibility overlay
-config/                       Release runtime configuration
-docs/architecture/            Module and ownership documentation
-docs/development/             Maintainer handoff and audit records
-docs/releases/                Release notes
-packaging/split/              Runtime package contract
-sdk/                          Public backend API headers
-src/bridge/legacy/            Bridge, adapters, registry, and probes
-tests/                         Source, package, ABI, and regression tests
-tools/                         Build, test, package, and release automation
-```
-
-## Provenance And Licenses
-
-The backend is based on official [DXVK v3.0.1](https://github.com/doitsujin/dxvk/tree/v3.0.1).
-Pinned upstream and dependency commits are recorded in
-`backend/dxvk/SA_RENDERSTACK_UPSTREAM.toml` and
-`backend/dxvk/SA_RENDERSTACK_DEPENDENCIES.toml`.
-
-The root `LICENSE` covers only SA RenderStack-specific code. Vendored DXVK and
-its dependencies retain their own license files, indexed by
-`THIRD_PARTY_NOTICES.md` and copied into the binary package's `docs/` directory.
-The source manifest records the exact source file hashes, dependency
-provenance, build options, and toolchain metadata for each generated release
-candidate.
-
-## Further Reading
-
-- [Installation and rollback](docs/installation.md)
-- [Architecture and module ownership](docs/architecture/module-map.md)
-- [Maintainer handoff](docs/development/phase-1-handoff.md)
-- [Known audit findings](docs/development/known-audit-findings.md)
-- [Alpha release notes](docs/releases/0.1.0-alpha.1.md)
+SA RenderStack-specific code uses the [zlib/libpng license](LICENSE). Vendored components retain their own licenses, listed in [Third-Party Notices](THIRD_PARTY_NOTICES.md). Generated source manifests record file hashes and toolchain metadata for each release candidate.
