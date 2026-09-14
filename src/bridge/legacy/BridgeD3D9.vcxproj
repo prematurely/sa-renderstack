@@ -46,6 +46,8 @@
     <ClCompile Include="BridgeD3D9.cpp" />
     <ClCompile Include="EffectInspector.cpp" />
     <ClCompile Include="ProperShadersStateJournal.cpp" />
+    <ClCompile Include="ProperShadersRenderStateGuard.cpp" />
+    <ClCompile Include="ProperShadersStateRing.cpp" />
     <ClCompile Include="PerformanceAdapters.cpp" />
     <ClCompile Include="PerformanceAdapterConfig.cpp" />
     <ClCompile Include="api-projects\api1-status\src\status_client.cpp" />
@@ -67,6 +69,8 @@
     <ClInclude Include="ProperShadersEffectBindingCache.h" />
     <ClInclude Include="ProperShadersPatchValidation.h" />
     <ClInclude Include="ProperShadersStateJournal.h" />
+    <ClInclude Include="ProperShadersRenderStateGuard.h" />
+    <ClInclude Include="ProperShadersStateRing.h" />
     <ClInclude Include="BridgePerformanceProviderV1.h" />
     <ClInclude Include="PerformanceAdapters.h" />
     <ClInclude Include="PerformanceAdapterConfig.h" />

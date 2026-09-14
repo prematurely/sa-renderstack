@@ -17,8 +17,12 @@ POSTFX_CHAIN.md
 ProperShadersBatchPolicy.h
 ProperShadersEffectBindingCache.h
 ProperShadersPatchValidation.h
+ProperShadersRenderStateGuard.cpp
+ProperShadersRenderStateGuard.h
 ProperShadersStateJournal.cpp
 ProperShadersStateJournal.h
+ProperShadersStateRing.cpp
+ProperShadersStateRing.h
 tests/BridgeD3D9.test.ini
 tests/BridgeLegacyPluginProbe.cpp
 tests/BridgeLegacyPluginProbe.def

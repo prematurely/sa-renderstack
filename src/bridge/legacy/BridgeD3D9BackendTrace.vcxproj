@@ -43,6 +43,8 @@
     <ClCompile Include="BridgeD3D9.cpp" />
     <ClCompile Include="EffectInspector.cpp" />
     <ClCompile Include="ProperShadersStateJournal.cpp" />
+    <ClCompile Include="ProperShadersRenderStateGuard.cpp" />
+    <ClCompile Include="ProperShadersStateRing.cpp" />
     <ClCompile Include="PerformanceAdapters.cpp" />
     <ClCompile Include="PerformanceAdapterConfig.cpp" />
     <ClCompile Include="api-projects\api1-status\src\status_client.cpp" />

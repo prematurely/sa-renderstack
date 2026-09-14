@@ -11,6 +11,8 @@
 #include "ProperShadersPatchValidation.h"
 #include "EffectInspector.h"
 #include "ProperShadersStateJournal.h"
+#include "ProperShadersRenderStateGuard.h"
+#include "ProperShadersStateRing.h"
 #include "BridgePerformanceProviderV1.h"
 #include "PerformanceAdapterConfig.h"
 #include "PerformanceAdapters.h"
@@ -7133,6 +7135,8 @@ static void LoadBridgeConfig()
         g_enableD3D9Optimizer = false;
         g_affinityEnable = false;
         g_useDxvkBackend = false;
+        // Isolated trace builds must not touch ProperShaders either.
+        g_properShadersRenderStateGuardConfig.enable = false;
         Log("backendtrace: isolated mode enabled; exportKey=F10 ring=alpha-texture draws backend=d3d9_dxvk.dll");
         return;
     }
@@ -7143,6 +7147,7 @@ static void LoadBridgeConfig()
         FormatTo(iniPath, sizeof(iniPath), "{}\\scripts\\BridgeD3D9.ini", gameDir);
     }
     FormatTo(g_performanceIniPath, sizeof(g_performanceIniPath), "{}", iniPath);
+    LoadProperShadersRenderStateGuardConfig(iniPath);
     g_threadSchedulingOptions = renderstack::scheduling::ReadOptions();
     Log("config: source={}", iniPath);
     Log("scheduling: PerThread={} Mmcss={} deviceOwnerMmcss=0",
@@ -9785,6 +9790,11 @@ public:
             SafePluginCall("OnCreateDevice", plugin.onCreateDevice, device, pPresentationParameters);
         }
 
+        // ProperShaders patches the same device the game renders with; the
+        // render-state guard can only be installed once the device exists and
+        // the ProperShaders module has been loaded.
+        StartProperShadersRenderStateGuardWatch();
+
         if (ShouldWrapD3D9Device()) {
             *ppReturnedDeviceInterface = new BridgeDirect3DDevice9(device);
         } else {
@@ -10012,6 +10022,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
     } else if (reason == DLL_PROCESS_DETACH && reserved == nullptr) {
         RestoreProperShadersCreateEffectHook();
         RestoreProperShadersOptimizationPatches();
+        ShutdownProperShadersStateRing();
         ShutdownPostFxPlugins();
     }
     return TRUE;
