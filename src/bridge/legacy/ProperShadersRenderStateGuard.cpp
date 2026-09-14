@@ -323,10 +323,8 @@ static bool ResolveD3D9RenderStateApi(D3D9RenderStateApi* api)
             return false;
         }
 
-        // The FLA++ original resolved both entries from the get slot; kept as
-        // is so this port stays behaviour-identical (see the header TODO).
         auto setRenderState = reinterpret_cast<D3D9SetRenderStateFn>(
-            vtable[kD3D9GetRenderStateVtableIndex]);
+            vtable[kD3D9SetRenderStateVtableIndex]);
         auto getRenderState = reinterpret_cast<D3D9GetRenderStateFn>(
             vtable[kD3D9GetRenderStateVtableIndex]);
         if (!setRenderState || !getRenderState ||

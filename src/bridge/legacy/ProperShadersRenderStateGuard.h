@@ -43,8 +43,11 @@ constexpr uint32_t kSupportedProperShadersTextHash = 0x4E3711C9;
 constexpr uintptr_t kRwD3D9SetRenderState = 0x007FC2D0;
 constexpr uintptr_t kRwD3D9GetRenderState = 0x007FC320;
 constexpr uintptr_t kRwD3D9DevicePointer = 0x00C97C28;
-// TODO(batch4): the FLA++ original resolved both the set and the get entry
-// from vtable[58]; confirm whether that is intentional before touching it.
+// IDirect3DDevice9 vtable slots (0-based): SetRenderState=57, GetRenderState=58.
+// The FLA++ original resolved BOTH entries from the get slot, which made every
+// device-side "set" call a no-op GetRenderState. Batch 4 fixes the set entry to
+// resolve from its own slot (behaviour change vs the original, dormant while
+// the text-hash gate rejects the current ProperShaders build).
 constexpr size_t kD3D9SetRenderStateVtableIndex = 57;
 constexpr size_t kD3D9GetRenderStateVtableIndex = 58;
 constexpr uint32_t kProperShadersAlphaRenderStates[] = {
