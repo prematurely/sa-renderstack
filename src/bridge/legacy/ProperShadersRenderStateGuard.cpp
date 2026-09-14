@@ -1,8 +1,8 @@
 // ProperShaders render-state guard implementation.
 //
 // Ported from FLA++ (FLACompatBridge/BridgeCompatProperShaders.cpp): the three
-// ProperShaders patch sites (PS+0x1ED80 RenderScene, PS+0x1ED60
-// RenderFadingEntities, PS+0x1EAB0 main-scene state restore) are wrapped with
+// ProperShaders patch sites (PS+0x25880 RenderScene, PS+0x25591
+// RenderFadingEntities, PS+0x25BEB main-scene state restore) are wrapped with
 // hand-written rel32 hooks, RenderWare's alpha-test states are synchronised
 // onto the D3D9 device, and the main-scene baseline stack is restored after the
 // patched scene render. The state ring lives in ProperShadersStateRing.cpp.
@@ -485,7 +485,7 @@ static void CaptureProperShadersPhaseState(ProperShadersD3D9StateSnapshot* snaps
     }
 
     const uintptr_t phaseAddress =
-        reinterpret_cast<uintptr_t>(properShaders) + 0x153CE4;
+        reinterpret_cast<uintptr_t>(properShaders) + 0x16BFF8;
     if (!IsReadableCommitted(phaseAddress, 11)) {
         return;
     }
@@ -1055,7 +1055,7 @@ static void InstallProperShadersRenderStateGuard(HMODULE psAsi, uint32_t psTextH
         return;
     }
 
-    const uintptr_t patchAddress = reinterpret_cast<uintptr_t>(psAsi) + 0x1ED80;
+    const uintptr_t patchAddress = reinterpret_cast<uintptr_t>(psAsi) + 0x25880;
     const uintptr_t guardTarget = reinterpret_cast<uintptr_t>(Bridge_ProperShadersPatchedRenderSceneGuard);
     const uintptr_t currentTarget = DecodeRel32JumpTarget(patchAddress);
     if (currentTarget == guardTarget) {
@@ -1067,7 +1067,10 @@ static void InstallProperShadersRenderStateGuard(HMODULE psAsi, uint32_t psTextH
         return;
     }
 
-    static const uint8_t expected[] = { 0x55, 0x8B, 0xEC, 0x6A, 0xFF };
+    // The 07-03 build prologue is 55 8B EC 83 E4 F8 (and esp,-8); the old
+    // build's 55 8B EC 6A FF was 5 bytes but this one is 6, and the trampoline
+    // must steal complete instructions only.
+    static const uint8_t expected[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8 };
     uint8_t current[sizeof(expected)]{};
     bool readable = IsReadableCommitted(patchAddress, sizeof(current));
     if (readable) {
@@ -1080,8 +1083,8 @@ static void InstallProperShadersRenderStateGuard(HMODULE psAsi, uint32_t psTextH
     }
 
     if (!readable || std::memcmp(current, expected, sizeof(expected)) != 0) {
-        Log("proper shaders render-state guard: signature mismatch PS+0x1ED80 got={:02X} {:02X} {:02X} {:02X} {:02X} textHash=0x{:08X}",
-            current[0], current[1], current[2], current[3], current[4], psTextHash);
+        Log("proper shaders render-state guard: signature mismatch PS+0x25880 got={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} textHash=0x{:08X}",
+            current[0], current[1], current[2], current[3], current[4], current[5], psTextHash);
         InterlockedExchange(&g_properShadersRenderStateGuardInstallState, 0);
         return;
     }
@@ -1095,7 +1098,7 @@ static void InstallProperShadersRenderStateGuard(HMODULE psAsi, uint32_t psTextH
 
     const uintptr_t trampoline = CreateRel32Trampoline(patchAddress, sizeof(expected));
     if (!trampoline) {
-        Log("proper shaders render-state guard: trampoline creation failed PS+0x1ED80");
+        Log("proper shaders render-state guard: trampoline creation failed PS+0x25880");
         InterlockedExchange(&g_properShadersRenderStateGuardInstallState, 0);
         return;
     }
@@ -1111,7 +1114,7 @@ static void InstallProperShadersRenderStateGuard(HMODULE psAsi, uint32_t psTextH
     }
 
     InterlockedExchange(&g_properShadersRenderStateGuardInstallState, 2);
-    Log("proper shaders render-state guard: installed PS+0x1ED80 trampoline=0x{:08X} guard=0x{:08X} states={} textHash=0x{:08X}",
+    Log("proper shaders render-state guard: installed PS+0x25880 trampoline=0x{:08X} guard=0x{:08X} states={} textHash=0x{:08X}",
         trampoline,
         guardTarget,
         static_cast<unsigned>(kProperShadersAlphaRenderStateCount),
@@ -1131,7 +1134,7 @@ static void InstallProperShadersFadingStateGuard(HMODULE psAsi, uint32_t psTextH
     }
 
     const uintptr_t psBase = reinterpret_cast<uintptr_t>(psAsi);
-    const uintptr_t patchAddress = psBase + 0x1ED60;
+    const uintptr_t patchAddress = psBase + 0x25591;
     const uintptr_t guardTarget = reinterpret_cast<uintptr_t>(Bridge_ProperShadersRenderFadingEntitiesGuard);
     if (DecodeRel32JumpTarget(patchAddress) == guardTarget) {
         InterlockedExchange(&g_properShadersFadingStateGuardInstallState, 2);
@@ -1157,9 +1160,9 @@ static void InstallProperShadersFadingStateGuard(HMODULE psAsi, uint32_t psTextH
     if (readable) {
         std::memcpy(&pushedString, current + 1, sizeof(pushedString));
     }
-    const uintptr_t expectedString = psBase + 0x12D640;
+    const uintptr_t expectedString = psBase + 0x14156C;
     if (!readable || current[0] != 0x68 || pushedString != expectedString) {
-        Log("proper shaders fading-state guard: signature mismatch PS+0x1ED60 got={:02X} {:02X} {:02X} {:02X} {:02X} pushed=0x{:08X} expected=0x{:08X} textHash=0x{:08X}",
+        Log("proper shaders fading-state guard: signature mismatch PS+0x25591 got={:02X} {:02X} {:02X} {:02X} {:02X} pushed=0x{:08X} expected=0x{:08X} textHash=0x{:08X}",
             current[0], current[1], current[2], current[3], current[4],
             pushedString, expectedString, psTextHash);
         InterlockedExchange(&g_properShadersFadingStateGuardInstallState, 0);
@@ -1174,7 +1177,7 @@ static void InstallProperShadersFadingStateGuard(HMODULE psAsi, uint32_t psTextH
 
     const uintptr_t trampoline = CreateRel32Trampoline(patchAddress, sizeof(current));
     if (!trampoline) {
-        Log("proper shaders fading-state guard: trampoline creation failed PS+0x1ED60");
+        Log("proper shaders fading-state guard: trampoline creation failed PS+0x25591");
         InterlockedExchange(&g_properShadersFadingStateGuardInstallState, 0);
         return;
     }
@@ -1189,7 +1192,7 @@ static void InstallProperShadersFadingStateGuard(HMODULE psAsi, uint32_t psTextH
     }
 
     InterlockedExchange(&g_properShadersFadingStateGuardInstallState, 2);
-    Log("proper shaders fading-state guard: installed PS+0x1ED60 trampoline=0x{:08X} guard=0x{:08X} textHash=0x{:08X}",
+    Log("proper shaders fading-state guard: installed PS+0x25591 trampoline=0x{:08X} guard=0x{:08X} textHash=0x{:08X}",
         trampoline, guardTarget, psTextHash);
 #else
     (void)psAsi;
@@ -1209,7 +1212,7 @@ static void InstallProperShadersMainSceneStateGuard(HMODULE psAsi, uint32_t psTe
     // FUN_1001EAA0 clears phaseAlternate at +0x1EAA6. Hook the next
     // complete instruction so state restoration runs after that clear and
     // before the first main-scene render call.
-    const uintptr_t patchAddress = psBase + 0x1EAB0;
+    const uintptr_t patchAddress = psBase + 0x25BEB;
     const uintptr_t guardTarget =
         reinterpret_cast<uintptr_t>(Bridge_ProperShadersMainSceneStateGuard);
     if (DecodeRel32JumpTarget(patchAddress) == guardTarget) {
@@ -1236,7 +1239,7 @@ static void InstallProperShadersMainSceneStateGuard(HMODULE psAsi, uint32_t psTe
         }
     }
     if (!readable || std::memcmp(current, expected, sizeof(expected)) != 0) {
-        Log("proper shaders main-scene guard: signature mismatch PS+0x1EAB0 got={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} textHash=0x{:08X}",
+        Log("proper shaders main-scene guard: signature mismatch PS+0x25BEB got={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} textHash=0x{:08X}",
             current[0], current[1], current[2], current[3],
             current[4], current[5], current[6], psTextHash);
         InterlockedExchange(&g_properShadersMainSceneStateGuardInstallState, 0);
@@ -1245,7 +1248,7 @@ static void InstallProperShadersMainSceneStateGuard(HMODULE psAsi, uint32_t psTe
 
     const uintptr_t trampoline = CreateRel32Trampoline(patchAddress, sizeof(expected));
     if (!trampoline) {
-        Log("proper shaders main-scene guard: trampoline creation failed PS+0x1EAB0");
+        Log("proper shaders main-scene guard: trampoline creation failed PS+0x25BEB");
         InterlockedExchange(&g_properShadersMainSceneStateGuardInstallState, 0);
         return;
     }
@@ -1259,7 +1262,7 @@ static void InstallProperShadersMainSceneStateGuard(HMODULE psAsi, uint32_t psTe
     }
 
     InterlockedExchange(&g_properShadersMainSceneStateGuardInstallState, 2);
-    Log("proper shaders main-scene guard: installed PS+0x1EAB0 trampoline=0x{:08X} guard=0x{:08X} textHash=0x{:08X}",
+    Log("proper shaders main-scene guard: installed PS+0x25BEB trampoline=0x{:08X} guard=0x{:08X} textHash=0x{:08X}",
         trampoline, guardTarget, psTextHash);
 #else
     (void)psAsi;

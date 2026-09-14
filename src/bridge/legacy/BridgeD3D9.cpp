@@ -8457,7 +8457,7 @@ private:
         BYTE phaseBytes[11]{};
         SIZE_T bytesRead = 0;
         if (!ReadProcessMemory(GetCurrentProcess(),
-                reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(properShaders) + 0x153CE4),
+                reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(properShaders) + 0x16BFF8),
                 phaseBytes, sizeof(phaseBytes), &bytesRead) || bytesRead != sizeof(phaseBytes)) {
             return;
         }
@@ -9412,7 +9412,7 @@ private:
             BYTE phaseBytes[11]{};
             SIZE_T bytesRead = 0;
             if (ReadProcessMemory(GetCurrentProcess(),
-                    reinterpret_cast<const void*>(psBase + 0x153CE4),
+                    reinterpret_cast<const void*>(psBase + 0x16BFF8),
                     phaseBytes,
                     sizeof(phaseBytes),
                     &bytesRead) && bytesRead == sizeof(phaseBytes)) {

@@ -39,7 +39,10 @@ void StartProperShadersRenderStateGuardWatch();
 void ShutdownProperShadersStateRing();
 
 // ---- constants ----
-constexpr uint32_t kSupportedProperShadersTextHash = 0x4E3711C9;
+// Batch 5: re-audited against the 2026-07-03 ProperShaders build
+// (1,534,592 bytes). The 0x4E3711C9 constant matched the 2026-06-02 build;
+// since the 07-15 file swap every PS-gated patch was silently skipping.
+constexpr uint32_t kSupportedProperShadersTextHash = 0x526DBD01;
 constexpr uintptr_t kRwD3D9SetRenderState = 0x007FC2D0;
 constexpr uintptr_t kRwD3D9GetRenderState = 0x007FC320;
 constexpr uintptr_t kRwD3D9DevicePointer = 0x00C97C28;
