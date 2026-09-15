@@ -90,7 +90,7 @@ if (-not $allowlistText.EndsWith("`n", [StringComparison]::Ordinal) -or
 $allowlist = @(
     $allowlistText.TrimEnd("`n") -split "`n"
 )
-if ($allowlist.Count -ne 38) {
+if ($allowlist.Count -ne 42) {
     throw "Unexpected Bridge overlay count: $($allowlist.Count)"
 }
 

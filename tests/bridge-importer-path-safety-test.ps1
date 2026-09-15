@@ -50,8 +50,8 @@ try {
             ForEach-Object { $_.Trim() } |
             Where-Object { $_ }
     )
-    if ($allowlist.Count -ne 38) {
-        throw "Expected 38 current allowlist entries, found $($allowlist.Count)"
+    if ($allowlist.Count -ne 42) {
+        throw "Expected 42 current allowlist entries, found $($allowlist.Count)"
     }
 
     $sourceText = @{
@@ -75,7 +75,7 @@ try {
 
     Write-FixtureAllowlist -Paths $allowlist
     $validResult = Invoke-FixtureImporter
-    if ($validResult.ExitCode -ne 0 -or $validResult.Output -notmatch 'Imported 38 audited Bridge files') {
+    if ($validResult.ExitCode -ne 0 -or $validResult.Output -notmatch 'Imported 42 audited Bridge files') {
         throw "Current valid allowlist was rejected: $($validResult.Output.Trim())"
     }
 
@@ -104,7 +104,7 @@ try {
     Assert-Rejected -Name 'case-insensitive canonical alias' -Paths $caseAlias `
         -Reason 'case-insensitive duplicate canonical path'
 
-    Write-Output 'PASS Bridge importer path-safety regression (38 valid paths; 13 unsafe/collision cases rejected)'
+    Write-Output 'PASS Bridge importer path-safety regression (42 valid paths; 13 unsafe/collision cases rejected)'
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {
