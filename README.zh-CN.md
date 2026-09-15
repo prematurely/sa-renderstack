@@ -6,7 +6,7 @@
 
 D3D9 兼容接入 · Vulkan 后端执行 · 可追踪的渲染诊断
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [Português (Brasil)](README.pt-BR.md) | [Español](README.es.md) | [Русский](README.ru.md) | [简体中文](README.zh-CN.md)
 
 [![Windows 持续集成](https://github.com/prematurely/sa-renderstack/actions/workflows/windows-ci.yml/badge.svg)](https://github.com/prematurely/sa-renderstack/actions/workflows/windows-ci.yml)
 [![发布版本](https://img.shields.io/badge/release-v0.1.0--alpha.1-22c55e?style=flat-square)](https://github.com/prematurely/sa-renderstack/releases/tag/v0.1.0-alpha.1)
