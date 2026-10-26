@@ -39,6 +39,22 @@ source = "README.ru.md"
 destination = "docs/README.ru.md"
 
 [[file]]
+source = "README.fr.md"
+destination = "docs/README.fr.md"
+
+[[file]]
+source = "README.de.md"
+destination = "docs/README.de.md"
+
+[[file]]
+source = "README.ja.md"
+destination = "docs/README.ja.md"
+
+[[file]]
+source = "README.ko.md"
+destination = "docs/README.ko.md"
+
+[[file]]
 source = "docs/installation.md"
 destination = "docs/INSTALL.md"
 

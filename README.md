@@ -6,7 +6,7 @@
 
 D3D9 compatibility. Vulkan execution. Inspectable rendering.
 
-[English](README.md) | [Português (Brasil)](README.pt-BR.md) | [Español](README.es.md) | [Русский](README.ru.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [Português (Brasil)](README.pt-BR.md) | [Español](README.es.md) | [Русский](README.ru.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [简体中文](README.zh-CN.md)
 
 [![Windows CI](https://github.com/prematurely/sa-renderstack/actions/workflows/windows-ci.yml/badge.svg)](https://github.com/prematurely/sa-renderstack/actions/workflows/windows-ci.yml)
 [![Release](https://img.shields.io/badge/release-v0.1.0--alpha.1-22c55e?style=flat-square)](https://github.com/prematurely/sa-renderstack/releases/tag/v0.1.0-alpha.1)
@@ -31,7 +31,7 @@ SA RenderStack brings a D3D9 Bridge, a GTA-compatible DXVK fork, and rendering d
 | :--- | :--- |
 | **Bridge** | One root D3D9 entry point, ordered module registration, hook-ownership metadata, and optional plugin lifecycle callbacks. |
 | **DXVK Backend** | D3D9-to-Vulkan translation with DXGI factory exports merged into the backend DLL. |
-| **Third-Party Integration** | Compatibility adapters, selective native state journaling, and DirectConstants state batching where eligible. |
+| **Third-Party Integration** | Compatibility adapters, selective native state journaling, and batch state submission where eligible. |
 | **API1–API7** | Seven C++23 subprojects attached to Bridge, with library sources, development examples, and tests. |
 | **Diagnostics** | State attribution, CPU hotspot sampling, draw traces, and backend execution statistics. |
 | **Release Tooling** | Source provenance, ABI/export checks, build metadata, package manifests, and rollback-file verification. |

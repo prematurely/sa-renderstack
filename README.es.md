@@ -6,7 +6,7 @@
 
 Compatibilidad con D3D9 · Ejecución en Vulkan · Diagnósticos de renderizado inspeccionables
 
-[English](README.md) | [Português (Brasil)](README.pt-BR.md) | [Español](README.es.md) | [Русский](README.ru.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [Português (Brasil)](README.pt-BR.md) | [Español](README.es.md) | [Русский](README.ru.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [简体中文](README.zh-CN.md)
 
 [![Windows CI](https://github.com/prematurely/sa-renderstack/actions/workflows/windows-ci.yml/badge.svg)](https://github.com/prematurely/sa-renderstack/actions/workflows/windows-ci.yml)
 [![Release](https://img.shields.io/badge/release-v0.1.0--alpha.1-22c55e?style=flat-square)](https://github.com/prematurely/sa-renderstack/releases/tag/v0.1.0-alpha.1)
@@ -31,7 +31,7 @@ SA RenderStack reúne en un único proyecto de código fuente un puente (Bridge)
 | :--- | :--- |
 | **Bridge** | Un único punto de entrada D3D9 raíz, registro ordenado de módulos, metadatos de propiedad de hooks y callbacks opcionales del ciclo de vida de plugins. |
 | **Backend DXVK** | Traducción de D3D9 a Vulkan con exportaciones de fábrica DXGI fusionadas en el DLL del backend. |
-| **Integración de Terceros** | Adaptadores de compatibilidad, registro diario (journaling) selectivo del estado nativo y procesamiento por lotes DirectConstants cuando proceda. |
+| **Integración de Terceros** | Adaptadores de compatibilidad, registro diario (journaling) selectivo del estado nativo y envío de estados por lotes cuando proceda. |
 | **API1–API7** | Siete subproyectos en C++23 vinculados al Bridge, con código fuente de bibliotecas, ejemplos de desarrollo y pruebas. |
 | **Diagnósticos** | Atribución de estado, muestreo de puntos críticos (hotspots) de CPU, trazas de dibujado (draw traces) y estadísticas de ejecución del backend. |
 | **Herramientas de Release** | Procedencia del código, comprobaciones de ABI/exportaciones, metadatos de compilación, manifiestos de paquetes y validación de archivos de reversión (rollback). |

@@ -6,7 +6,7 @@
 
 Совместимость с D3D9 · Выполнение через Vulkan · Прозрачная диагностика рендеринга
 
-[English](README.md) | [Português (Brasil)](README.pt-BR.md) | [Español](README.es.md) | [Русский](README.ru.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [Português (Brasil)](README.pt-BR.md) | [Español](README.es.md) | [Русский](README.ru.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [简体中文](README.zh-CN.md)
 
 [![Windows CI](https://github.com/prematurely/sa-renderstack/actions/workflows/windows-ci.yml/badge.svg)](https://github.com/prematurely/sa-renderstack/actions/workflows/windows-ci.yml)
 [![Release](https://img.shields.io/badge/release-v0.1.0--alpha.1-22c55e?style=flat-square)](https://github.com/prematurely/sa-renderstack/releases/tag/v0.1.0-alpha.1)
@@ -31,7 +31,7 @@ SA RenderStack объединяет прослойку Bridge D3D9, совмес
 | :--- | :--- |
 | **Bridge** | Единая корневая входная точка D3D9, упорядоченная регистрация модулей, метаданные принадлежности хуков и опциональные колбэки жизненного цикла плагинов. |
 | **Бэкенд DXVK** | Трансляция D3D9 в Vulkan с экспортами фабрики DXGI, объединенными в библиотеку бэкенда. |
-| **Сторонние интеграции** | Адаптеры совместимости, выборочное журналирование нативного состояния и пакетная передача состояний DirectConstants при выполнении условий. |
+| **Сторонние интеграции** | Адаптеры совместимости, выборочное журналирование нативного состояния и пакетная передача состояний при выполнении условий. |
 | **API1–API7** | Семь подпроектов на C++23, подключенных к Bridge, с библиотеками исходного кода, примерами разработки и тестами. |
 | **Диагностика** | Атрибуция состояний, профилирование «горячих точек» (hotspots) CPU, трассировка вызовов отрисовки (draw traces) и статистика выполнения бэкенда. |
 | **Инструменты релиза** | Отслеживание происхождения исходного кода, проверки ABI/экспортов, метаданные сборки, манифесты пакетов и валидация файлов отката. |

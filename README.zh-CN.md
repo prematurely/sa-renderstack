@@ -6,7 +6,7 @@
 
 D3D9 兼容接入 · Vulkan 后端执行 · 可追踪的渲染诊断
 
-[English](README.md) | [Português (Brasil)](README.pt-BR.md) | [Español](README.es.md) | [Русский](README.ru.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [Português (Brasil)](README.pt-BR.md) | [Español](README.es.md) | [Русский](README.ru.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [简体中文](README.zh-CN.md)
 
 [![Windows 持续集成](https://github.com/prematurely/sa-renderstack/actions/workflows/windows-ci.yml/badge.svg)](https://github.com/prematurely/sa-renderstack/actions/workflows/windows-ci.yml)
 [![发布版本](https://img.shields.io/badge/release-v0.1.0--alpha.1-22c55e?style=flat-square)](https://github.com/prematurely/sa-renderstack/releases/tag/v0.1.0-alpha.1)
@@ -31,7 +31,7 @@ SA RenderStack 将 D3D9 桥接层、面向 GTA 的 DXVK 分支和渲染诊断纳
 | :--- | :--- |
 | **Bridge 桥接层** | 游戏根目录的统一 D3D9 入口、有序模块注册、钩子归属声明，以及可选的插件生命周期回调。 |
 | **DXVK 后端** | 将 D3D9 转换为 Vulkan，并将 DXGI 工厂导出合入后端 DLL。 |
-| **第三方集成** | 兼容适配层、选择性原生状态日志，以及满足条件时使用的 DirectConstants 状态批量提交路径。 |
+| **第三方集成** | 兼容适配层、选择性原生状态日志，以及满足条件时使用的状态批量提交路径。 |
 | **API1–API7** | 附属于 Bridge 的七个 C++23 子项目，包含库源码、开发示例和测试。 |
 | **诊断体系** | 状态归因、CPU 热点采样、逐次绘制跟踪和后端执行统计。 |
 | **发布工具链** | 源码来源追踪、ABI 与导出检查、构建元数据、包清单和回滚文件校验。 |
