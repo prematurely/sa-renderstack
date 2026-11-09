@@ -2,8 +2,10 @@
 
 ## 范围与结论
 
-基线为 main `659f9ed60084f16dba98bb4cd396edeca2ab17cc`。候选在本地分支
-`codex/sampler-state-batching-20261109`，未部署、未提交或发布。
+本文归档 2026-11-09 首次本地验证时的状态。基线为 main
+`659f9ed60084f16dba98bb4cd396edeca2ab17cc`；当时的候选位于本地分支
+`codex/sampler-state-batching-20261109`，尚未部署、提交或发布。
+后续提交与 review 修复验证见 [2026-11-10 报告](review-fixes-20261110.md)。
 普通 sampler setter 在持有原有设备锁、排除 StateBlock 录制后，从权威设备状态判断
 同值调用；诊断未开启时跳过 audit scope 设置。已有 API5 批提交和 StateBlock Apply
 复用外层设备锁，避免每项重复进入设备保护逻辑和已经完成的 sampler 参数验证。

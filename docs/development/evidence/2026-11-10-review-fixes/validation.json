@@ -1,0 +1,730 @@
+{
+  "commit": "f6876b2fdf63b4f7f0c79aab069a89eb55c0a735",
+  "startedUtc": "2026-11-09T17:33:58.2330542Z",
+  "endedUtc": "2026-11-09T17:41:03.9924462Z",
+  "passed": 85,
+  "failed": 0,
+  "skipped": 2,
+  "compilerAffinity": "Only Clang descendants pinned to CPU0 for local compiler instability",
+  "runtimeAffinity": "normal",
+  "gates": [
+    {
+      "name": "repository-layout",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/repository-layout-20261109T173358292Z-44972-d6a65de2.dir/combined.log",
+      "sha256": "11260f8bb3c69fc05a103309cd53838d40998240acc870273b53314de8030fbc"
+    },
+    {
+      "name": "attached-api-project-layout",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/attached-api-project-layout-20261109T173358696Z-44972-f22b135f.dir/combined.log",
+      "sha256": "0cf87901eab8268dca519748a2756589ba1541beab7cb691e37955e1648889c1"
+    },
+    {
+      "name": "windows-ci-workflow",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/windows-ci-workflow-20261109T173359067Z-44972-fe80cb24.dir/combined.log",
+      "sha256": "1788110b7688fa047bb3aa0788e98f2de3e1d8b21601188e3cb230f717a77e59"
+    },
+    {
+      "name": "hosted-ci-boundary-regression",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/hosted-ci-boundary-regression-20261109T173359389Z-44972-9fbbaf7b.dir/combined.log",
+      "sha256": "169ea243fcae64890b76e45defdc4d2ba99d50d3f6dd2bfd71b98d643fd31724"
+    },
+    {
+      "name": "package-manifest-regression",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/package-manifest-regression-20261109T173359674Z-44972-e83340ec.dir/combined.log",
+      "sha256": "8d4ccee0bcc3e9eea6f2b5a169404a44cb37e1cf35d753c4046b749bd83e29af"
+    },
+    {
+      "name": "msbuild-compatibility",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/msbuild-compatibility-20261109T173400508Z-44972-92308fd4.dir/combined.log",
+      "sha256": "9319efeeced4c8c4768ea588c73db2736b07514433d5acb682d9abad84d53e6f"
+    },
+    {
+      "name": "source-hygiene-regression",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/source-hygiene-regression-20261109T173401701Z-44972-c6f5074d.dir/combined.log",
+      "sha256": "de2231700959da2e3c40394590ac2d5311272602a18334e28e370c426b87599d"
+    },
+    {
+      "name": "dxvk-provenance",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/dxvk-provenance-20261109T173412865Z-44972-9c331799.dir/combined.log",
+      "sha256": "c23826028254f64e7f52334e51b3ef7cb445f5d7b1128fbeeabe37ee59dc4f18"
+    },
+    {
+      "name": "dxvk-dependency-provenance",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/dxvk-dependency-provenance-20261109T173413170Z-44972-292c49d9.dir/combined.log",
+      "sha256": "031f433d8f7634ebfd447906e5786a3f204a1dd70ed58297c47da7feceb8b522"
+    },
+    {
+      "name": "historical-dxvk-overlay-manifest",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/historical-dxvk-overlay-manifest-20261109T173416727Z-44972-43fce958.dir/combined.log",
+      "sha256": "6b01f0af62593a89068e48c84ff96be4413f21e6de9e27795bcfa270d9bbb33b"
+    },
+    {
+      "name": "historical-dxvk-overlay-regression",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/historical-dxvk-overlay-regression-20261109T173420046Z-44972-1957e360.dir/combined.log",
+      "sha256": "c114571f095cc78a9aa9e2456165f6e37b2b34ae84dc69852ea978978c9f60de"
+    },
+    {
+      "name": "historical-bridge-manifest",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/historical-bridge-manifest-20261109T173446319Z-44972-fcb1b76b.dir/combined.log",
+      "sha256": "a931e20ef8d1909919e41c6f5a6b48af7481f8de6f8f7ab91691299a52202ce7"
+    },
+    {
+      "name": "historical-bridge-evidence",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/historical-bridge-evidence-20261109T173449986Z-44972-09d9710f.dir/combined.log",
+      "sha256": "d6d118251e709c66b5a298f9d2149eba281d60b09afbb01d63ddf516281a866a"
+    },
+    {
+      "name": "live-dxvk-audit",
+      "status": "skipped",
+      "exitCode": null,
+      "skipReason": "External DXVK source was not supplied",
+      "log": "out/logs/tests/live-dxvk-audit-20261109T173450795Z-44972-8002dfb3.dir/combined.log",
+      "sha256": "5177de8a3933e264cc4f5bfb8bc4b6f4dd8e886b699b93a2fb3a2ef3c5efe86b"
+    },
+    {
+      "name": "live-bridge-config-audit",
+      "status": "skipped",
+      "exitCode": null,
+      "skipReason": "External Bridge and config paths were not supplied",
+      "log": "out/logs/tests/live-bridge-config-audit-20261109T173450840Z-44972-7068d957.dir/combined.log",
+      "sha256": "7cdb7f72924e4fac17170f25f3b1b702d31e0fca66725e4ab39aeb964d671e71"
+    },
+    {
+      "name": "historical-baseline-regression",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/historical-baseline-regression-20261109T173450847Z-44972-526331af.dir/combined.log",
+      "sha256": "26e447c24320390caba9b169453c2310f4b40ced8272934d77b7a16a2cf3abb3"
+    },
+    {
+      "name": "dxvk-overlay-regression-focused",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/dxvk-overlay-regression-focused-20261109T173458123Z-44972-ba9a2125.dir/combined.log",
+      "sha256": "77aab471a663c39d7da7162f1fbbf2592b74ac5e725568b36831300c1a0323dc"
+    },
+    {
+      "name": "bridge-importer-path-safety",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/bridge-importer-path-safety-20261109T173524614Z-44972-fa4e9f83.dir/combined.log",
+      "sha256": "4af2c815cbe07cc5eb4f0ebd0abe701fa39adaae3e6ebdb6177fb1ea28e5bc09"
+    },
+    {
+      "name": "bridge-config-regression",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/bridge-config-regression-20261109T173530657Z-44972-d22c006e.dir/combined.log",
+      "sha256": "3aabf9f9073c700617743a6dd85fb916b464c7e9204efebd7522b9614758e447"
+    },
+    {
+      "name": "d3dx-preparation-regression",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/d3dx-preparation-regression-20261109T173531416Z-44972-ef7d4717.dir/combined.log",
+      "sha256": "70f7c597cfc637570e9666f152b34792aa826981ac4ff45c3627dfc6d36caec1"
+    },
+    {
+      "name": "bridge-self-contained",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/bridge-self-contained-20261109T173537152Z-44972-42c2ca8a.dir/combined.log",
+      "sha256": "cec20ecac4af0ec2153210035d9502820d52bb01c05dfcd5b2d0dd1392bf9ed6"
+    },
+    {
+      "name": "current-bridge-evidence",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/current-bridge-evidence-20261109T173537586Z-44972-72a7d4ef.dir/combined.log",
+      "sha256": "183e518b73b068fa719c6c49666544ed871109683e02006ac64c22af0e49347d"
+    },
+    {
+      "name": "bridge-evidence-types-regression",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/bridge-evidence-types-regression-20261109T173539235Z-44972-23005dbd.dir/combined.log",
+      "sha256": "6d0dbd63e0cab6d11d834658c2f152262fc7bedf379c8580412ad41618dafc4c"
+    },
+    {
+      "name": "backend-api-source",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/backend-api-source-20261109T173543656Z-44972-2f75289c.dir/combined.log",
+      "sha256": "9349d1fd17659ed3e98477a21a67e6b469069e17e16e55a34c889694f08838e6"
+    },
+    {
+      "name": "gta-sa-api1-api7-contract",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/gta-sa-api1-api7-contract-20261109T173544231Z-44972-b7269881.dir/combined.log",
+      "sha256": "64ca07d7ee51293c71ca230f5279b866570a07b06f9af29f165ed1e670828a8e"
+    },
+    {
+      "name": "streaming-config-offline-regression",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/streaming-config-offline-regression-20261109T173544762Z-44972-589e2286.dir/combined.log",
+      "sha256": "676da5c367e98b6dcdf6b0e3adb9db767af00e412de6bac2366c0ea3a6d2fa44"
+    },
+    {
+      "name": "build-refresh",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/build-refresh-20261109T173556176Z-44972-bdca59d8.dir/combined.log",
+      "sha256": "98f1d93781f3fb6caf165fee7fc3ce9fa1ba7e22c9179d1176f1af78bdfe13e1"
+    },
+    {
+      "name": "meson-test",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/meson-test-20261109T173839745Z-44972-86fd00c6.dir/combined.log",
+      "sha256": "7e496f744d288f37aa835ffafeade7ce5bcd7819b8933b599957b9cff0de3ae4"
+    },
+    {
+      "name": "constant-control-linked-layout",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/constant-control-linked-layout-20261109T173840792Z-44972-29306bef.dir/combined.log",
+      "sha256": "57a379548f43bcb87ab49cab4d0127dbf47321b7cfe7d6e1a04416fb2157dfd9"
+    },
+    {
+      "name": "thread-scheduling-config",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/thread-scheduling-config-20261109T173840920Z-44972-3a8ef2a2.dir/combined.log",
+      "sha256": "83bcae608b945aaedf0ca5d7f1404f5e084aef4151a9a2c473aa0219c3ccb71b"
+    },
+    {
+      "name": "backend-api-msvc-executable",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/backend-api-msvc-executable-20261109T173841294Z-44972-80ea9855.dir/combined.log",
+      "sha256": "c87193d747d7cec611bc988e05be936398bf8a5a32309b6baa14c6375cd0a6cb"
+    },
+    {
+      "name": "texture-binding-linked-cost-single",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/texture-binding-linked-cost-single-20261109T173841347Z-44972-ffe24d41.dir/combined.log",
+      "sha256": "31be255b4e1842f2239c342d78758b06a2b6a9d73400ff63981b31860a16b1ad"
+    },
+    {
+      "name": "texture-binding-linked-cost-batch",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/texture-binding-linked-cost-batch-20261109T173841478Z-44972-68e90776.dir/combined.log",
+      "sha256": "4cb526d9eff55349b4a06322e6ea1e866f021d93c1aa6797bb463f0f9076b93b"
+    },
+    {
+      "name": "backend-api-llvm-syntax",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/backend-api-llvm-syntax-20261109T173841609Z-44972-8b23b0dd.dir/combined.log",
+      "sha256": "0b9f919213691d4cb3fd5734ae8a96ab79868e02d5ae5e8d7bff8d663d7346a3"
+    },
+    {
+      "name": "runtime-compatibility-probe",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/runtime-compatibility-probe-20261109T173842898Z-44972-bde81cb2.dir/combined.log",
+      "sha256": "3ad0750d243e86e24f6867d0c210cfb039026a6f544b0d36d253cf4de5adb466"
+    },
+    {
+      "name": "runtime-stateblock-prefilter-probe",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/runtime-stateblock-prefilter-probe-20261109T173844402Z-44972-d739517a.dir/combined.log",
+      "sha256": "f3d310fb8e870bd871a306e9e8e445bf90285e473b6be817a33f4bbba4838576"
+    },
+    {
+      "name": "api-projects-configure",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/api-projects-configure-20261109T173845157Z-44972-8e8fb581.dir/combined.log",
+      "sha256": "92bc297bd845e1789387d46d35d2a571b89e24a81f837f31222eb285b04254d1"
+    },
+    {
+      "name": "api-projects-build",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/api-projects-build-20261109T173845595Z-44972-3b9590f3.dir/combined.log",
+      "sha256": "5d80b775e8df810e43d549f6ee880f15662e09fa5b9c162044c1a5ab3ac483cf"
+    },
+    {
+      "name": "api-projects-ctest",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/api-projects-ctest-20261109T173848434Z-44972-417b69c0.dir/combined.log",
+      "sha256": "08ecee7881fc87309209020ef1e0317b9c9b30ef72d0106f831bf9f8221e62ad"
+    },
+    {
+      "name": "api-state-runtime-reference",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/api-state-runtime-reference-20261109T173848765Z-44972-b98d708d.dir/combined.log",
+      "sha256": "6b6162b54878b2fa49f2b5c74342e7651e1d1eaa4756c67e52f28fe35b236757"
+    },
+    {
+      "name": "constant-binding-pixel-runtime-reference",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/constant-binding-pixel-runtime-reference-20261109T173849413Z-44972-63fae2d5.dir/combined.log",
+      "sha256": "770dfeadbc311ebf5253a9ef40e27c260b5e37426b639205d5fe88c3341dc032"
+    },
+    {
+      "name": "texture-binding-lifetime-runtime-reference",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/texture-binding-lifetime-runtime-reference-20261109T173850049Z-44972-6ba910a1.dir/combined.log",
+      "sha256": "d1bdde1a33854712efbc8efca47f5a5ba86a9ba4eebb5896b852fa883c1087f5"
+    },
+    {
+      "name": "control-pair-shared-reference",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/control-pair-shared-reference-20261109T173850699Z-44972-7299ff78.dir/combined.log",
+      "sha256": "0f32f5867b4347436db2e15f6d13482ef62bb0fd40432f90397ebf04267b7a89"
+    },
+    {
+      "name": "control-pair-dual-reference",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/control-pair-dual-reference-20261109T173851832Z-44972-e14b3fbc.dir/combined.log",
+      "sha256": "ed937ec7909979002b680a82601ef6b60e9895f7aa85d73b20a25132e7fb859b"
+    },
+    {
+      "name": "control-pair-protocol-reference",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/control-pair-protocol-reference-20261109T173853214Z-44972-3ef12868.dir/combined.log",
+      "sha256": "1f5af9aa158dd64128ab122255647cc6a2fffce980ff1f2304164e56ac11d1d6"
+    },
+    {
+      "name": "texture-pair-reference",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/texture-pair-reference-20261109T173853595Z-44972-2af9fafb.dir/combined.log",
+      "sha256": "c42e8c596852b265edfa46768b062021516b734234e8637633b8494f52f5943f"
+    },
+    {
+      "name": "texture-pair-protocol-reference",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/texture-pair-protocol-reference-20261109T173854671Z-44972-1af5603e.dir/combined.log",
+      "sha256": "85997d9d3a657949e43d2864f1988e60ece5a3686b416fa7a4e7fc512a03b5fc"
+    },
+    {
+      "name": "api-state-runtime-optimized",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/api-state-runtime-optimized-20261109T173855054Z-44972-98fc87c1.dir/combined.log",
+      "sha256": "25698d6b3aae40b6e233afc3df809a0b3376a584b3d17b4ff2f17d99acceae2e"
+    },
+    {
+      "name": "constant-binding-pixel-runtime-optimized",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/constant-binding-pixel-runtime-optimized-20261109T173855596Z-44972-6fce4314.dir/combined.log",
+      "sha256": "da2e5581a4445addcdc34ddcc4306fe78c0c3bd64aa4326918e80d1eda95f479"
+    },
+    {
+      "name": "texture-binding-lifetime-runtime-optimized",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/texture-binding-lifetime-runtime-optimized-20261109T173856141Z-44972-40a07d62.dir/combined.log",
+      "sha256": "4c6e84b9e39dd97d33e8e09bcb8b731f09dd0cf054ce66d925ad19f857f3398f"
+    },
+    {
+      "name": "control-pair-shared-optimized",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/control-pair-shared-optimized-20261109T173856695Z-44972-36aa518b.dir/combined.log",
+      "sha256": "6bf7876cbeb0b401c5c8b1233a98cc9c4aa09b5978bbaf28be44591dff9c5c91"
+    },
+    {
+      "name": "control-pair-dual-optimized",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/control-pair-dual-optimized-20261109T173857842Z-44972-d72b78a8.dir/combined.log",
+      "sha256": "5c20c3e0e53175c22290db1fb3bbc73b50ea5d7cec27f7d1b8bfdd21ca21ff41"
+    },
+    {
+      "name": "control-pair-protocol-optimized",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/control-pair-protocol-optimized-20261109T173859225Z-44972-da793077.dir/combined.log",
+      "sha256": "56be0c610c6ed1cfb22e7ff9cff810a73966f4afbe73db73c400a933bed2d32b"
+    },
+    {
+      "name": "texture-pair-optimized",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/texture-pair-optimized-20261109T173859632Z-44972-fd553e0b.dir/combined.log",
+      "sha256": "ad99a82a1b8a5cc7ce75ad4e0a6f080e6f204d9330e037ce1395596c42167732"
+    },
+    {
+      "name": "texture-pair-protocol-optimized",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/texture-pair-protocol-optimized-20261109T173900745Z-44972-a4b9e9f2.dir/combined.log",
+      "sha256": "b087ccd75d37525cea950dc652a34d600280b6303a5b44a3b74b9382d1048796"
+    },
+    {
+      "name": "bridge-lifecycle-regression",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/bridge-lifecycle-regression-20261109T173901150Z-44972-706ce8af.dir/combined.log",
+      "sha256": "50d77ff55d8139e9a5429cb05ae9a24373dee216aea4193e3c2d0e41961b6043"
+    },
+    {
+      "name": "config-ownership-regression",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/config-ownership-regression-20261109T173905005Z-44972-8e8898f0.dir/combined.log",
+      "sha256": "47263ae16ca22fd216d0a82f453bed2fccdeaca8a9ccc87bcb0e10cb2f57e749"
+    },
+    {
+      "name": "bridge-statejournal-local",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/bridge-statejournal-local-20261109T173913640Z-44972-bebce80a.dir/combined.log",
+      "sha256": "d1c4864323a0d6d4b85500b32155c4db7eabfba25aab3e23d2e663b1463c7c0b"
+    },
+    {
+      "name": "bridge-statejournal-native",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/bridge-statejournal-native-20261109T173914193Z-44972-8d2fec15.dir/combined.log",
+      "sha256": "fcf306566baeee4c417643be3feac13fb83e4b98a97bcb80589ab0bbaa508bf0"
+    },
+    {
+      "name": "bridge-batch-policy",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/bridge-batch-policy-20261109T173914732Z-44972-9982c6a1.dir/combined.log",
+      "sha256": "4d8b52d8969ff23a8c7e58c862b214ffb512fda2a67ece3d4194d0b1de96e4a7"
+    },
+    {
+      "name": "bridge-adapter-config",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/bridge-adapter-config-20261109T173914768Z-44972-94d3d564.dir/combined.log",
+      "sha256": "e671f7c4b71e7ab0efc10c1670af87a8cb874771c2a1ff4444de8e9fefff76df"
+    },
+    {
+      "name": "bridge-adapters",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/bridge-adapters-20261109T173914828Z-44972-aa72a730.dir/combined.log",
+      "sha256": "7e7ce4bdec246e7b5f6d80158a8bbbb0c73a54d9be36bcb3c42a7e9a4c00e1e1"
+    },
+    {
+      "name": "bridge-api-smoke",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/bridge-api-smoke-20261109T173914881Z-44972-59465b47.dir/combined.log",
+      "sha256": "fd9c6d9ffa2d00a09dbac0f406167b1fc79a1ee1b832bbc5c6dd257aa436e662"
+    },
+    {
+      "name": "measurement-symbols",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/measurement-symbols-20261109T173915658Z-44972-b87ff8ec.dir/combined.log",
+      "sha256": "8242fbb563593940808ffd0f9ed39065210eb722c347914f69666bfd19d67502"
+    },
+    {
+      "name": "measurement-symbols-msvc",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/measurement-symbols-msvc-20261109T173921306Z-44972-769c87e0.dir/combined.log",
+      "sha256": "6df77d4fc854f014460fc6a7a3a6500aabebd44959431d9cdcd26c1364783127"
+    },
+    {
+      "name": "journal-attribution-offline",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/journal-attribution-offline-20261109T173925693Z-44972-6b97f157.dir/combined.log",
+      "sha256": "2cff511392404b031fcb7ddbbe30b8e13c8fbbe8dbcc051ab5a8e6b6d1c04ea2"
+    },
+    {
+      "name": "measurement-backend",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/measurement-backend-20261109T173933062Z-44972-96ab5794.dir/combined.log",
+      "sha256": "74d7179410b3b209b5d3075134b0575ade98eba43af7ba9cf4be4cf08e6d8323"
+    },
+    {
+      "name": "thread-journal-native",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/thread-journal-native-20261109T173936062Z-44972-4d38b126.dir/combined.log",
+      "sha256": "41a726b3201ca8abf0e14fcf9be61a4f7351fe332beaf337c6a4c73b078b8186"
+    },
+    {
+      "name": "thread-journal-mixed",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/thread-journal-mixed-20261109T173938996Z-44972-03ad9dbf.dir/combined.log",
+      "sha256": "2a1ed0c2a197c32227b1cd510f0a3a8c5feffc9fcc288199f04003bd2b50a3c7"
+    },
+    {
+      "name": "thread-journal-no-compat",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/thread-journal-no-compat-20261109T173942080Z-44972-f12da71f.dir/combined.log",
+      "sha256": "2b93f1397fc18edb3bf2ec0df682a7cfeac1192813055afaa7f4792483af6700"
+    },
+    {
+      "name": "sampler-batch-native",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/sampler-batch-native-20261109T173945205Z-44972-ab41f733.dir/combined.log",
+      "sha256": "f1f68993897b8ef03e3272e28f4edaba15e2be07a3d6fd56c0f5145ffa60ff90"
+    },
+    {
+      "name": "sampler-batch-no-compat",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/sampler-batch-no-compat-20261109T173947962Z-44972-9b2df1a9.dir/combined.log",
+      "sha256": "366eb55e96b601ddf30168c6e088fd3b1f726d28ece673865836e879667c9706"
+    },
+    {
+      "name": "upload-mapping-pressure",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/upload-mapping-pressure-20261109T173950685Z-44972-3e109c4a.dir/combined.log",
+      "sha256": "97500d5f8476e3723eec7c46dac2cb9aa8cd9ba533ceed2593498747158a566c"
+    },
+    {
+      "name": "upload-mapping-ordinary",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/upload-mapping-ordinary-20261109T173953009Z-44972-5809cd8f.dir/combined.log",
+      "sha256": "508d4130fc0b49ecc978bdf7c3cd68f57a7b29bd7c3a2da0b26365eb9844e314"
+    },
+    {
+      "name": "upload-mapping-single",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/upload-mapping-single-20261109T173955236Z-44972-f4d3117d.dir/combined.log",
+      "sha256": "8a97d716c4c66a8651de5c13410cb7ad92496de0c936f667d0c109611f1372ad"
+    },
+    {
+      "name": "patch-retry-native",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/patch-retry-native-20261109T173957640Z-44972-38ff00f5.dir/combined.log",
+      "sha256": "7f98e6579cd4bbf812489cfb53ff122076ef98d0e33171a48876ae736f46a816"
+    },
+    {
+      "name": "measurement-backend-unavailable",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/measurement-backend-unavailable-20261109T174001674Z-44972-d514382a.dir/combined.log",
+      "sha256": "35af90cb46396db83aa4585e66147598b0878cf8b6aab10414bf03ff2f2986b9"
+    },
+    {
+      "name": "measurement-hud-render",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/measurement-hud-render-20261109T174004275Z-44972-0c0ab162.dir/combined.log",
+      "sha256": "c537342065554bea19db608143954e1a9c4d41cecec2b5a8c8af810aee79ce18"
+    },
+    {
+      "name": "measurement-hud-full",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/measurement-hud-full-20261109T174008750Z-44972-f3137a33.dir/combined.log",
+      "sha256": "f6445809ef4bf5d221eddaa68e9f95c3673159449058812ad5af3d6a19bfc8eb"
+    },
+    {
+      "name": "measurement-runtime-local",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/measurement-runtime-local-20261109T174027356Z-44972-2d717d64.dir/combined.log",
+      "sha256": "e39103accaa40692b8e4c35fe61647b6bb866018e54a02eaa44f37c9dff1b0e6"
+    },
+    {
+      "name": "measurement-runtime-native",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/measurement-runtime-native-20261109T174041220Z-44972-10e097e5.dir/combined.log",
+      "sha256": "08c36c6eaf9f242cc339691dbbd6bb3737b03217b574b279dd3918c24640c21d"
+    },
+    {
+      "name": "journal-attribution-native",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/journal-attribution-native-20261109T174047912Z-44972-cb87427e.dir/combined.log",
+      "sha256": "1a3bfa19b5d0b890f6a884d28d80506b7198d33c67b64a2ad097dc4fa4d90a77"
+    },
+    {
+      "name": "bridge-lifecycle-measurement",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/bridge-lifecycle-measurement-20261109T174050512Z-44972-ee1e43b1.dir/combined.log",
+      "sha256": "865e0166fff1ad311eba3103214fdcfc92e49b209af50d6979a9a9ed463bf8df"
+    },
+    {
+      "name": "statering-system",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/statering-system-20261109T174054427Z-44972-dcac52d5.dir/combined.log",
+      "sha256": "7bb84b49510187dc974fba8c43ea41c023c9e763bf13f32d430d77818c3e546b"
+    },
+    {
+      "name": "statering-native",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/statering-native-20261109T174056705Z-44972-d9557316.dir/combined.log",
+      "sha256": "c9ee153770f8a8078d69db05398de3b5d3bf20913f7ead1ff83297d02eca9341"
+    },
+    {
+      "name": "export-verification",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/export-verification-20261109T174059340Z-44972-e13c00b0.dir/combined.log",
+      "sha256": "1b8f53c28cfeeb3c6785cfb7e1e04186a5f7ec6bc0bc6811cf19c814e0fd1973"
+    },
+    {
+      "name": "final-source-hygiene",
+      "status": "passed",
+      "exitCode": 0,
+      "skipReason": "",
+      "log": "out/logs/tests/final-source-hygiene-20261109T174100769Z-44972-716b8936.dir/combined.log",
+      "sha256": "36a815131e78455edc7126ba33207cfac7a96165f2b07eccda59e078d047b7e5"
+    }
+  ],
+  "binaries": [
+    {
+      "path": "out/build/bridge/d3d9.dll",
+      "size": 1692672,
+      "sha256": "133c68f352de05284c3a8b2282eca48ae54e439b4943803866d1fe2be1aef1df"
+    },
+    {
+      "path": "out/build/bridge/d3d9.dll.rsym",
+      "size": 2194869,
+      "sha256": "f8b362e685a6313dfd18942ab26d0303ee1910948721b69f8c3d5db14ac9661e"
+    },
+    {
+      "path": "out/build/dxvk-x86/src/d3d9/d3d9.dll",
+      "size": 8146944,
+      "sha256": "fb3a9924d63701fbae66b8d724f0eeb06aa293a1c02c55f1125c8d50b57b392f"
+    },
+    {
+      "path": "out/build/dxvk-x86/src/d3d9/d3d9.dll.rsym",
+      "size": 3500783,
+      "sha256": "052e419aec744f3f8f8d770a45372a55f3a043e291e271291e490e537162c386"
+    }
+  ]
+}

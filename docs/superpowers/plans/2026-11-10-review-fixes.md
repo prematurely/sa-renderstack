@@ -53,6 +53,6 @@
 
 **Files:** Native HUD probe/script, `tools/test.ps1`, validation report; renderer changes only if actual rendering demonstrates overlap/clipping.
 - [x] Render full DXVK HUD plus measurement text, capture pixels at 2560x1600 and a smaller practical viewport, and inspect layout.
-- [ ] Run the complete local pipeline and sampler regressions, inspect failures and skip reasons, and obtain a fresh whole-branch review.
+- [x] Run the complete local pipeline and sampler regressions, inspect failures and skip reasons, and obtain a fresh whole-branch review.
 - [ ] Commit the preserved sampler work and review fixes with clear scope, publish the follow-up PR, follow workflow to completion and reply to each original comment with fix/test evidence.
 - [ ] Verify installed file hashes remain unchanged and report HUD findings.
