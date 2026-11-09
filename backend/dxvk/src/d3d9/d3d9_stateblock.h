@@ -293,8 +293,12 @@ namespace dxvk {
                 unchanged = m_state.samplerStates[samplerIdx][stateIdx] == value;
             }
 
-            if (!unchanged)
-              dst->SetStateSamplerState(samplerIdx, D3DSAMPLERSTATETYPE(stateIdx), value);
+            if (!unchanged) {
+              if constexpr (std::is_same_v<Dst, D3D9DeviceEx>)
+                dst->SetStateSamplerStateLocked(samplerIdx, D3DSAMPLERSTATETYPE(stateIdx), value);
+              else
+                dst->SetStateSamplerState(samplerIdx, D3DSAMPLERSTATETYPE(stateIdx), value);
+            }
           }
         }
       }

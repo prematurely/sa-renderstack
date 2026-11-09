@@ -823,6 +823,12 @@ namespace dxvk {
         D3DSAMPLERSTATETYPE Type,
         DWORD               Value);
 
+    // Internal entry for validated callers that already own the device lock.
+    HRESULT SetStateSamplerStateLocked(
+        DWORD               StateSampler,
+        D3DSAMPLERSTATETYPE Type,
+        DWORD               Value);
+
     /**
      * @brief Sets the given sampler texture
      *
@@ -1380,6 +1386,13 @@ namespace dxvk {
             D3D9ConstantBufferLayout  BoolLayout);
 
   private:
+
+    // Inline both lock policies so ordinary changed setters keep one call frame.
+    template<bool AlreadyLocked>
+    HRESULT SetStateSamplerStateImpl(
+        DWORD               StateSampler,
+        D3DSAMPLERSTATETYPE Type,
+        DWORD               Value);
 
     void CloseD3D9DrawBatch(
       D3D9GtaSaBatchBreakReason reason) {

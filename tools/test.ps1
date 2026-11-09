@@ -573,6 +573,8 @@ function Add-MeasurementGates {
         @{ Name='thread-journal-native'; Script='thread-journal-test.ps1'; Args=(@('-Backend',$Backend,'-OutputDirectory',(Join-Path $root 'out/perf/20261031-thread-journal/pipeline-native')) + $backendTools) },
         @{ Name='thread-journal-mixed'; Script='thread-journal-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','check-software','-OutputDirectory',(Join-Path $root 'out/perf/20261031-binding-dirty-capture/pipeline-mixed')) + $backendTools) },
         @{ Name='thread-journal-no-compat'; Script='thread-journal-test.ps1'; Args=(@('-Backend',$Backend,'-DisableCompat','-OutputDirectory',(Join-Path $root 'out/perf/20261031-thread-journal/pipeline-no-compat')) + $backendTools) },
+        @{ Name='sampler-batch-native'; Script='sampler-batch-test.ps1'; Args=(@('-Backend',$Backend,'-OutputDirectory',(Join-Path $root 'out/perf/20261109-sampler-batch/pipeline-native')) + $backendTools) },
+        @{ Name='sampler-batch-no-compat'; Script='sampler-batch-test.ps1'; Args=(@('-Backend',$Backend,'-DisableCompat','-OutputDirectory',(Join-Path $root 'out/perf/20261109-sampler-batch/pipeline-no-compat')) + $backendTools) },
         @{ Name='upload-mapping-pressure'; Script='upload-mapping-test.ps1'; Args=(@('-Backend',$Backend) + $backendTools) },
         @{ Name='upload-mapping-ordinary'; Script='upload-mapping-test.ps1'; Args=(@('-Backend',$Backend,'-BudgetMiB','100','-OutputDirectory',(Join-Path $root 'out/perf/20261108-upload-state/native-ordinary')) + $backendTools) },
         @{ Name='upload-mapping-single'; Script='upload-mapping-test.ps1'; Args=(@('-Backend',$Backend,'-Levels','1','-OutputDirectory',(Join-Path $root 'out/perf/20261108-upload-state/native-single')) + $backendTools) },
