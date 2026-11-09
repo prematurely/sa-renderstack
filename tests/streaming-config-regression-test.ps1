@@ -5,11 +5,12 @@ Set-StrictMode -Version Latest
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'tools/lib/process-runner.ps1')
 . (Join-Path $root 'tools/lib/toolchain-discovery.ps1')
-$toolchain = Get-RenderStackToolchain -RepoRoot $root -Component Dxvk -LlvmMingwBin $LlvmMingwBin
+# This standalone consumer probe does not invoke Ninja, glslang, or Python.
+$llvm = Find-RenderStackLlvmMingw -RepoRoot $root -LlvmMingwBin $LlvmMingwBin
 $fixture = Join-Path $root ('out/test-fixtures/streaming-' + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($fixture) | Out-Null
 $probe = Join-Path $fixture 'streaming-interval-probe.exe'
-& $toolchain.LlvmMingw.CompilerPath '-std=c++17' '-O2' '-msse2' '-static' `
+& $llvm.CompilerPath '-std=c++17' '-O2' '-msse2' '-static' `
     (Join-Path $PSScriptRoot 'streaming-interval-probe.cpp') '-o' $probe
 if ($LASTEXITCODE -ne 0) { throw "Native consumer probe compile failed: $LASTEXITCODE" }
 & $probe --self-test

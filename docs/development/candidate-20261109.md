@@ -33,6 +33,21 @@ private shader package, local binary or Python cache is included.
   artifacts. Its existing GPU/environment-sensitive skips do not replace local
   GPU behavior tests. The PR check status identifies the actual cloud result.
 
+The first cloud run built Release x86 successfully, then reported 37 passed,
+two failed and 45 existing hosted-runner skips. Both failures were fixture
+setup: streaming-config-offline-regression and measurement-symbols requested
+the entire DXVK toolchain even though they compile directly with LLVM. Ninja
+was installed at the CI-specific path, which these child scripts did not use.
+The follow-up removes their unnecessary Ninja/glslang discovery and resolves
+only LLVM (plus Python for symbol tests), retaining all behavior assertions.
+Both tests were reproduced failing with unavailable Ninja/glslang overrides,
+then passed with the same overrides after the fix: 14 native decision checks,
+120 consumer/preparation/replay assertions and 27 symbol tests. The local
+diagnostic child process used logical CPU 0 because of the separate compiler
+instability above; this is not a product or CI affinity setting.
+The CI attempts and current check status remain visible in
+[PR #1](https://github.com/prematurely/sa-renderstack/pull/1).
+
 See [the upload/retry report](upload-state-20261108.md) and
 [raw paired measurements](evidence/2026-11-08-upload-state/) for the latest
 performance evidence. Pressured mip-chain uploads reduced main-thread cycles
