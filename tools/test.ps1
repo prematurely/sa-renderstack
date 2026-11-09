@@ -6,6 +6,7 @@ param(
     [string]$BridgeSource,
     [string]$ActiveBridgeConfig,
     [string]$ActiveDxvkConfig,
+    [string]$BridgeReference,
     [string]$MSBuild,
     [string]$Python,
     [string]$LlvmMingwBin,
@@ -22,6 +23,7 @@ if ($Help) {
 Usage: test.ps1 [-Help] [-Configuration Release] [-Architecture x86]
        [-DxvkSource <path>] [-BridgeSource <path>]
        [-ActiveBridgeConfig <path>] [-ActiveDxvkConfig <path>]
+       [-BridgeReference <archived-audited-bridge.dll>]
        [-MSBuild <path>] [-Python <path>] [-LlvmMingwBin <path>]
        [-Ninja <path>] [-Glslang <path>] [-AllowNonV18MsBuild]
        [-SkipLocalBridgeEvidence] [-SkipGpuRuntimeProbes]
@@ -447,6 +449,153 @@ function Add-BridgeRuntimeGates {
     }
 }
 
+function Add-ApiProjectGates {
+    param([Parameter(Mandatory)] [string]$Backend, [switch]$SkipGpuRuntimeProbes)
+
+    $bridgeToolchain = Get-RenderStackToolchain -RepoRoot $root -Component Bridge `
+        -MSBuildPath $MSBuild -AllowNonV18MsBuild:$AllowNonV18MsBuild
+    $cmake = Join-Path $bridgeToolchain.MSBuild.InstallationPath `
+        'Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe'
+    if (-not (Test-Path -LiteralPath $cmake -PathType Leaf)) {
+        $command = Get-Command cmake.exe -ErrorAction Stop
+        $cmake = $command.Source
+    }
+    $ctest = Join-Path (Split-Path -Parent $cmake) 'ctest.exe'
+    if (-not (Test-Path -LiteralPath $ctest -PathType Leaf)) { throw "CTest is missing: $ctest" }
+    $generator = if ($bridgeToolchain.MSBuild.ProductMajor -ge 18) {
+        'Visual Studio 18 2026'
+    } else { 'Visual Studio 17 2022' }
+    $apiBuild = Join-Path $root 'out/build/api-projects-x86'
+    $configure = Invoke-Gate -Name 'api-projects-configure' -Category 'api' -FilePath $cmake `
+        -Arguments @('-S', (Join-Path $root 'src/bridge/legacy/api-projects'), '-B', $apiBuild,
+            '-G', $generator, '-A', 'Win32') -Required $true
+    if ($configure.status -ne 'passed') { return }
+    $build = Invoke-Gate -Name 'api-projects-build' -Category 'api' -FilePath $cmake `
+        -Arguments @('--build', $apiBuild, '--config', $Configuration, '--parallel', '4') -Required $true `
+        -EnvironmentRemovals @('CL', 'LINK', 'ExternalIncludePath')
+    if ($build.status -ne 'passed') { return }
+    [void](Invoke-Gate -Name 'api-projects-ctest' -Category 'api' -FilePath $ctest `
+        -Arguments @('--test-dir', $apiBuild, '-C', $Configuration, '--output-on-failure', '--timeout', '30') `
+        -Required $true)
+    foreach ($profile in @('reference', 'optimized')) {
+        $name = "api-state-runtime-$profile"
+        if ($SkipGpuRuntimeProbes) {
+            [void](Add-SkippedGate -Name $name -Category 'runtime' -Required $false `
+                -Reason 'Vulkan runtime probing is unavailable on the hosted Windows runner')
+            [void](Add-SkippedGate -Name "constant-binding-pixel-runtime-$profile" -Category 'runtime' -Required $false `
+                -Reason 'Vulkan runtime probing is unavailable on the hosted Windows runner')
+            [void](Add-SkippedGate -Name "texture-binding-lifetime-runtime-$profile" -Category 'runtime' -Required $false `
+                -Reason 'Vulkan runtime probing is unavailable on the hosted Windows runner')
+            foreach ($pairGate in @('control-pair-shared','control-pair-dual','control-pair-protocol',
+                    'texture-pair','texture-pair-protocol')) {
+                [void](Add-SkippedGate -Name "$pairGate-$profile" -Category 'runtime' -Required $false `
+                    -Reason 'Vulkan runtime probing is unavailable on the hosted Windows runner')
+            }
+            continue
+        }
+        $runDirectory = New-TestRunDirectory -Name $name
+        [void](Invoke-Gate -Name $name -Category 'runtime' `
+            -FilePath (Join-Path $apiBuild "$Configuration/api-state-runtime-tests.exe") `
+            -Arguments @($Backend, $profile) -Required $true -WorkingDirectory $runDirectory `
+            -EnvironmentRemovals @('DXVK_CONFIG', 'DXVK_CONFIG_FILE'))
+        $dedup = if ($profile -eq 'optimized') { 'on' } else { 'off' }
+        [void](Invoke-Gate -Name "constant-binding-pixel-runtime-$profile" -Category 'runtime' `
+            -FilePath (Join-Path $apiBuild "$Configuration/constant-submit-benchmark.exe") `
+            -Arguments @($Backend, $dedup, 'check') -Required $true -WorkingDirectory $runDirectory `
+            -EnvironmentRemovals @('DXVK_CONFIG', 'DXVK_CONFIG_FILE'))
+        [void](Invoke-Gate -Name "texture-binding-lifetime-runtime-$profile" -Category 'runtime' `
+            -FilePath (Join-Path $apiBuild "$Configuration/constant-submit-benchmark.exe") `
+            -Arguments @($Backend, $dedup, 'lifetime') -Required $true -WorkingDirectory $runDirectory `
+            -EnvironmentRemovals @('DXVK_CONFIG', 'DXVK_CONFIG_FILE'))
+        foreach ($topology in @('shared','dual')) {
+            $pairName = "control-pair-$topology-$profile"
+            $pairDirectory = New-TestRunDirectory -Name $pairName
+            $candidate = $Backend
+            if ($topology -eq 'dual') {
+                $candidate = Join-Path $pairDirectory 'paired-backend-copy.dll'
+                Copy-Item -LiteralPath $Backend -Destination $candidate
+            }
+            [void](Invoke-ScriptGate -Name $pairName -Category 'runtime' `
+                -ScriptPath (Join-Path $root 'tests/control-path-benchmark.ps1') `
+                -Arguments @('-Baseline', $Backend, '-Candidate', $candidate, '-Probe',
+                    (Join-Path $apiBuild "$Configuration/constant-submit-benchmark.exe"),
+                    '-OutputDirectory', $pairDirectory, '-Processes', '1', '-Rounds', '1',
+                    '-Profile', $dedup, '-Cpu', 'any', '-Cases', 'controls') `
+                -EnvironmentRemovals @('DXVK_CONFIG', 'DXVK_CONFIG_FILE'))
+        }
+        [void](Invoke-ScriptGate -Name "control-pair-protocol-$profile" -Category 'runtime' `
+            -ScriptPath (Join-Path $root 'tests/control-path-protocol-test.ps1') `
+            -Arguments @('-InputPath', (Join-Path $runRoot "control-pair-dual-$profile/$dedup-any-00.jsonl")))
+        $texturePairDirectory = New-TestRunDirectory -Name "texture-pair-$profile"
+        [void](Invoke-ScriptGate -Name "texture-pair-$profile" -Category 'runtime' `
+            -ScriptPath (Join-Path $root 'tests/control-path-benchmark.ps1') `
+            -Arguments @('-Baseline', $Backend, '-Candidate', $Backend, '-Probe',
+                (Join-Path $apiBuild "$Configuration/constant-submit-benchmark.exe"),
+                '-OutputDirectory', $texturePairDirectory, '-Processes', '1', '-Rounds', '1',
+                '-Profile', $dedup, '-Cpu', 'any', '-Cases', 'textures') `
+            -EnvironmentRemovals @('DXVK_CONFIG', 'DXVK_CONFIG_FILE'))
+        [void](Invoke-ScriptGate -Name "texture-pair-protocol-$profile" -Category 'runtime' `
+            -ScriptPath (Join-Path $root 'tests/control-path-protocol-test.ps1') `
+            -Arguments @('-InputPath', (Join-Path $texturePairDirectory "$dedup-any-00.jsonl")))
+    }
+    foreach ($name in @('bridge-lifecycle-regression','config-ownership-regression')) {
+        if ($SkipGpuRuntimeProbes) {
+            [void](Add-SkippedGate -Name $name -Category 'runtime' -Required $false `
+                -Reason 'Vulkan runtime probing is unavailable on the hosted Windows runner')
+            continue
+        }
+        $arguments = @('-Backend', $Backend, '-Bridge', (Join-Path $root 'out/build/bridge/d3d9.dll'))
+        if ($name -eq 'bridge-lifecycle-regression') {
+            $arguments += @('-Probe', (Join-Path $apiBuild "$Configuration/bridge-lifecycle-runtime-tests.exe"))
+        }
+        [void](Invoke-ScriptGate -Name $name -Category 'runtime' `
+            -ScriptPath (Join-Path $root "tests/$name-test.ps1") -Arguments $arguments)
+    }
+}
+
+function Add-MeasurementGates {
+    param([Parameter(Mandatory)] [string]$Backend, [switch]$SkipGpuRuntimeProbes)
+    $nativeTools = @('-MSBuild', (Find-RenderStackMSBuild -MsBuildPath $MSBuild -RepoRoot $root `
+        -AllowNonV18MsBuild:$AllowNonV18MsBuild).Path)
+    if ($AllowNonV18MsBuild) { $nativeTools += '-AllowNonV18MsBuild' }
+    $symbolTools = @('-Python', $pythonPath, '-LlvmMingwBin', $toolchain.LlvmMingw.BinPath)
+    $backendTools = @('-LlvmMingwBin', $toolchain.LlvmMingw.BinPath)
+    foreach ($entry in @(
+        @{ Name='measurement-symbols'; Script='measurement-symbols-test.ps1'; Args=$symbolTools },
+        @{ Name='measurement-symbols-msvc'; Script='measurement-symbols-msvc-test.ps1'; Args=($nativeTools + $symbolTools) },
+        @{ Name='journal-attribution-offline'; Script='journal-attribution-test.ps1'; Args=(@('-EvidenceName','pipeline-offline') + $nativeTools) }
+    )) {
+        [void](Invoke-ScriptGate -Name $entry.Name -Category 'measurement-offline' `
+            -ScriptPath (Join-Path $root ('tests/' + $entry.Script)) -Arguments $entry.Args)
+    }
+    foreach ($entry in @(
+        @{ Name='measurement-backend'; Script='measurement-backend-test.ps1'; Args=(@('-Backend',$Backend) + $backendTools) },
+        @{ Name='thread-journal-native'; Script='thread-journal-test.ps1'; Args=(@('-Backend',$Backend,'-OutputDirectory',(Join-Path $root 'out/perf/20261031-thread-journal/pipeline-native')) + $backendTools) },
+        @{ Name='thread-journal-mixed'; Script='thread-journal-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','check-software','-OutputDirectory',(Join-Path $root 'out/perf/20261031-binding-dirty-capture/pipeline-mixed')) + $backendTools) },
+        @{ Name='thread-journal-no-compat'; Script='thread-journal-test.ps1'; Args=(@('-Backend',$Backend,'-DisableCompat','-OutputDirectory',(Join-Path $root 'out/perf/20261031-thread-journal/pipeline-no-compat')) + $backendTools) },
+        @{ Name='upload-mapping-pressure'; Script='upload-mapping-test.ps1'; Args=(@('-Backend',$Backend) + $backendTools) },
+        @{ Name='upload-mapping-ordinary'; Script='upload-mapping-test.ps1'; Args=(@('-Backend',$Backend,'-BudgetMiB','100','-OutputDirectory',(Join-Path $root 'out/perf/20261108-upload-state/native-ordinary')) + $backendTools) },
+        @{ Name='upload-mapping-single'; Script='upload-mapping-test.ps1'; Args=(@('-Backend',$Backend,'-Levels','1','-OutputDirectory',(Join-Path $root 'out/perf/20261108-upload-state/native-single')) + $backendTools) },
+        @{ Name='patch-retry-native'; Script='patch-retry-test.ps1'; Args=(@('-Backend',$Backend) + $backendTools) },
+        @{ Name='measurement-backend-unavailable'; Script='measurement-backend-test.ps1'; Args=(@('-Backend',$Backend,'-DisableCompat') + $backendTools) },
+        @{ Name='measurement-hud-render'; Script='measurement-backend-test.ps1'; Args=(@('-Backend',$Backend,'-RenderHud') + $backendTools) },
+        @{ Name='measurement-runtime-local'; Script='measurement-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-local') + $nativeTools) },
+        @{ Name='measurement-runtime-native'; Script='measurement-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-native','-Backend',$Backend) + $nativeTools) },
+        @{ Name='journal-attribution-native'; Script='journal-attribution-test.ps1'; Args=(@('-EvidenceName','pipeline-native','-Device','-Backend',$Backend) + $nativeTools) }
+        @{ Name='bridge-lifecycle-measurement'; Script='bridge-lifecycle-regression-test.ps1'; Args=@('-Backend',$Backend,'-Measurement') }
+        @{ Name='statering-system'; Script='statering-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-system') + $nativeTools) }
+        @{ Name='statering-native'; Script='statering-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-native','-Backend',$Backend) + $nativeTools) }
+    )) {
+        if ($SkipGpuRuntimeProbes) {
+            [void](Add-SkippedGate -Name $entry.Name -Category 'measurement-runtime' -Required $false `
+                -Reason 'GPU runtime checks were explicitly skipped')
+        } else {
+            [void](Invoke-ScriptGate -Name $entry.Name -Category 'measurement-runtime' `
+                -ScriptPath (Join-Path $root ('tests/' + $entry.Script)) -Arguments $entry.Args)
+        }
+    }
+}
+
 function Remove-TemporaryRunDirectories {
     foreach ($directory in @($temporaryDirectories | Sort-Object Length -Descending)) {
         try {
@@ -523,8 +672,11 @@ try {
         [void](Add-SkippedGate -Name 'bridge-evidence-types-regression' -Category 'bridge-regression' -Required $false `
             -Reason 'Current Bridge evidence is unavailable without the local GTA game-root reference')
     } else {
+        $reference = if ([string]::IsNullOrWhiteSpace($BridgeReference)) {
+            Join-Path (Split-Path -Parent (Split-Path -Parent $root)) 'd3d9.dll'
+        } else { Get-RenderStackFullPath -Path $BridgeReference }
         [void](Invoke-ScriptGate -Name 'current-bridge-evidence' -ScriptPath (Join-Path $root 'tools/migration/verify-bridge-baseline.ps1') `
-            -Arguments @('-Reference', (Join-Path (Split-Path -Parent (Split-Path -Parent $root)) 'd3d9.dll'), '-Candidate', (Get-OutputPath -RelativePath 'out/build/bridge/d3d9.dll'),
+            -Arguments @('-Reference', $reference, '-Candidate', (Get-OutputPath -RelativePath 'out/build/bridge/d3d9.dll'),
                 '-ExportsOut', (Join-Path $currentEvidence 'bridge-exports.txt'), '-EvidenceOut', (Join-Path $currentEvidence 'bridge-build-evidence.json')) -Category 'evidence')
         [void](Invoke-ScriptGate -Name 'bridge-evidence-types-regression' -ScriptPath (Join-Path $scriptsRoot 'bridge-build-evidence-types-regression-test.ps1') `
             -Arguments @('-ExportsPath', (Join-Path $currentEvidence 'bridge-exports.txt'),
@@ -538,6 +690,9 @@ try {
         -LlvmMingwBin $LlvmMingwBin -NinjaPath $Ninja -GlslangPath $Glslang `
         -AllowNonV18MsBuild:$AllowNonV18MsBuild
     $pythonPath = $toolchain.Python.Path
+    [void](Invoke-ScriptGate -Name 'streaming-config-offline-regression' -Category 'streaming-offline' `
+        -ScriptPath (Join-Path $scriptsRoot 'streaming-config-regression-test.ps1') `
+        -Arguments @('-LlvmMingwBin', $toolchain.LlvmMingw.BinPath))
     $buildCurrent = Test-BuildIsCurrent -Toolchain $toolchain
     if (-not $buildCurrent) {
         $buildArguments = [Collections.Generic.List[string]]::new()
@@ -568,8 +723,22 @@ try {
     $moduleDirectory = [string]$metadata.tools.meson.moduleDirectory
     $mesonEnvironment = Get-MesonEnvironment -Toolchain $toolchain -PythonPath $pythonPath -ModuleDirectory $moduleDirectory
     Add-TargetAndRegistrationGates -Toolchain $toolchain -PythonPath $pythonPath -MesonEnvironment $mesonEnvironment
+    $constantLayoutRun = New-TestRunDirectory -Name 'constant-control-layout'
+    [void](Invoke-Gate -Name 'constant-control-linked-layout' -Category 'performance-structure' -FilePath $pythonPath `
+        -Arguments @((Join-Path $root 'tests/constant-layout-test.py'),
+            (Get-OutputPath -RelativePath 'out/build/dxvk-x86/src/d3d9/d3d9.dll'),
+            '--objdump', (Join-Path $toolchain.LlvmMingw.BinPath 'llvm-objdump.exe'),
+            '--report', (Join-Path $constantLayoutRun 'layout.json')) -Required $true)
     [void](Invoke-ScriptGate -Name 'thread-scheduling-config' -ScriptPath (Join-Path $scriptsRoot 'thread-scheduling-config-test.ps1') -Category 'runtime-config')
     [void](Invoke-Gate -Name 'backend-api-msvc-executable' -Category 'api' -FilePath (Get-OutputPath -RelativePath 'out/build/sdk-tests/backend-api-layout-test.exe') -Required $true)
+    foreach ($method in @('single','batch')) {
+        $bindingCostRun = New-TestRunDirectory -Name "texture-binding-cost-$method"
+        [void](Invoke-Gate -Name "texture-binding-linked-cost-$method" -Category 'performance-structure' -FilePath $pythonPath `
+            -Arguments @((Join-Path $root 'tests/texture-binding-ownership-test.py'),
+                (Get-OutputPath -RelativePath 'out/build/dxvk-x86/src/d3d9/d3d9.dll'),
+                '--objdump', (Join-Path $toolchain.LlvmMingw.BinPath 'llvm-objdump.exe'),
+                '--method', $method, '--report', (Join-Path $bindingCostRun 'cost.json')) -Required $true)
+    }
     $llvmSyntaxDirectory = New-TestRunDirectory -Name 'backend-api-llvm-syntax'
     [void](Invoke-Gate -Name 'backend-api-llvm-syntax' -Category 'api' -FilePath $toolchain.LlvmMingw.CompilerPath `
         -Arguments @('-std=c++23', '-fsyntax-only', (Join-Path $root 'tests/backend-api-layout-test.cpp'), '-I', (Join-Path $root 'sdk/include'), '-I', (Join-Path $root 'backend/dxvk/include/vulkan/include')) `
@@ -579,9 +748,13 @@ try {
     $stateProbe = (Get-Content -LiteralPath (Join-Path $root 'out/build/dxvk-x86/meson-info/intro-targets.json') -Raw | ConvertFrom-Json | Where-Object name -eq 'renderstack-stateblock-prefilter-probe').filename[0]
     Add-RuntimeProbeGates -Backend (Get-OutputPath -RelativePath 'out/build/dxvk-x86/src/d3d9/d3d9.dll') -CompatProbe $compatProbe -StateProbe $stateProbe `
         -SkipGpuRuntimeProbes:$SkipGpuRuntimeProbes
+    Add-ApiProjectGates -Backend (Get-OutputPath -RelativePath 'out/build/dxvk-x86/src/d3d9/d3d9.dll') `
+        -SkipGpuRuntimeProbes:$SkipGpuRuntimeProbes
     Add-BridgeRuntimeGates -Backend (Get-OutputPath -RelativePath 'out/build/dxvk-x86/src/d3d9/d3d9.dll') `
         -SkipGpuRuntimeProbes:$SkipGpuRuntimeProbes `
         -SkipEnvironmentSensitiveBridgeTests:$SkipEnvironmentSensitiveBridgeTests
+    Add-MeasurementGates -Backend (Get-OutputPath -RelativePath 'out/build/dxvk-x86/src/d3d9/d3d9.dll') `
+        -SkipGpuRuntimeProbes:$SkipGpuRuntimeProbes
 
     $exportArguments = [Collections.Generic.List[string]]::new()
     foreach ($argument in @(

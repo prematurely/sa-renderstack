@@ -7,19 +7,39 @@ std::expected<void, HRESULT> StateBatchBuilder::add(std::vector<Range>& out, UIN
   if (start > capacity || values.size() % 4 != 0 || values.size()/4 > capacity - start || values.size() > std::numeric_limits<UINT>::max()) return std::unexpected(D3DERR_INVALIDCALL);
   if (values.empty()) return {};
   try {
-    out.push_back(Range{start, std::vector<float>(values.begin(), values.end())});
-    std::sort(out.begin(), out.end(), [](const Range& a, const Range& b){ return a.start < b.start; });
-    std::vector<Range> merged;
-    for (auto& r : out) {
-      if (merged.empty() || merged.back().start + merged.back().values.size()/4 < r.start) { merged.push_back(std::move(r)); continue; }
-      auto& dst = merged.back();
-      UINT end = std::max(dst.start + static_cast<UINT>(dst.values.size()/4), r.start + static_cast<UINT>(r.values.size()/4));
-      std::vector<float> values2(static_cast<size_t>(end - dst.start)*4);
-      std::copy(dst.values.begin(), dst.values.end(), values2.begin());
-      std::copy(r.values.begin(), r.values.end(), values2.begin() + static_cast<size_t>(r.start - dst.start) * 4);
-      dst.values = std::move(values2);
+    Range pending{start, std::vector<float>(values.begin(), values.end())};
+    std::vector<Range> next;
+    next.reserve(out.size() + 1);
+    bool inserted = false;
+    for (const auto& range : out) {
+      if (inserted) {
+        next.push_back(range);
+        continue;
+      }
+      const UINT rangeEnd = range.start + static_cast<UINT>(range.values.size() / 4);
+      const UINT pendingEnd = pending.start + static_cast<UINT>(pending.values.size() / 4);
+      if (rangeEnd < pending.start) {
+        next.push_back(range);
+      } else if (pendingEnd < range.start) {
+        next.push_back(std::move(pending));
+        next.push_back(range);
+        inserted = true;
+      } else {
+        const UINT first = std::min(range.start, pending.start);
+        const UINT end = std::max(rangeEnd, pendingEnd);
+        std::vector<float> combined(static_cast<size_t>(end - first) * 4);
+        std::copy(range.values.begin(), range.values.end(),
+          combined.begin() + static_cast<size_t>(range.start - first) * 4);
+        // Existing ranges are disjoint. The pending range contains the newest
+        // write, so it wins every overlap regardless of register address order.
+        std::copy(pending.values.begin(), pending.values.end(),
+          combined.begin() + static_cast<size_t>(pending.start - first) * 4);
+        pending = Range{first, std::move(combined)};
+      }
     }
-    out = std::move(merged);
+    if (!inserted) next.push_back(std::move(pending));
+    // Preserve the previous builder if allocation/copying fails.
+    out.swap(next);
     return {};
   } catch (...) { return std::unexpected(E_OUTOFMEMORY); }
 }

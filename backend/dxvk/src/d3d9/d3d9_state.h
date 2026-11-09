@@ -655,6 +655,15 @@ namespace dxvk {
       const auto* dstPtr = reinterpret_cast<const __m128i*>(dstData);
       const auto* srcPtr = reinterpret_cast<const __m128i*>(pConstantData);
 
+      // Code placement changed the measured x86 PS/int controls even when
+      // their instructions were identical. Check the final linked layout in
+      // tests/constant-layout-test.py whenever these paths or the compiler change.
+      #if defined(__clang__) && defined(__i386__)
+      #if __has_attribute(code_align)
+      [[clang::code_align(ShaderType == D3D9ShaderType::VertexShader
+        && ConstantType == D3D9ConstantType::Float ? 16 : 64)]]
+      #endif
+      #endif
       for (uint32_t i = 0u; i < Count; ++i) {
         const __m128i srcData = _mm_loadu_si128(srcPtr + i);
         const __m128i curData = _mm_loadu_si128(dstPtr + i);

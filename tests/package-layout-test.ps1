@@ -179,10 +179,12 @@ function Assert-ZipMatchesDirectory {
 try {
     $requiredSplit = @(
         'd3d9.dll',
+        'd3d9.dll.rsym',
         'SA.RenderStack.ini',
         'dxvk.conf',
         'scripts/BridgeD3D9.ini',
         'backend/dxvk-gta/d3d9.dll',
+        'backend/dxvk-gta/d3d9.dll.rsym',
         'docs/README.md',
         'docs/README.zh-CN.md',
         'docs/README.pt-BR.md',

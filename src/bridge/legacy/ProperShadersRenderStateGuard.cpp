@@ -1,7 +1,7 @@
 // ProperShaders render-state guard implementation.
 //
 // Ported from FLA++ (FLACompatBridge/BridgeCompatProperShaders.cpp): the three
-// ProperShaders patch sites (PS+0x25880 RenderScene, PS+0x25591
+// ProperShaders patch sites (PS+0x25880 RenderScene, PS+0x25590
 // RenderFadingEntities, PS+0x25BEB main-scene state restore) are wrapped with
 // hand-written rel32 hooks, RenderWare's alpha-test states are synchronised
 // onto the D3D9 device, and the main-scene baseline stack is restored after the
@@ -13,6 +13,10 @@
 
 #include "ProperShadersRenderStateGuard.h"
 #include "ProperShadersStateRing.h"
+#include "BridgeCodePatch.h"
+#include "BridgeLog.h"
+#include <array>
+#include <atomic>
 
 #include <cstdio>
 #include <cstring>
@@ -22,20 +26,14 @@
 namespace
 {
 template <class... Args>
-void Log(std::format_string<Args...> fmt, Args&&... args)
+void Log(std::format_string<Args...> fmt, Args&&... args) noexcept
 {
     static FILE* f = nullptr;
     if (!f) {
         f = fopen("scripts\\BridgeD3D9.log", "a");
         if (!f) return;
     }
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    std::print(f, "[{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}] ",
-        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    std::vprint_nonunicode(f, fmt.get(), std::make_format_args(args...));
-    fputc('\n', f);
-    fflush(f);
+    BridgeDiagnostics::Write(f, fmt, std::forward<Args>(args)...);
 }
 } // namespace
 
@@ -49,6 +47,10 @@ LONG g_properShadersRenderStateGuardInstallState = 0;
 LONG g_properShadersFadingStateGuardInstallState = 0;
 LONG g_properShadersMainSceneStateGuardInstallState = 0;
 LONG g_properShadersRenderStateGuardApiReady = 0;
+// Shader-slot self-check state: validated once per process, and latched off if
+// the probe ever says the slots are not the object getters we expect.
+LONG g_properShadersShaderSlotsValidated = 0;
+LONG g_properShadersShaderSlotsRejected = 0;
 LONG g_properShadersRenderStateSampleAttempts = 0;
 LONG g_properShadersRenderStateChangeLogs = 0;
 LONG g_properShadersFadingStateChangeLogs = 0;
@@ -59,6 +61,35 @@ ProperShadersMainSceneBaseline
 LONG g_properShadersMainSceneBaselineDepth = 0;
 
 static bool SynchronizeProperShadersFadingAlphaState();
+static std::array<BridgeCodePatch::CodePatch, 3> g_guardCode;
+static uintptr_t g_guardSites[3]{};
+
+struct ProperShadersDeviceMethodCache {
+    uint32_t generation = 0;
+    void** renderTable = nullptr;
+    D3D9RenderStateApi render{};
+    void** traceTable = nullptr;
+    D3D9StateTraceApi trace{};
+    bool traceKnown = false;
+    bool traceValid = false;
+};
+static std::atomic<uint32_t> g_deviceMethodGeneration{1};
+static thread_local ProperShadersDeviceMethodCache g_deviceMethods;
+
+void InvalidateProperShadersDeviceApiCache() noexcept
+{
+    g_deviceMethodGeneration.fetch_add(1, std::memory_order_release);
+}
+
+static ProperShadersDeviceMethodCache& CurrentDeviceMethods() noexcept
+{
+    const auto generation = g_deviceMethodGeneration.load(std::memory_order_acquire);
+    if (g_deviceMethods.generation != generation) {
+        g_deviceMethods = {};
+        g_deviceMethods.generation = generation;
+    }
+    return g_deviceMethods;
+}
 
 // ---- configuration ----
 
@@ -67,6 +98,8 @@ void LoadProperShadersRenderStateGuardConfig(const char* iniPath)
     if (!iniPath || !iniPath[0]) {
         return;
     }
+    InvalidateProperShadersDeviceApiCache();
+    ShutdownProperShadersStateRing();
 
     g_properShadersRenderStateGuardConfig.enable =
         GetPrivateProfileIntA("ProperShadersRenderStateGuard", "Enable", 1, iniPath) != 0;
@@ -114,21 +147,23 @@ static bool IsExecutableCommitted(uintptr_t address)
         protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
 }
 
+// Prepared at owner-thread safe points; never writes from a watcher thread.
 static bool WriteBytesWithProtect(uintptr_t destination, const uint8_t* bytes, size_t size)
 {
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(reinterpret_cast<void*>(destination), size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        Log("patch: protect failed address=0x{:08X} size=0x{:X} gle={}",
-            destination, static_cast<unsigned>(size), GetLastError());
-        return false;
+    for (size_t i = 0; i < g_guardCode.size(); ++i) {
+        if (g_guardSites[i] && g_guardSites[i] != destination) continue;
+        g_guardSites[i] = destination;
+        uint8_t expected[16]{};
+        std::memcpy(expected, reinterpret_cast<const void*>(destination), size);
+        const bool installed = g_guardCode[i].Install(
+            reinterpret_cast<void*>(destination), expected, bytes, size);
+        if (!installed) Log("guard patch: pending address=0x{:08X} err={} owned={} protectionPending={}",
+            destination, g_guardCode[i].Error(), g_guardCode[i].OwnsBytes(), g_guardCode[i].HasPendingProtection());
+        // A failed cleanup can leave the jump live. Retain the trampoline
+        // until rollback succeeds rather than freeing a reachable gateway.
+        return installed || g_guardCode[i].OwnsBytes();
     }
-
-    std::memcpy(reinterpret_cast<void*>(destination), bytes, size);
-
-    DWORD ignored = 0;
-    VirtualProtect(reinterpret_cast<void*>(destination), size, oldProtect, &ignored);
-    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<const void*>(destination), size);
-    return true;
+    return false;
 }
 
 static uintptr_t DecodeRel32JumpTarget(uintptr_t address)
@@ -154,8 +189,24 @@ static uintptr_t DecodeRel32JumpTarget(uintptr_t address)
     return address + 5 + rel;
 }
 
-static bool WriteRel32Jump(uintptr_t source, uintptr_t target)
+// Writes E9 <rel32> at `source` and pads the rest of `patchSize` with NOPs.
+//
+// patchSize MUST equal the number of bytes the matching trampoline stole. A
+// rel32 jump is only 5 bytes, so stealing 6 or 7 bytes and writing 5 leaves the
+// tail of the original instruction in place as an orphan: execution that
+// reaches source+5 runs a fragment of a dead instruction. That is what broke
+// the RenderScene site (prologue `55 8B EC 83 E4 F8`, where the stranded `F8`
+// followed a stolen `and esp,-8`) and the main-scene site (7-byte `cmp`, two
+// stranded zero bytes decoding as `add [eax],al`).
+static bool WriteRel32Jump(uintptr_t source, uintptr_t target, size_t patchSize = 5)
 {
+    constexpr size_t kMaxPatchSize = 16;
+    if (patchSize < 5 || patchSize > kMaxPatchSize) {
+        Log("bridge stub: invalid rel32 patch size source=0x{:08X} size={}",
+            source, static_cast<uint32_t>(patchSize));
+        return false;
+    }
+
     const int64_t diff = static_cast<int64_t>(target) - static_cast<int64_t>(source + 5);
     if (diff < INT32_MIN || diff > INT32_MAX) {
         Log("bridge stub: rel32 jump out of range source=0x{:08X} target=0x{:08X} diff={}",
@@ -163,10 +214,12 @@ static bool WriteRel32Jump(uintptr_t source, uintptr_t target)
         return false;
     }
 
-    uint8_t bytes[5]{ 0xE9, 0, 0, 0, 0 };
+    uint8_t bytes[kMaxPatchSize];
+    std::memset(bytes, 0x90, sizeof(bytes));
+    bytes[0] = 0xE9;
     const int32_t rel = static_cast<int32_t>(diff);
     std::memcpy(bytes + 1, &rel, sizeof(rel));
-    return WriteBytesWithProtect(source, bytes, sizeof(bytes));
+    return WriteBytesWithProtect(source, bytes, patchSize);
 }
 
 static uintptr_t CreateRel32Trampoline(uintptr_t source, size_t stolenBytes)
@@ -307,6 +360,22 @@ static bool IsSupportedProperShadersTextHash(uint32_t hash)
 
 static bool ResolveD3D9RenderStateApi(D3D9RenderStateApi* api)
 {
+    if (!api) return false;
+    auto& cache = CurrentDeviceMethods();
+    __try {
+        void* device = *reinterpret_cast<void* const*>(kRwD3D9DevicePointer);
+        void** table = device ? *reinterpret_cast<void***>(device) : nullptr;
+        if (device && cache.render.device == device && cache.renderTable == table &&
+            table[kD3D9SetRenderStateVtableIndex] == reinterpret_cast<void*>(cache.render.setRenderState) &&
+            table[kD3D9GetRenderStateVtableIndex] == reinterpret_cast<void*>(cache.render.getRenderState)) {
+            *api = cache.render;
+            return true;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        cache.render = {}; cache.traceKnown = false;
+        return false;
+    }
+    cache.render = {}; cache.traceKnown = false;
     if (!api || !IsReadableCommitted(kRwD3D9DevicePointer, sizeof(uintptr_t))) {
         return false;
     }
@@ -336,6 +405,8 @@ static bool ResolveD3D9RenderStateApi(D3D9RenderStateApi* api)
         api->device = device;
         api->setRenderState = setRenderState;
         api->getRenderState = getRenderState;
+        cache.render = *api;
+        cache.renderTable = vtable;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -358,6 +429,7 @@ static bool ReadD3D9DeviceRenderState(uint32_t state, uint32_t* value)
         return api.getRenderState(api.device, state, value) >= 0;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
+        InvalidateProperShadersDeviceApiCache();
         return false;
     }
 }
@@ -391,6 +463,7 @@ static bool SynchronizeD3D9DeviceRenderState(
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
+        InvalidateProperShadersDeviceApiCache();
         return false;
     }
 }
@@ -406,27 +479,55 @@ static bool ResolveD3D9StateTraceApi(D3D9StateTraceApi* api)
         return false;
     }
 
+    auto& cache = CurrentDeviceMethods();
+
     __try {
         void** vtable = *reinterpret_cast<void***>(renderStateApi.device);
-        constexpr size_t kRequiredVtableEntries = 112;
+        // Read the live table each time: replacing a method in-place must not
+        // keep a previously validated pointer alive in this cache.
+        D3D9StateTraceApi live{};
+        live.device = renderStateApi.device;
+        live.getRenderState = renderStateApi.getRenderState;
+        live.getRenderTarget = reinterpret_cast<D3D9GetRenderTargetFn>(vtable[kD3D9GetRenderTargetVtableIndex]);
+        live.getDepthStencilSurface = reinterpret_cast<D3D9GetDepthStencilSurfaceFn>(vtable[kD3D9GetDepthStencilSurfaceVtableIndex]);
+        live.getViewport = reinterpret_cast<D3D9GetViewportFn>(vtable[kD3D9GetViewportVtableIndex]);
+        live.getTexture = reinterpret_cast<D3D9GetTextureFn>(vtable[kD3D9GetTextureVtableIndex]);
+        live.getTextureStageState = reinterpret_cast<D3D9GetTextureStageStateFn>(vtable[kD3D9GetTextureStageStateVtableIndex]);
+        live.getSamplerState = reinterpret_cast<D3D9GetSamplerStateFn>(vtable[kD3D9GetSamplerStateVtableIndex]);
+        live.getVertexShader = reinterpret_cast<D3D9GetVertexShaderFn>(vtable[kD3D9GetVertexShaderVtableIndex]);
+        live.getPixelShader = reinterpret_cast<D3D9GetPixelShaderFn>(vtable[kD3D9GetPixelShaderVtableIndex]);
+        if (cache.traceKnown && cache.traceTable == vtable &&
+            std::memcmp(&cache.trace, &live, sizeof(live)) == 0) {
+            if (cache.traceValid) *api = cache.trace;
+            return cache.traceValid;
+        }
+        cache.traceKnown = false;
         if (!vtable || !IsReadableCommitted(
                 reinterpret_cast<uintptr_t>(vtable),
-                kRequiredVtableEntries * sizeof(void*))) {
+                kD3D9RequiredVtableEntries * sizeof(void*))) {
             return false;
         }
 
         api->device = renderStateApi.device;
         api->getRenderState = renderStateApi.getRenderState;
-        api->getRenderTarget = reinterpret_cast<D3D9GetRenderTargetFn>(vtable[38]);
+        api->getRenderTarget = reinterpret_cast<D3D9GetRenderTargetFn>(
+            vtable[kD3D9GetRenderTargetVtableIndex]);
         api->getDepthStencilSurface =
-            reinterpret_cast<D3D9GetDepthStencilSurfaceFn>(vtable[40]);
-        api->getViewport = reinterpret_cast<D3D9GetViewportFn>(vtable[48]);
-        api->getTexture = reinterpret_cast<D3D9GetTextureFn>(vtable[64]);
+            reinterpret_cast<D3D9GetDepthStencilSurfaceFn>(
+                vtable[kD3D9GetDepthStencilSurfaceVtableIndex]);
+        api->getViewport = reinterpret_cast<D3D9GetViewportFn>(
+            vtable[kD3D9GetViewportVtableIndex]);
+        api->getTexture = reinterpret_cast<D3D9GetTextureFn>(
+            vtable[kD3D9GetTextureVtableIndex]);
         api->getTextureStageState =
-            reinterpret_cast<D3D9GetTextureStageStateFn>(vtable[66]);
-        api->getSamplerState = reinterpret_cast<D3D9GetSamplerStateFn>(vtable[68]);
-        api->getVertexShader = reinterpret_cast<D3D9GetVertexShaderFn>(vtable[94]);
-        api->getPixelShader = reinterpret_cast<D3D9GetPixelShaderFn>(vtable[111]);
+            reinterpret_cast<D3D9GetTextureStageStateFn>(
+                vtable[kD3D9GetTextureStageStateVtableIndex]);
+        api->getSamplerState = reinterpret_cast<D3D9GetSamplerStateFn>(
+            vtable[kD3D9GetSamplerStateVtableIndex]);
+        api->getVertexShader = reinterpret_cast<D3D9GetVertexShaderFn>(
+            vtable[kD3D9GetVertexShaderVtableIndex]);
+        api->getPixelShader = reinterpret_cast<D3D9GetPixelShaderFn>(
+            vtable[kD3D9GetPixelShaderVtableIndex]);
 
         const uintptr_t functions[] = {
             reinterpret_cast<uintptr_t>(api->getRenderTarget),
@@ -443,8 +544,42 @@ static bool ResolveD3D9StateTraceApi(D3D9StateTraceApi* api)
                 return false;
             }
         }
+
+        // Runtime proof that the two shader slots really are the object getters
+        // and not the neighbouring constant getters. Both signatures start with
+        // an out-pointer, so a wrong slot would take our pointer as a register
+        // index and write through uninitialised stack. Probing with a null
+        // out-pointer is the cheap discriminator: the object getters reject it
+        // with D3DERR_INVALIDCALL and touch nothing, while the constant getters
+        // would fail on the count argument instead. Either way nothing is
+        // written, and a slot that returns success here is not what we want.
+        {
+            void* probe = nullptr;
+            const LONG vsProbe = api->getVertexShader(api->device, nullptr);
+            const LONG psProbe = api->getPixelShader(api->device, nullptr);
+            if (vsProbe >= 0 || psProbe >= 0) {
+                Log("proper shaders state trace: shader slot self-check failed vs={:#010X} ps={:#010X} (vsSlot={} psSlot={}); snapshots disabled",
+                    static_cast<uint32_t>(vsProbe),
+                    static_cast<uint32_t>(psProbe),
+                    static_cast<unsigned>(kD3D9GetVertexShaderVtableIndex),
+                    static_cast<unsigned>(kD3D9GetPixelShaderVtableIndex));
+                InterlockedExchange(&g_properShadersShaderSlotsRejected, 1);
+                cache.trace = *api; cache.traceTable = vtable;
+                cache.traceKnown = true; cache.traceValid = false;
+                return false;
+            }
+            (void)probe;
+            InterlockedExchange(&g_properShadersShaderSlotsValidated, 1);
+            InterlockedExchange(&g_properShadersShaderSlotsRejected, 0);
+        }
+        if (InterlockedCompareExchange(&g_properShadersShaderSlotsRejected, 0, 0) != 0) {
+            return false;
+        }
+        cache.trace = *api; cache.traceTable = vtable;
+        cache.traceKnown = true; cache.traceValid = true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
+        cache.traceKnown = false;
         return false;
     }
     return true;
@@ -461,7 +596,7 @@ static void ReleaseD3D9StateTraceObject(void* object)
         if (!vtable || !IsReadableCommitted(reinterpret_cast<uintptr_t>(vtable), 3 * sizeof(void*))) {
             return;
         }
-        auto release = reinterpret_cast<D3D9ReleaseFn>(vtable[2]);
+        auto release = reinterpret_cast<D3D9ReleaseFn>(vtable[kD3D9ReleaseVtableIndex]);
         if (release && IsExecutableCommitted(reinterpret_cast<uintptr_t>(release))) {
             release(object);
         }
@@ -593,6 +728,7 @@ bool CaptureProperShadersD3D9StateSnapshot(ProperShadersD3D9StateSnapshot* snaps
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
+        InvalidateProperShadersDeviceApiCache();
         return false;
     }
     return true;
@@ -643,6 +779,7 @@ static bool SynchronizeD3D9DeviceAlphaRenderStates(
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
+        InvalidateProperShadersDeviceApiCache();
         return false;
     }
 
@@ -822,7 +959,7 @@ extern "C" void __cdecl Bridge_ProperShadersPatchedRenderSceneGuard()
         return;
     }
 
-    const bool traceEnabled = g_properShadersRenderStateGuardConfig.enableStateRing;
+    const bool traceEnabled = IsProperShadersStateTraceCaptureActive();
     ProperShadersStateTraceRecord traceRecord{};
     if (traceEnabled) {
         InitializeProperShadersStateTraceRecord(
@@ -1018,7 +1155,7 @@ static bool SynchronizeProperShadersFadingAlphaState()
 
 extern "C" void __cdecl Bridge_ProperShadersRenderFadingEntitiesGuard()
 {
-    const bool traceEnabled = g_properShadersRenderStateGuardConfig.enableStateRing;
+    const bool traceEnabled = IsProperShadersStateTraceCaptureActive();
     ProperShadersStateTraceRecord traceRecord{};
     if (traceEnabled) {
         InitializeProperShadersStateTraceRecord(
@@ -1105,7 +1242,7 @@ static void InstallProperShadersRenderStateGuard(HMODULE psAsi, uint32_t psTextH
 
     g_properShadersPatchedRenderSceneTrampoline = trampoline;
     InterlockedExchange(&g_properShadersRenderStateGuardApiReady, 1);
-    if (!WriteRel32Jump(patchAddress, guardTarget)) {
+    if (!WriteRel32Jump(patchAddress, guardTarget, sizeof(expected))) {
         InterlockedExchange(&g_properShadersRenderStateGuardApiReady, 0);
         g_properShadersPatchedRenderSceneTrampoline = 0;
         VirtualFree(reinterpret_cast<void*>(trampoline), 0, MEM_RELEASE);
@@ -1134,7 +1271,10 @@ static void InstallProperShadersFadingStateGuard(HMODULE psAsi, uint32_t psTextH
     }
 
     const uintptr_t psBase = reinterpret_cast<uintptr_t>(psAsi);
-    const uintptr_t patchAddress = psBase + 0x25591;
+    // Hook the complete function entry. Its initial push ecx is paired with
+    // pop ecx before ret; entering after that push makes the gateway consume
+    // the guard's return address and return into its saved registers/locals.
+    const uintptr_t patchAddress = psBase + 0x25590;
     const uintptr_t guardTarget = reinterpret_cast<uintptr_t>(Bridge_ProperShadersRenderFadingEntitiesGuard);
     if (DecodeRel32JumpTarget(patchAddress) == guardTarget) {
         InterlockedExchange(&g_properShadersFadingStateGuardInstallState, 2);
@@ -1145,7 +1285,7 @@ static void InstallProperShadersFadingStateGuard(HMODULE psAsi, uint32_t psTextH
         return;
     }
 
-    uint8_t current[5]{};
+    uint8_t current[6]{};
     bool readable = IsReadableCommitted(patchAddress, sizeof(current));
     if (readable) {
         __try {
@@ -1158,12 +1298,12 @@ static void InstallProperShadersFadingStateGuard(HMODULE psAsi, uint32_t psTextH
 
     uint32_t pushedString = 0;
     if (readable) {
-        std::memcpy(&pushedString, current + 1, sizeof(pushedString));
+        std::memcpy(&pushedString, current + 2, sizeof(pushedString));
     }
     const uintptr_t expectedString = psBase + 0x14156C;
-    if (!readable || current[0] != 0x68 || pushedString != expectedString) {
-        Log("proper shaders fading-state guard: signature mismatch PS+0x25591 got={:02X} {:02X} {:02X} {:02X} {:02X} pushed=0x{:08X} expected=0x{:08X} textHash=0x{:08X}",
-            current[0], current[1], current[2], current[3], current[4],
+    if (!readable || current[0] != 0x51 || current[1] != 0x68 || pushedString != expectedString) {
+        Log("proper shaders fading-state guard: signature mismatch PS+0x25590 got={:02X} {:02X} {:02X} {:02X} {:02X} {:02X} pushed=0x{:08X} expected=0x{:08X} textHash=0x{:08X}",
+            current[0], current[1], current[2], current[3], current[4], current[5],
             pushedString, expectedString, psTextHash);
         InterlockedExchange(&g_properShadersFadingStateGuardInstallState, 0);
         return;
@@ -1177,14 +1317,14 @@ static void InstallProperShadersFadingStateGuard(HMODULE psAsi, uint32_t psTextH
 
     const uintptr_t trampoline = CreateRel32Trampoline(patchAddress, sizeof(current));
     if (!trampoline) {
-        Log("proper shaders fading-state guard: trampoline creation failed PS+0x25591");
+        Log("proper shaders fading-state guard: trampoline creation failed PS+0x25590");
         InterlockedExchange(&g_properShadersFadingStateGuardInstallState, 0);
         return;
     }
 
     g_properShadersRenderFadingEntitiesTrampoline = trampoline;
     InterlockedExchange(&g_properShadersRenderStateGuardApiReady, 1);
-    if (!WriteRel32Jump(patchAddress, guardTarget)) {
+    if (!WriteRel32Jump(patchAddress, guardTarget, sizeof(current))) {
         g_properShadersRenderFadingEntitiesTrampoline = 0;
         VirtualFree(reinterpret_cast<void*>(trampoline), 0, MEM_RELEASE);
         InterlockedExchange(&g_properShadersFadingStateGuardInstallState, 0);
@@ -1192,7 +1332,7 @@ static void InstallProperShadersFadingStateGuard(HMODULE psAsi, uint32_t psTextH
     }
 
     InterlockedExchange(&g_properShadersFadingStateGuardInstallState, 2);
-    Log("proper shaders fading-state guard: installed PS+0x25591 trampoline=0x{:08X} guard=0x{:08X} textHash=0x{:08X}",
+    Log("proper shaders fading-state guard: installed PS+0x25590 trampoline=0x{:08X} guard=0x{:08X} textHash=0x{:08X}",
         trampoline, guardTarget, psTextHash);
 #else
     (void)psAsi;
@@ -1254,7 +1394,7 @@ static void InstallProperShadersMainSceneStateGuard(HMODULE psAsi, uint32_t psTe
     }
 
     g_properShadersMainSceneStateTrampoline = trampoline;
-    if (!WriteRel32Jump(patchAddress, guardTarget)) {
+    if (!WriteRel32Jump(patchAddress, guardTarget, sizeof(expected))) {
         g_properShadersMainSceneStateTrampoline = 0;
         VirtualFree(reinterpret_cast<void*>(trampoline), 0, MEM_RELEASE);
         InterlockedExchange(&g_properShadersMainSceneStateGuardInstallState, 0);
@@ -1290,6 +1430,9 @@ static void InstallProperShadersRenderStateGuards(HMODULE psAsi)
         return;
     }
 
+    HMODULE pinned = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+            reinterpret_cast<LPCSTR>(psAsi), &pinned)) return;
     InstallProperShadersRenderStateGuard(psAsi, psTextHash);
     InstallProperShadersFadingStateGuard(psAsi, psTextHash);
     InstallProperShadersMainSceneStateGuard(psAsi, psTextHash);
@@ -1300,55 +1443,44 @@ static void InstallProperShadersRenderStateGuards(HMODULE psAsi)
 
 // ---- activation ----
 
-static DWORD WINAPI ProperShadersRenderStateGuardWatchThread(void*)
+void PollProperShadersRenderStateGuards()
 {
-    bool touchedOnce = false;
-    bool delayedAttemptDone = false;
-    const ULONGLONG startTick = GetTickCount64();
-
-    for (int attempt = 0; attempt < 400; ++attempt) {
-        HMODULE psAsi = GetModuleHandleA("ProperShaders.asi");
-        if (!psAsi) {
-            psAsi = GetModuleHandleA("propershaders.asi");
-        }
-        if (psAsi) {
-            // FLA++ installed once from its polling thread and once more from a
-            // delayed direct call; the installers are idempotent, so the second
-            // attempt is only a safety net for a partially failed first pass.
-            const bool delayedAttempt =
-                !delayedAttemptDone && (GetTickCount64() - startTick) >= 1500;
-            if (!touchedOnce || delayedAttempt) {
-                InstallProperShadersRenderStateGuards(psAsi);
-                touchedOnce = true;
-                if (delayedAttempt) {
-                    delayedAttemptDone = true;
-                }
-            }
-        }
-
-        Sleep(25);
-    }
-
-    return 0;
+    MaybeDumpProperShadersStateTraceRing();
+    if (!g_properShadersRenderStateGuardConfig.enable) return;
+    if (g_properShadersRenderStateGuardInstallState == 2 &&
+        g_properShadersFadingStateGuardInstallState == 2 &&
+        g_properShadersMainSceneStateGuardInstallState == 2) return;
+    static ULONGLONG nextAttempt = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now < nextAttempt) return;
+    nextAttempt = now + 1000;
+    HMODULE module = GetModuleHandleA("ProperShaders.asi");
+    if (!module) module = GetModuleHandleA("propershaders.asi");
+    if (module) InstallProperShadersRenderStateGuards(module);
 }
 
-void StartProperShadersRenderStateGuardWatch()
+bool ShutdownProperShadersRenderStateGuards()
 {
-    if (!g_properShadersRenderStateGuardConfig.enable) {
-        return;
+    InvalidateProperShadersDeviceApiCache();
+    ShutdownProperShadersStateRing();
+    bool restored = true;
+    for (auto& patch : g_guardCode) {
+        if (!patch.Restore()) {
+            restored = false;
+            Log("guard patch: restore pending err={} owned={} protectionPending={}",
+                patch.Error(), patch.OwnsBytes(), patch.HasPendingProtection());
+        }
     }
-
-    static LONG started = 0;
-    if (InterlockedCompareExchange(&started, 1, 0) != 0) {
-        return;
+    if (!restored) return false;
+    uintptr_t* trampolines[] = { &g_properShadersPatchedRenderSceneTrampoline,
+        &g_properShadersRenderFadingEntitiesTrampoline, &g_properShadersMainSceneStateTrampoline };
+    for (auto* trampoline : trampolines) {
+        if (*trampoline) VirtualFree(reinterpret_cast<void*>(*trampoline), 0, MEM_RELEASE);
+        *trampoline = 0;
     }
-
-    HANDLE thread = CreateThread(
-        nullptr, 0, ProperShadersRenderStateGuardWatchThread, nullptr, 0, nullptr);
-    if (thread) {
-        CloseHandle(thread);
-        Log("propershaders guard: watch thread started");
-    } else {
-        Log("propershaders guard: watch thread CreateThread failed err={}", GetLastError());
-    }
+    InterlockedExchange(&g_properShadersRenderStateGuardApiReady, 0);
+    InterlockedExchange(&g_properShadersRenderStateGuardInstallState, 0);
+    InterlockedExchange(&g_properShadersFadingStateGuardInstallState, 0);
+    InterlockedExchange(&g_properShadersMainSceneStateGuardInstallState, 0);
+    return true;
 }

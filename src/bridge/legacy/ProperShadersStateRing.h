@@ -8,6 +8,8 @@
 #include "ProperShadersRenderStateGuard.h"
 
 // ---- record lifecycle (called from the guards) ----
+bool IsProperShadersStateTraceCaptureActive() noexcept;
+bool BeginProperShadersStateTraceCapture();
 void InitializeProperShadersStateTraceRecord(
     ProperShadersStateTraceRecord* record,
     ProperShadersStateTraceKind kind);
@@ -16,6 +18,6 @@ void CaptureProperShadersStateTracePoint(
     uint32_t snapshotIndex);
 void StoreProperShadersStateTraceRecord(ProperShadersStateTraceRecord* record);
 
-// ---- manual dump (hotkey edge) ----
+// F10 opens a one-second capture. Expiry/dump is polled at owner safe points.
 void MaybeDumpProperShadersStateTraceRing();
 void DumpProperShadersStateTraceRing();

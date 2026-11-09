@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <concepts>
+#include <cstdio>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -95,6 +96,78 @@ struct JournalProbeTransactionInfo
     bool native = false;
 };
 
+#define JOURNAL_ATTRIBUTION_SUMMARY_VERSION 1
+#define JOURNAL_ATTRIBUTION_REPORT_WRITER_VERSION 1
+#define JOURNAL_ATTRIBUTION_CLOSE_ADMISSION_VERSION 1
+
+inline constexpr unsigned kJournalAttributionSummaryTechniques = 8;
+inline constexpr unsigned kJournalAttributionSummaryFrames = 1024;
+
+struct JournalAttributionTechniqueSummary
+{
+    char name[64]{};
+    std::uint64_t transactions = 0;
+    std::uint64_t records = 0;
+    std::uint64_t nativeTransactions = 0;
+    std::uint64_t localTransactions = 0;
+    std::uint64_t emptyTransactions = 0;
+    std::uint64_t truncatedTransactions = 0;
+    std::uint64_t transactionSpanQpc = 0;
+    std::uint64_t maxTransactionSpanQpc = 0;
+    std::uint64_t restoreQpc = 0;
+    std::uint64_t maxRestoreQpc = 0;
+    std::uint64_t restoreCount = 0;
+    unsigned passCount = 0;
+};
+
+struct JournalAttributionFrameSummary
+{
+    std::uint64_t frame = 0; // Zero-based transaction admission frame.
+    std::uint64_t transactions = 0;
+    std::uint64_t records = 0;
+    std::uint64_t truncatedTransactions = 0;
+    std::uint64_t transactionSpanQpc = 0;
+    std::uint64_t restoreQpc = 0;
+    std::uint64_t restoreCount = 0;
+};
+
+// CPU elapsed observations, not exclusive function costs or GPU/frame totals.
+// transactionSpanQpc includes work between BeginTransaction and probe flush;
+// restoreQpc includes nested work in Restore and remains a separate measurement.
+struct JournalAttributionSummary
+{
+    std::uint64_t captureId = 0;
+    std::uint64_t qpcFrequency = 0;
+    std::uint64_t frames = 0; // Present boundaries observed during this window.
+    std::uint64_t presents = 0;
+    std::uint64_t transactions = 0;
+    std::uint64_t records = 0;
+    std::uint64_t nativeTransactions = 0;
+    std::uint64_t localTransactions = 0;
+    std::uint64_t emptyTransactions = 0;
+    std::uint64_t truncatedTransactions = 0;
+    std::uint64_t transactionSpanQpc = 0;
+    std::uint64_t maxTransactionSpanQpc = 0;
+    std::uint64_t restoreQpc = 0;
+    std::uint64_t maxRestoreQpc = 0;
+    std::uint64_t restoreCount = 0;
+    std::uint64_t droppedTechniques = 0; // Transactions lacking a technique slot.
+    std::uint64_t droppedPasses = 0; // Records lacking a technique/pass slot.
+    std::uint64_t droppedFrames = 0; // Frame slots beyond the bounded prefix.
+    std::uint64_t orphanRestores = 0;
+    unsigned techniqueCount = 0;
+    unsigned passCount = 0; // Distinct technique/pass pairs, includes Begin state.
+    unsigned inFlight = 0;
+    unsigned topTechniqueCount = 0;
+    unsigned frameStatCount = 0;
+    bool captureStarted = false;
+    bool active = false;
+    bool available = false; // At least one transaction observed, including empty.
+    bool timingAvailable = false;
+    JournalAttributionTechniqueSummary topTechniques[kJournalAttributionSummaryTechniques]{};
+    JournalAttributionFrameSummary frameStats[kJournalAttributionSummaryFrames]{};
+};
+
 // A getter the journal can call to read one constant range back from the
 // device: invocable as getter(startRegister, values, count) and returning
 // something convertible to HRESULT.
@@ -110,7 +183,21 @@ void JournalAttributionObserveTransaction(const char* techniqueName,
 void JournalAttributionObserveRestore(std::uint64_t sequence,
     std::uint64_t qpcTicks);
 void JournalAttributionReset();
+// Set while inactive before StartCapture; ignored during an active capture.
+// StartCapture resets observations but preserves the assigned identity.
+void JournalAttributionSetCaptureIdentity(std::uint64_t captureId);
+// Bounded copied snapshot. Call after StopCapture for a complete result;
+// active snapshots explicitly expose inFlight and may still be incomplete.
+bool JournalAttributionGetSummary(JournalAttributionSummary* summary);
+// Writes the complete existing technique/pass/operation report into the caller's
+// file under the attribution shared lock. Returns false on null/output failure.
+bool JournalAttributionWriteReport(std::FILE* report);
 void JournalAttributionStartCapture();
+// Closes future admission without waiting for admitted transactions. Device
+// lifecycle/Present callers must use this before deferring their drain/report.
+void JournalAttributionCloseAdmission();
+// Legacy synchronous close and drain. Do not call while holding a device lock
+// needed by Restore, or on an owner thread with an admitted transaction.
 void JournalAttributionStopCapture();
 bool JournalAttributionTryBeginTransaction();
 void JournalAttributionEndTransaction();

@@ -31,6 +31,22 @@ cmake --build out/api-project-build/all --config Release
 ProperShaders 或 GTA 主渲染路径采用。是否由 Bridge 在生产路径调用，仍以主程序的
 consumer 代码、运行计数器和游戏回归证据为准。
 
+`tools/test.ps1` 现在会构建并执行附属 API 的 Release CTest；检查使用始终有效的
+`CHECK`，并包含一个预期失败项以验证 `NDEBUG` 不会隐藏断言。另一个
+`api-state-runtime-tests <backend.dll> reference|optimized` 目标使用真实设备验证
+journal/stateblock/UP/viewport/scissor/light、API3 提交、API7 RAII、Reset 和批次
+失败恢复。主测试入口分别记录普通/优化配置结果；显式跳过 GPU 时记录 skip 原因。
+
+`constant-submit-benchmark <backend.dll> on|off check|bench` 使用真实设备，检查
+常量渲染结果，以及单槽、多槽纹理/采样器切换、点/线性过滤、边框色、状态块和
+journal 恢复后的像素。`on|off` 同时显式控制常量去重、采样器合并、纹理合并和
+绑定缓存。`check` 是主流水线的必需 GPU 回归，`bench` 另输出公开 COM setter、
+真实 draw 与 event-query 完成时间；计时不作为 CTest 阈值。
+
+独立 A/B 入口为 `tests/constant-submit-benchmark.ps1`，使用同一 probe 交替启动
+基线和候选进程并保存哈希、全部原始样本和成对比较。方法与边界见
+[性能验证说明](../../../../docs/development/performance-validation.md)。
+
 设计参考：
 
 - [Microsoft D3D9 CreateDevice](https://learn.microsoft.com/en-us/windows/win32/api/d3d9/nf-d3d9-idirect3d9-createdevice)

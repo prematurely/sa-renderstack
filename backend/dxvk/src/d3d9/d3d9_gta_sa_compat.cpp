@@ -316,14 +316,21 @@ namespace dxvk {
 
     m_presentCount.fetch_add(1u, std::memory_order_relaxed);
 
-    if (!m_diagnostics)
-      return;
-
     if (m_stateAuditActive) {
       m_stateAuditFrames += 1u;
-      if (GetTickCount64() - m_stateAuditStartMs >= 3000u)
+      if (!m_device->GetBridgeDiagnostics()->IsCaptureOwner()
+       && GetTickCount64() - m_stateAuditStartMs >= 3000u)
         FinishStateAudit("duration-complete");
     }
+
+    if (m_device->GetBridgeDiagnostics()->IsCaptureOwner()) {
+      // Require a release edge before standalone F7 may start another audit.
+      m_stateAuditTriggerWasDown = true;
+      return;
+    }
+
+    if (!m_diagnostics)
+      return;
 
     const bool triggerDown = (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
     if (!triggerDown) {
@@ -379,15 +386,26 @@ namespace dxvk {
     if (!m_stateAuditActive || beginQpc == 0u)
       return;
 
+    RecordStateAudit(kind);
+    RecordStateAuditElapsed(kind, beginQpc);
+  }
+
+
+  void D3D9GtaSaCompatDevice::RecordStateAuditElapsed(
+          D3D9GtaSaStateAuditKind kind,
+          uint64_t                beginQpc) {
+    if (!m_stateAuditActive || beginQpc == 0u)
+      return;
+
     LARGE_INTEGER value = { };
     QueryPerformanceCounter(&value);
     const uint64_t endQpc = uint64_t(value.QuadPart);
     const uint64_t elapsed = endQpc >= beginQpc ? endQpc - beginQpc : 0u;
 
-    RecordStateAudit(kind);
     auto& counter = m_stateAuditCounters[uint32_t(kind)];
     counter.QpcTicks += elapsed;
     counter.MaxQpcTicks = std::max(counter.MaxQpcTicks, elapsed);
+    counter.TimedCalls += 1u;
   }
 
 
@@ -482,7 +500,12 @@ namespace dxvk {
   }
 
 
-  void D3D9GtaSaCompatDevice::StartStateAudit() {
+  void D3D9GtaSaCompatDevice::StartStateAudit(const char* source, UINT durationMs) {
+    if (m_stateAuditQpcFrequency <= 0) {
+      LARGE_INTEGER frequency = { };
+      if (QueryPerformanceFrequency(&frequency))
+        m_stateAuditQpcFrequency = frequency.QuadPart;
+    }
     for (auto& counter : m_stateAuditCounters)
       counter = { };
 
@@ -500,7 +523,11 @@ namespace dxvk {
     m_stateAuditFrames = 0u;
     m_stateAuditStartMs = GetTickCount64();
     m_stateAuditActive = true;
-    Logger::info("GTA SA D3D9 state audit started: key=F7 durationMs=3000 mode=read-only");
+    if (std::strcmp(source, "F7") == 0)
+      Logger::info("GTA SA D3D9 state audit started: key=F7 durationMs=3000 mode=read-only");
+    else
+      Logger::info(str::format("GTA SA D3D9 state audit started: source=", source,
+        " durationMs=", durationMs, " mode=read-only"));
   }
 
 
@@ -510,6 +537,7 @@ namespace dxvk {
 
     const UINT64 elapsedMs = GetTickCount64() - m_stateAuditStartMs;
     m_stateAuditActive = false;
+    m_device->GetBridgeDiagnostics()->AuditFinished(reason);
 
     static const char* names[] = {
       "renderState",
@@ -726,9 +754,48 @@ namespace dxvk {
           : 0.0,
         " units=", counter.Units,
         " redundantUnits=", counter.RedundantUnits,
+        " timedCalls=", counter.TimedCalls,
+        " timing=device-locked-api-body-inclusive",
         " totalMs=", totalMs,
         " maxUs=", maxUs));
     }
+  }
+
+
+  void D3D9GtaSaCompatDevice::CopyStateAudit(D3D9BridgeAuditSnapshot& snapshot) const {
+    static_assert(D3D9_BRIDGE_AUDIT_COUNTER_COUNT == uint32_t(D3D9GtaSaStateAuditKind::Count));
+    static_assert(D3D9_BRIDGE_PREPARE_COUNTER_COUNT == D3D9GtaSaPrepareDrawAudit::CategoryCount);
+    snapshot.ElapsedMs = GetTickCount64() - m_stateAuditStartMs;
+    snapshot.ObservedPresentBoundaries = m_stateAuditFrames;
+    snapshot.QpcFrequency = uint64_t(std::max<int64_t>(m_stateAuditQpcFrequency, 0));
+    snapshot.Total = { };
+    for (uint32_t i = 0; i < D3D9_BRIDGE_AUDIT_COUNTER_COUNT; i++) {
+      const auto& source = m_stateAuditCounters[i];
+      auto& target = snapshot.Counters[i];
+      target = { source.Calls, source.RedundantCalls, source.Units,
+        source.RedundantUnits, source.QpcTicks, source.MaxQpcTicks, source.TimedCalls };
+      snapshot.Total.Calls += source.Calls;
+      snapshot.Total.RedundantCalls += source.RedundantCalls;
+      snapshot.Total.Units += source.Units;
+      snapshot.Total.RedundantUnits += source.RedundantUnits;
+      snapshot.Total.QpcTicks += source.QpcTicks;
+      snapshot.Total.TimedCalls += source.TimedCalls;
+      snapshot.Total.MaxQpcTicks = std::max(snapshot.Total.MaxQpcTicks, source.MaxQpcTicks);
+    }
+    snapshot.SamplerBindingCacheHits = m_device->GetGtaSaSamplerBindingCacheHits()
+      - m_stateAuditSamplerBindingCacheHits;
+    snapshot.TextureBindingCacheHits = m_device->GetGtaSaTextureBindingCacheHits()
+      - m_stateAuditTextureBindingCacheHits;
+    snapshot.ResourceBindingCacheInvalidations = m_device->GetGtaSaResourceBindingCacheInvalidations()
+      - m_stateAuditResourceBindingCacheInvalidations;
+    snapshot.StateBlockFastSkips = m_stateBlockFastSkips;
+    snapshot.PrepareDraws = m_prepareDrawAudit.Draws;
+    snapshot.PrepareCleanDraws = m_prepareDrawAudit.CleanDraws;
+    snapshot.PrepareCategoryEvents = m_prepareDrawAudit.CategoryEvents;
+    snapshot.PrepareMaxCategoriesPerDraw = m_prepareDrawAudit.MaxCategoriesPerDraw;
+    for (uint32_t i = 0; i < D3D9_BRIDGE_PREPARE_COUNTER_COUNT; i++)
+      snapshot.Prepare[i] = { m_prepareDrawAudit.Counters[i].Draws,
+        m_prepareDrawAudit.Counters[i].Units };
   }
 
 

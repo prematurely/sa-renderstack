@@ -32,8 +32,13 @@ extern ProperShadersRenderStateGuardConfig g_properShadersRenderStateGuardConfig
 
 void LoadProperShadersRenderStateGuardConfig(const char* iniPath);
 
-// ---- activation (called once the D3D9 device exists) ----
-void StartProperShadersRenderStateGuardWatch();
+// Owner render-thread safe points only. No polling thread writes instructions.
+void PollProperShadersRenderStateGuards();
+// Call only after all device/render callbacks are quiescent. Failed restores
+// retain patch/trampoline ownership so the caller may retry.
+bool ShutdownProperShadersRenderStateGuards();
+// Borrowed method pointers only; no device/resource references or state values.
+void InvalidateProperShadersDeviceApiCache() noexcept;
 
 // ---- state-ring lifecycle (process detach) ----
 void ShutdownProperShadersStateRing();
@@ -46,13 +51,56 @@ constexpr uint32_t kSupportedProperShadersTextHash = 0x526DBD01;
 constexpr uintptr_t kRwD3D9SetRenderState = 0x007FC2D0;
 constexpr uintptr_t kRwD3D9GetRenderState = 0x007FC320;
 constexpr uintptr_t kRwD3D9DevicePointer = 0x00C97C28;
-// IDirect3DDevice9 vtable slots (0-based): SetRenderState=57, GetRenderState=58.
-// The FLA++ original resolved BOTH entries from the get slot, which made every
-// device-side "set" call a no-op GetRenderState. Batch 4 fixes the set entry to
-// resolve from its own slot (behaviour change vs the original, dormant while
-// the text-hash gate rejects the current ProperShaders build).
+// ---- IDirect3DDevice9 vtable slots (0-based, IUnknown occupies 0..2) ----
+//
+// Every index below was cross-checked against five independent declarations of
+// IDirect3DDevice9 (Windows SDK 10.0.26100 and 10.0.28000, plugin-sdk DXSDK,
+// and the DXVK backend/2.7.1 native headers), which agree on all of them.
+//
+// Do NOT hand-count these. Two of them were previously off (GetVertexShader
+// pointed at GetVertexShaderConstantF, GetPixelShader at GetPixelShaderConstantI),
+// so a snapshot read called a three-argument constant getter through a
+// two-argument signature and wrote float/int data through a stack pointer
+// reinterpreted as a register index. Derive any new slot from a header, then
+// add it to the static_assert block that follows.
+//
+// Batch 4 note: the FLA++ original resolved both the set and the get entry from
+// slot 58, making every device-side "set" a no-op; the set entry now resolves
+// from slot 57 as the layout requires.
 constexpr size_t kD3D9SetRenderStateVtableIndex = 57;
 constexpr size_t kD3D9GetRenderStateVtableIndex = 58;
+constexpr size_t kD3D9GetRenderTargetVtableIndex = 38;
+constexpr size_t kD3D9GetDepthStencilSurfaceVtableIndex = 40;
+constexpr size_t kD3D9GetViewportVtableIndex = 48;
+constexpr size_t kD3D9GetTextureVtableIndex = 64;
+constexpr size_t kD3D9GetTextureStageStateVtableIndex = 66;
+constexpr size_t kD3D9GetSamplerStateVtableIndex = 68;
+constexpr size_t kD3D9GetVertexShaderVtableIndex = 93;
+constexpr size_t kD3D9GetPixelShaderVtableIndex = 108;
+constexpr size_t kD3D9ReleaseVtableIndex = 2;
+
+// Highest slot the guard dereferences, plus one: the readability probe must
+// cover every index above, so keep this derived rather than hand-written.
+constexpr size_t kD3D9RequiredVtableEntries =
+    (kD3D9GetPixelShaderVtableIndex > kD3D9GetVertexShaderVtableIndex
+        ? kD3D9GetPixelShaderVtableIndex
+        : kD3D9GetVertexShaderVtableIndex) + 1;
+
+// Slot ordering invariants taken straight from the interface declaration. If a
+// future edit renumbers one of these, the build fails here instead of writing
+// through a mismatched function signature at runtime.
+static_assert(kD3D9GetRenderStateVtableIndex == kD3D9SetRenderStateVtableIndex + 1,
+    "GetRenderState directly follows SetRenderState in IDirect3DDevice9");
+static_assert(kD3D9GetDepthStencilSurfaceVtableIndex == kD3D9GetRenderTargetVtableIndex + 2,
+    "GetRenderTarget and GetDepthStencilSurface are two slots apart");
+static_assert(kD3D9GetTextureStageStateVtableIndex == kD3D9GetTextureVtableIndex + 2,
+    "GetTexture and GetTextureStageState are two slots apart");
+static_assert(kD3D9GetSamplerStateVtableIndex == kD3D9GetTextureStageStateVtableIndex + 2,
+    "GetTextureStageState and GetSamplerState are two slots apart");
+static_assert(kD3D9GetVertexShaderVtableIndex == 93 && kD3D9GetPixelShaderVtableIndex == 108,
+    "shader getters verified against five IDirect3DDevice9 declarations");
+static_assert(kD3D9RequiredVtableEntries == 109,
+    "readability probe must span every slot the guard dereferences");
 constexpr uint32_t kProperShadersAlphaRenderStates[] = {
     15,  // D3DRS_ALPHATESTENABLE
     19,  // D3DRS_SRCBLEND
@@ -201,6 +249,7 @@ enum ProperShadersStateTraceKind : uint32_t
 };
 struct ProperShadersStateTraceRecord
 {
+    uint32_t captureGeneration = 0;
     uint32_t sequence = 0;
     uint32_t kind = 0;
     uint32_t threadId = 0;

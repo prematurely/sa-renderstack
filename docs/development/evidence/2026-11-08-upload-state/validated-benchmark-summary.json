@@ -1,0 +1,246 @@
+{
+  "uploads": [
+    {
+      "profile": "pressure-mips",
+      "kind": "managed",
+      "abPairs": 6,
+      "aaPairs": 3,
+      "baselineMedianMs": 955.206,
+      "candidateMedianMs": 891.275,
+      "pairedMedianPct": -6.822,
+      "abRangePct": [
+        -9.597,
+        1.359
+      ],
+      "aaMedianAbsolutePct": 3.992,
+      "aaMaximumAbsolutePct": 22.613,
+      "wins": 5,
+      "baselineMaps": [
+        5632
+      ],
+      "candidateMaps": [
+        512
+      ],
+      "mainCycles": {
+        "baselineMedian": 1998121237.0,
+        "candidateMedian": 1884046026.5,
+        "pairedMedianPct": -6.987,
+        "abRangePct": [
+          -10.541,
+          -3.912
+        ],
+        "aaMedianAbsolutePct": 4.4,
+        "aaMaximumAbsolutePct": 7.141,
+        "wins": 6
+      }
+    },
+    {
+      "profile": "pressure-mips",
+      "kind": "systemmem",
+      "abPairs": 6,
+      "aaPairs": 3,
+      "baselineMedianMs": 941.887,
+      "candidateMedianMs": 866.871,
+      "pairedMedianPct": -8.705,
+      "abRangePct": [
+        -13.871,
+        0.054
+      ],
+      "aaMedianAbsolutePct": 1.174,
+      "aaMaximumAbsolutePct": 5.043,
+      "wins": 5,
+      "baselineMaps": [
+        5632
+      ],
+      "candidateMaps": [
+        512
+      ],
+      "mainCycles": {
+        "baselineMedian": 2013993478.0,
+        "candidateMedian": 1851274252.5,
+        "pairedMedianPct": -7.375,
+        "abRangePct": [
+          -11.194,
+          -0.149
+        ],
+        "aaMedianAbsolutePct": 4.337,
+        "aaMaximumAbsolutePct": 5.748,
+        "wins": 6
+      }
+    },
+    {
+      "profile": "ordinary-mips",
+      "kind": "managed",
+      "abPairs": 6,
+      "aaPairs": 3,
+      "baselineMedianMs": 237.86,
+      "candidateMedianMs": 238.341,
+      "pairedMedianPct": -0.532,
+      "abRangePct": [
+        -1.968,
+        3.261
+      ],
+      "aaMedianAbsolutePct": 1.555,
+      "aaMaximumAbsolutePct": 2.033,
+      "wins": 4,
+      "baselineMaps": [
+        0
+      ],
+      "candidateMaps": [
+        0
+      ],
+      "mainCycles": {
+        "baselineMedian": 231031670.0,
+        "candidateMedian": 238621156.5,
+        "pairedMedianPct": 2.242,
+        "abRangePct": [
+          -12.877,
+          21.523
+        ],
+        "aaMedianAbsolutePct": 3.933,
+        "aaMaximumAbsolutePct": 5.531,
+        "wins": 2
+      }
+    },
+    {
+      "profile": "ordinary-mips",
+      "kind": "systemmem",
+      "abPairs": 6,
+      "aaPairs": 3,
+      "baselineMedianMs": 238.199,
+      "candidateMedianMs": 236.041,
+      "pairedMedianPct": -0.583,
+      "abRangePct": [
+        -1.14,
+        0.973
+      ],
+      "aaMedianAbsolutePct": 1.584,
+      "aaMaximumAbsolutePct": 1.962,
+      "wins": 4,
+      "baselineMaps": [
+        0
+      ],
+      "candidateMaps": [
+        0
+      ],
+      "mainCycles": {
+        "baselineMedian": 234962428.0,
+        "candidateMedian": 235094278.5,
+        "pairedMedianPct": -0.533,
+        "abRangePct": [
+          -7.436,
+          16.321
+        ],
+        "aaMedianAbsolutePct": 5.506,
+        "aaMaximumAbsolutePct": 9.514,
+        "wins": 3
+      }
+    },
+    {
+      "profile": "pressure-single",
+      "kind": "managed",
+      "abPairs": 6,
+      "aaPairs": 3,
+      "baselineMedianMs": 692.309,
+      "candidateMedianMs": 736.975,
+      "pairedMedianPct": 5.633,
+      "abRangePct": [
+        -3.982,
+        17.049
+      ],
+      "aaMedianAbsolutePct": 2.205,
+      "aaMaximumAbsolutePct": 5.515,
+      "wins": 2,
+      "baselineMaps": [
+        512
+      ],
+      "candidateMaps": [
+        512
+      ],
+      "mainCycles": {
+        "baselineMedian": 1502586622.5,
+        "candidateMedian": 1555556582.5,
+        "pairedMedianPct": 3.032,
+        "abRangePct": [
+          -1.361,
+          7.434
+        ],
+        "aaMedianAbsolutePct": 3.623,
+        "aaMaximumAbsolutePct": 5.503,
+        "wins": 2
+      }
+    },
+    {
+      "profile": "pressure-single",
+      "kind": "systemmem",
+      "abPairs": 6,
+      "aaPairs": 3,
+      "baselineMedianMs": 679.114,
+      "candidateMedianMs": 700.328,
+      "pairedMedianPct": 1.78,
+      "abRangePct": [
+        -5.414,
+        10.316
+      ],
+      "aaMedianAbsolutePct": 1.117,
+      "aaMaximumAbsolutePct": 7.874,
+      "wins": 1,
+      "baselineMaps": [
+        512
+      ],
+      "candidateMaps": [
+        512
+      ],
+      "mainCycles": {
+        "baselineMedian": 1485477302.5,
+        "candidateMedian": 1503590871.5,
+        "pairedMedianPct": 1.59,
+        "abRangePct": [
+          -1.561,
+          5.609
+        ],
+        "aaMedianAbsolutePct": 2.275,
+        "aaMaximumAbsolutePct": 5.425,
+        "wins": 1
+      }
+    }
+  ],
+  "retry": {
+    "elapsedMs": {
+      "baselineMedian": 617.692,
+      "candidateMedian": 854.651,
+      "pairedMedianPct": 42.529,
+      "abRangePct": [
+        8.525,
+        61.39
+      ],
+      "aaMedianAbsolutePct": 9.991,
+      "aaMaximumAbsolutePct": 14.065,
+      "wins": 0
+    },
+    "mainCpuMs": {
+      "baselineMedian": 46.875,
+      "candidateMedian": 15.625,
+      "pairedMedianPct": -66.667,
+      "abRangePct": [
+        -100.0,
+        300.0
+      ],
+      "aaMedianAbsolutePct": 60.0,
+      "aaMaximumAbsolutePct": 75.0,
+      "wins": 4
+    },
+    "mainCycles": {
+      "baselineMedian": 187860732.5,
+      "candidateMedian": 132997240.5,
+      "pairedMedianPct": -27.564,
+      "abRangePct": [
+        -33.113,
+        -20.383
+      ],
+      "aaMedianAbsolutePct": 4.263,
+      "aaMaximumAbsolutePct": 7.048,
+      "wins": 6
+    }
+  }
+}

@@ -363,10 +363,12 @@ try {
     $mappings = Read-StrictPackageToml -Path $mappingPath
     $expectedMappings = @(
         'out/build/bridge/d3d9.dll|d3d9.dll',
+        'out/build/bridge/d3d9.dll.rsym|d3d9.dll.rsym',
         'config/SA.RenderStack.ini|SA.RenderStack.ini',
         'config/SA.RenderStack.ini|scripts/BridgeD3D9.ini',
         'config/dxvk.conf|dxvk.conf',
         'out/build/dxvk-x86/src/d3d9/d3d9.dll|backend/dxvk-gta/d3d9.dll',
+        'out/build/dxvk-x86/src/d3d9/d3d9.dll.rsym|backend/dxvk-gta/d3d9.dll.rsym',
         'README.md|docs/README.md',
         'README.zh-CN.md|docs/README.zh-CN.md',
         'README.pt-BR.md|docs/README.pt-BR.md',

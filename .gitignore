@@ -30,6 +30,8 @@ api-projects/**/build*/
 # Local state
 .wraplock
 .cache/
+__pycache__/
+*.pyc
 .superpowers/
 Diagnostics/
 CrashDumps/

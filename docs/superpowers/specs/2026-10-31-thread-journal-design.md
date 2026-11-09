@@ -1,0 +1,11 @@
+# Thread attribution and generic journal reduction
+
+User-selected sequence: instrument main/API thread and CS activity, diagnose with independent real D3D9 workloads, then optimize common StateBlock/Journal paths. Preserve image quality and public API1-7/export contracts. Candidate only; no game deployment or game automation.
+
+Use a new private copied-data query (separate IID, no change to existing diagnostics ABI). Sample at F8 phase boundaries, not per API call. Read Windows thread CPU time, CS queue-idle wall time including an unfinished idle interval, ordered dispatch/completion sequence numbers, and existing device CS/GPU wait/chunk/submission counters. Report CPU execution separately from elapsed/non-CPU time. CS non-idle wall time includes scheduling and internal waits; GPU idle is an estimate. Counter deltas may include completed waits that cross a boundary; do not claim exhaustive mutually exclusive attribution. Sampling must not flush or wait for CS/GPU.
+
+Chosen approach: reuse the command stream and existing counters, adding only boundary snapshots and exact queue-idle accounting. Alternatives: continuous per-call tracing adds observer cost; a new parallel recorder changes scheduling before evidence establishes a need. Neither is required this batch.
+
+After measurement, optimize only demonstrated generic overhead. Existing equality checks/prefilters must remain; preserve capture masks, untouched state, resource ownership, getters, invalid calls and Reset. Independent HAL fixtures must exercise normal StateBlocks without GTA compatibility, journals with the existing API enabled but no MOD, actual pixel readback and lifetime behavior. Measure sparse/dense/no-op/control workloads and observer off/on using repeated alternating process pairs. Stop retaining a proposed optimization if controls show repeatable harm.
+
+Dependency acceptance: stand-alone fixture executable outside the game directory; no game/mod DLLs loaded; test compat on/off where supported; inspect PE imports and exports for both candidate DLLs. Windows and a Vulkan-capable driver are inherent dependencies, while journal entry uses the existing backend API, not a third-party MOD. Symbols improve diagnosis but must not be required to query thread counters or restore state. Keep installed files hash/size/mtime unchanged.

@@ -509,15 +509,21 @@ namespace dxvk {
           uint32_t rangeStart = 0;
 
           while (rangeStart < registerCount) {
-            while (rangeStart < registerCount && !captures.get(rangeStart))
-              rangeStart++;
-
-            if (rangeStart == registerCount)
-              break;
-
-            uint32_t rangeEnd = rangeStart + 1;
-            while (rangeEnd < registerCount && captures.get(rangeEnd))
-              rangeEnd++;
+            const uint32_t wordIndex = rangeStart / 32;
+            const uint32_t pending = captures.dword(wordIndex) & (~0u << (rangeStart % 32));
+            if (!pending) {
+              rangeStart = (wordIndex + 1) * 32;
+              continue;
+            }
+            rangeStart = wordIndex * 32 + bit::tzcnt(pending);
+            uint32_t rangeEnd = rangeStart;
+            while (rangeEnd < registerCount) {
+              const uint32_t offset = rangeEnd % 32;
+              const uint32_t count = std::min(bit::tzcnt(~captures.dword(rangeEnd / 32) >> offset), 32u - offset);
+              rangeEnd += count;
+              if (count < 32u - offset)
+                break;
+            }
 
             applyRange(rangeStart, rangeEnd - rangeStart);
             rangeStart = rangeEnd;
@@ -676,19 +682,28 @@ namespace dxvk {
         else
           m_captures.flags.set(D3D9CapturedStateFlag::PsConstants);
 
-        for (uint32_t i = 0; i < Count; i++) {
-          uint32_t reg = StartRegister + i;
-          if constexpr (ConstantType == D3D9ConstantType::Float) {
-            setCaptures.fConsts.set(reg, true);
-            setCaptures.fDwordCount = std::max(setCaptures.fDwordCount, reg / 32 + 1);
-          } else if constexpr (ConstantType == D3D9ConstantType::Int) {
-            setCaptures.iConsts.set(reg, true);
-            setCaptures.iDwordCount = std::max(setCaptures.iDwordCount, reg / 32 + 1);
-          } else if constexpr (ConstantType == D3D9ConstantType::Bool) {
-            setCaptures.bConsts.set(reg, true);
-            setCaptures.bDwordCount = std::max(setCaptures.bDwordCount, reg / 32 + 1);
+        auto markRange = [&] (auto& mask, uint32_t& dwordCount) {
+          if (Count == 1) {
+            mask.set(StartRegister, true);
+            dwordCount = std::max(dwordCount, StartRegister / 32u + 1u);
+          } else if (Count) {
+            const uint32_t end = StartRegister + Count;
+            for (uint32_t reg = StartRegister; reg < end;) {
+              const uint32_t word = reg / 32u;
+              const uint32_t next = std::min(end, (word + 1u) * 32u);
+              mask.dword(word) |= (~0u << (reg % 32u))
+                & (~0u >> (32u - (next - word * 32u)));
+              reg = next;
+            }
+            dwordCount = std::max(dwordCount, (end + 31u) / 32u);
           }
-        }
+        };
+        if constexpr (ConstantType == D3D9ConstantType::Float)
+          markRange(setCaptures.fConsts, setCaptures.fDwordCount);
+        else if constexpr (ConstantType == D3D9ConstantType::Int)
+          markRange(setCaptures.iConsts, setCaptures.iDwordCount);
+        else
+          markRange(setCaptures.bConsts, setCaptures.bDwordCount);
 
         UpdateStateConstants<ShaderType, ConstantType, T>(
           &m_state, StartRegister, pConstantData, Count);

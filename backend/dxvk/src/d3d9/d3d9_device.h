@@ -5,6 +5,7 @@
 #include "../dxvk/dxvk_staging.h"
 
 #include "d3d9_include.h"
+#include "d3d9_bridge_thread_stats.h"
 #include "d3d9_cursor.h"
 #include "d3d9_format.h"
 #include "d3d9_multithread.h"
@@ -28,6 +29,9 @@
 #include <cstdint>
 #include <unordered_set>
 #include "d3d9_bridge.h"
+#include "d3d9_bridge_lifecycle.h"
+#include "d3d9_bridge_diagnostics.h"
+#include <mutex>
 
 #include <vector>
 #include <type_traits>
@@ -39,6 +43,44 @@
 #include "../util/util_unmap.h"
 
 namespace dxvk {
+
+  class D3D9DeviceEx;
+
+  class D3D9BridgeThreadStats final : public ID3D9BridgeThreadStats {
+  public:
+    explicit D3D9BridgeThreadStats(D3D9DeviceEx* device) : m_device(device) { }
+    ULONG STDMETHODCALLTYPE AddRef() override;
+    ULONG STDMETHODCALLTYPE Release() override;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override;
+    HRESULT STDMETHODCALLTYPE GetThreadStats(D3D9BridgeThreadSnapshot*) override;
+  private:
+    D3D9DeviceEx* m_device;
+  };
+
+  // Delegating private interface: appending this helper preserves all existing
+  // D3D9DeviceEx member offsets and never takes a self-reference.
+  class D3D9BridgeDiagnostics final : public ID3D9BridgeDiagnostics {
+  public:
+    explicit D3D9BridgeDiagnostics(D3D9DeviceEx* device) : m_device(device) { }
+    ULONG STDMETHODCALLTYPE AddRef() override;
+    ULONG STDMETHODCALLTYPE Release() override;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override;
+    HRESULT STDMETHODCALLTYPE SetCaptureOwner(BOOL) override;
+    HRESULT STDMETHODCALLTYPE StartAudit(UINT64, UINT) override;
+    HRESULT STDMETHODCALLTYPE StopAudit(UINT64) override;
+    HRESULT STDMETHODCALLTYPE GetAudit(D3D9BridgeAuditSnapshot*) override;
+    HRESULT STDMETHODCALLTYPE PublishHud(const D3D9BridgeHudSnapshot*) override;
+    HRESULT STDMETHODCALLTYPE GetHud(D3D9BridgeHudSnapshot*) override;
+    bool IsCaptureOwner() const { return m_owner.load(std::memory_order_relaxed); }
+    void AuditFinished(const char* reason);
+    void InterruptAudit(const char* reason);
+  private:
+    D3D9DeviceEx* m_device;
+    std::atomic<bool> m_owner = { false };
+    D3D9BridgeAuditSnapshot m_audit = { };
+    std::mutex m_hudMutex;
+    D3D9BridgeHudSnapshot m_hud = { };
+  };
 
   class D3D9InterfaceEx;
   class D3D9SwapChainEx;
@@ -214,7 +256,7 @@ namespace dxvk {
     uint16_t instanced = 0;
   };
 
-  class D3D9DeviceEx final : public ComObjectClamp<IDirect3DDevice9Ex> {
+  class D3D9DeviceEx final : public ComObjectClamp<IDirect3DDevice9Ex>, public ID3D9BridgeLifecycle {
     constexpr static uint32_t DefaultFrameLatency = 3;
     constexpr static uint32_t MaxFrameLatency     = 20;
 
@@ -247,6 +289,15 @@ namespace dxvk {
     ~D3D9DeviceEx();
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject);
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+      return ComObjectClamp<IDirect3DDevice9Ex>::AddRef();
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override;
+    HRESULT STDMETHODCALLTYPE SetObserver(const D3D9BridgeObserver* observer) override;
+    void NotifyBridge(D3D9BridgeEvent event, HRESULT result = S_OK,
+      D3DPRESENT_PARAMETERS* params = nullptr, const D3D9BridgePresentArgs* present = nullptr);
 
     HRESULT STDMETHODCALLTYPE TestCooperativeLevel();
 
@@ -939,7 +990,7 @@ namespace dxvk {
     template <uint32_t Index>
     void UpdateAnyColorWrites();
 
-    void UpdateTextureBitmasks(uint32_t index, DWORD combinedUsage);
+    void UpdateTextureBitmasks(uint32_t index, D3D9CommonTexture* tex, DWORD combinedUsage);
 
     void UpdateActiveHazardsRT(uint32_t texMask);
 
@@ -1125,6 +1176,13 @@ namespace dxvk {
 
     D3D9GtaSaCompatDevice* GetGtaSaCompat() {
       return &m_gtaSaCompat;
+    }
+
+    D3D9BridgeDiagnostics* GetBridgeDiagnostics() { return &m_bridgeDiagnostics; }
+    HRESULT GetBridgeThreadStats(D3D9BridgeThreadSnapshot* output);
+
+    bool GetBridgeHudSnapshot(D3D9BridgeHudSnapshot* snapshot) {
+      return SUCCEEDED(m_bridgeDiagnostics.GetHud(snapshot)) && snapshot->Visible;
     }
 
     HRESULT SubmitGtaSaStateBatch(
@@ -1495,6 +1553,20 @@ namespace dxvk {
       D3D9ShaderType   ShaderType,
       D3D9ConstantType ConstantType,
       typename         T>
+    #if defined(__GNUC__) || defined(__clang__)
+    __attribute__((noinline, cold))
+    #elif defined(_MSC_VER)
+    __declspec(noinline)
+    #endif
+      HRESULT SetShaderConstantsTimed(
+              UINT  StartRegister,
+        const T*    pConstantData,
+              UINT  Count);
+
+    template <
+      D3D9ShaderType   ShaderType,
+      D3D9ConstantType ConstantType,
+      typename         T>
     HRESULT GetShaderConstants(
             UINT StartRegister,
             T*   pConstantData,
@@ -1708,6 +1780,8 @@ namespace dxvk {
 
     Com<D3D9StateBlock, false>      m_recorder;
     Com<D3D9StateBlock, false>      m_gtaSaStateJournal;
+    std::recursive_mutex            m_bridgeObserverMutex;
+    D3D9BridgeObserver               m_bridgeObserver = {};
     Com<D3D9StateBlock, false>      m_gtaSaStateJournalCache;
     bool                            m_gtaSaStateJournalSelective = false;
     bool                            m_gtaSaStateJournalCaptureEnabled = false;
@@ -1836,6 +1910,38 @@ namespace dxvk {
     D3D9SwapChainEx*                m_mostRecentlyUsedSwapchain = nullptr;
 
 #ifdef DXVK_USE_UNMAPPABLE_MEMORY
+    // Keep active sources mapped across their mip/face uploads. Other LRU
+    // mappings remain reclaimable after every subresource.
+    class TextureUploadMappingScope {
+    public:
+      TextureUploadMappingScope(D3D9DeviceEx& device, D3D9CommonTexture* source)
+      : m_device(device), m_source(source), m_previous(device.m_textureUploadMappingScope) {
+        m_device.m_textureUploadMappingScope = this;
+      }
+
+      ~TextureUploadMappingScope() {
+        m_device.m_textureUploadMappingScope = m_previous;
+        m_device.UnmapTextures();
+      }
+
+      bool Contains(D3D9CommonTexture* texture) const {
+        for (auto scope = this; scope; scope = scope->m_previous) {
+          if (scope->m_source == texture)
+            return true;
+        }
+        return false;
+      }
+
+      TextureUploadMappingScope(const TextureUploadMappingScope&) = delete;
+      TextureUploadMappingScope& operator=(const TextureUploadMappingScope&) = delete;
+
+    private:
+      D3D9DeviceEx& m_device;
+      D3D9CommonTexture* m_source;
+      const TextureUploadMappingScope* m_previous;
+    };
+
+    const TextureUploadMappingScope* m_textureUploadMappingScope = nullptr;
     lru_list<D3D9CommonTexture*>    m_mappedTextures;
 #endif
 
@@ -1870,6 +1976,9 @@ namespace dxvk {
     std::atomic<uint64_t>           m_lastSamplerStats = { 0u };
 
     bool m_unlockAdditionalFormats = false;
+
+    D3D9BridgeDiagnostics m_bridgeDiagnostics;
+    D3D9BridgeThreadStats m_threadStats { this };
   };
 
 }

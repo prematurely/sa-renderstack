@@ -15,6 +15,7 @@
 #include "d3d9_monitor.h"
 #include "d3d9_names.h"
 #include "d3d9_format_helpers.h"
+#include "d3d9_binding_fast_path.h"
 
 #include "../dxvk/dxvk_adapter.h"
 #include "../dxvk/dxvk_instance.h"
@@ -183,6 +184,321 @@ namespace dxvk {
 
   }
 
+  template<D3D9ShaderType ShaderType, D3D9ConstantType ConstantType, typename T>
+  #if defined(__clang__) && defined(__i386__)
+  // Preserve the measured linked constant-control positions as diagnostics
+  // code grows. This prefix precedes the callable entry, so callers execute
+  // none of its NOPs. It fixes the VS-float loop's +16/mod64 placement while
+  // the PS/int loop alignment remains supplied by their existing code_align.
+  // tests/constant-layout-test.py checks the emitted loops, not this attribute.
+  __attribute__((aligned(64), patchable_function_entry(32, 32)))
+  #endif
+  HRESULT D3D9DeviceEx::SetShaderConstants(
+          UINT  StartRegister,
+    const T*    pConstantData,
+          UINT  Count) {
+    uint32_t maxRegCount = DetermineSoftwareRegCount<ShaderType, ConstantType>();
+
+    // Error out in case of StartRegister + Count overflow
+    if (unlikely(StartRegister > maxRegCount) || unlikely(Count > maxRegCount - StartRegister))
+      return D3DERR_INVALIDCALL;
+
+    if (unlikely(!Count))
+      return D3D_OK;
+
+    // Clamp count to the maximum that we are going to access in shaders.
+    // For PS or SWVP VS, constant counts won't change, so skip.
+    if (ShaderType == D3D9ShaderType::VertexShader && likely(!CanSWVP())) {
+      maxRegCount = DetermineHardwareRegCount<ShaderType, ConstantType>();
+
+      if (unlikely(StartRegister >= maxRegCount))
+        return D3D_OK;
+
+      Count = std::min(maxRegCount - StartRegister, Count);
+    }
+
+    if (unlikely(!pConstantData))
+      return D3DERR_INVALIDCALL;
+
+    if (unlikely(ShouldRecord())) {
+      return m_recorder->SetShaderConstants<ShaderType, ConstantType, T>(
+        StartRegister, pConstantData, Count);
+    }
+
+    if (GetOptions()->gtaSaConstantDedup && AreConstantsEqual<ShaderType, ConstantType, T>(
+          &m_state, StartRegister, pConstantData, Count)) {
+      if constexpr (ShaderType == D3D9ShaderType::VertexShader) {
+        if constexpr (ConstantType == D3D9ConstantType::Float)
+          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::VertexFloatConstants, true, Count);
+        else if constexpr (ConstantType == D3D9ConstantType::Int)
+          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::VertexIntConstants, true, Count);
+        else
+          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::VertexBoolConstants, true, Count);
+      } else {
+        if constexpr (ConstantType == D3D9ConstantType::Float)
+          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::PixelFloatConstants, true, Count);
+        else if constexpr (ConstantType == D3D9ConstantType::Int)
+          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::PixelIntConstants, true, Count);
+        else
+          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::PixelBoolConstants, true, Count);
+      }
+      return D3D_OK;
+    }
+
+    if (unlikely(ShouldCaptureGtaSaStateJournal())) {
+      if constexpr (ShaderType == D3D9ShaderType::VertexShader) {
+        if constexpr (ConstantType == D3D9ConstantType::Float)
+          m_gtaSaStateJournal->CaptureCurrentVertexShaderConstantF(StartRegister, Count);
+        else if constexpr (ConstantType == D3D9ConstantType::Int)
+          m_gtaSaStateJournal->CaptureCurrentVertexShaderConstantI(StartRegister, Count);
+        else
+          m_gtaSaStateJournal->CaptureCurrentVertexShaderConstantB(StartRegister, Count);
+      } else {
+        if constexpr (ConstantType == D3D9ConstantType::Float)
+          m_gtaSaStateJournal->CaptureCurrentPixelShaderConstantF(StartRegister, Count);
+        else if constexpr (ConstantType == D3D9ConstantType::Int)
+          m_gtaSaStateJournal->CaptureCurrentPixelShaderConstantI(StartRegister, Count);
+        else
+          m_gtaSaStateJournal->CaptureCurrentPixelShaderConstantB(StartRegister, Count);
+      }
+    }
+
+    // Clang 22 can drop the update scan's loop alignment metadata. Keep its
+    // measured device-only VS-int layout without changing mismatch weights.
+    // The linked-code gate checks the actual loop, not this preheader.
+    #if defined(__clang__) && defined(__i386__)
+    if constexpr (ShaderType == D3D9ShaderType::VertexShader && ConstantType == D3D9ConstantType::Int)
+      asm volatile (".p2align 4" : : : );
+    #endif
+
+    // Only mark constants as dirty if any of the actual data has changed
+    bool anyConstantDirty = UpdateStateConstants<ShaderType, ConstantType, T>(
+      &m_state, StartRegister, pConstantData, Count);
+
+    if constexpr (ShaderType == D3D9ShaderType::VertexShader) {
+      if constexpr (ConstantType == D3D9ConstantType::Float) {
+        m_gtaSaCompat.RecordStateAudit(
+          D3D9GtaSaStateAuditKind::VertexFloatConstants, !anyConstantDirty, Count);
+      } else if constexpr (ConstantType == D3D9ConstantType::Int) {
+        m_gtaSaCompat.RecordStateAudit(
+          D3D9GtaSaStateAuditKind::VertexIntConstants, !anyConstantDirty, Count);
+      } else {
+        m_gtaSaCompat.RecordStateAudit(
+          D3D9GtaSaStateAuditKind::VertexBoolConstants, !anyConstantDirty, Count);
+      }
+    } else {
+      if constexpr (ConstantType == D3D9ConstantType::Float) {
+        m_gtaSaCompat.RecordStateAudit(
+          D3D9GtaSaStateAuditKind::PixelFloatConstants, !anyConstantDirty, Count);
+      } else if constexpr (ConstantType == D3D9ConstantType::Int) {
+        m_gtaSaCompat.RecordStateAudit(
+          D3D9GtaSaStateAuditKind::PixelIntConstants, !anyConstantDirty, Count);
+      } else {
+        m_gtaSaCompat.RecordStateAudit(
+          D3D9GtaSaStateAuditKind::PixelBoolConstants, !anyConstantDirty, Count);
+      }
+    }
+
+    if (unlikely(!anyConstantDirty))
+      return D3D_OK;
+
+    NotifyGtaSaStateChanged();
+
+    D3D9ConstantSets& constSet = m_consts[uint32_t(ShaderType)];
+
+    if (ConstantType == D3D9ConstantType::Float) {
+      // Check whether the constant range has any effect on the bound shader.
+      // Also update the dynamic float count for vertex shaders, which is used
+      // to reduce the number of constants copied with dynamic indexing.q
+      constSet.dirty |= StartRegister < constSet.shaderConstantsInfo.floatCount;
+
+      if (ShaderType == D3D9ShaderType::VertexShader)
+        constSet.changedFloatCount = std::max(constSet.changedFloatCount, StartRegister + Count);
+    } else if (ConstantType == D3D9ConstantType::Int) {
+      // Same logic as above except we need to check against the used integer count.
+      constSet.dirty |= StartRegister < constSet.shaderConstantsInfo.intCount;
+    } else if (ConstantType == D3D9ConstantType::Bool && ShaderType == D3D9ShaderType::VertexShader) {
+      // Bool constants are only backed by memory for SWVP vertex shaders
+      constSet.dirty |= StartRegister < constSet.shaderConstantsInfo.boolCount && CanSWVP();
+    }
+
+    return D3D_OK;
+  }
+
+
+  template<D3D9ShaderType ShaderType, D3D9ConstantType ConstantType, typename T>
+  HRESULT D3D9DeviceEx::SetShaderConstantsTimed(
+          UINT StartRegister, const T* pConstantData, UINT Count) {
+    // Callers already hold LockDevice. Keep QPC/counter guards and their
+    // live state out of the ordinary native setter's inactive stack frame.
+    constexpr D3D9GtaSaStateAuditKind kind = ShaderType == D3D9ShaderType::VertexShader
+      ? ConstantType == D3D9ConstantType::Float ? D3D9GtaSaStateAuditKind::VertexFloatConstants
+      : ConstantType == D3D9ConstantType::Int ? D3D9GtaSaStateAuditKind::VertexIntConstants
+      : D3D9GtaSaStateAuditKind::VertexBoolConstants
+      : ConstantType == D3D9ConstantType::Float ? D3D9GtaSaStateAuditKind::PixelFloatConstants
+      : ConstantType == D3D9ConstantType::Int ? D3D9GtaSaStateAuditKind::PixelIntConstants
+      : D3D9GtaSaStateAuditKind::PixelBoolConstants;
+    D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, kind);
+    return SetShaderConstants<ShaderType, ConstantType, T>(StartRegister, pConstantData, Count);
+  }
+
+
+  ULONG STDMETHODCALLTYPE D3D9BridgeThreadStats::AddRef() { return m_device->AddRef(); }
+  ULONG STDMETHODCALLTYPE D3D9BridgeThreadStats::Release() { return m_device->Release(); }
+  HRESULT STDMETHODCALLTYPE D3D9BridgeThreadStats::QueryInterface(REFIID iid, void** output) {
+    return m_device->QueryInterface(iid, output);
+  }
+  HRESULT STDMETHODCALLTYPE D3D9BridgeThreadStats::GetThreadStats(D3D9BridgeThreadSnapshot* output) {
+    return m_device->GetBridgeThreadStats(output);
+  }
+  HRESULT D3D9DeviceEx::GetBridgeThreadStats(D3D9BridgeThreadSnapshot* output) {
+    if (!output || output->StructSize != sizeof(*output) || output->Version != 1)
+      return D3DERR_INVALIDCALL;
+    D3D9BridgeThreadSnapshot s = { };
+    s.StructSize = sizeof(s); s.Version = 1;
+    const auto cs = m_csThread.getActivity();
+    s.WallUs = cs.wallUs; s.CsCpu100ns = cs.cpu100ns;
+    s.CsQueueIdleUs = cs.queueIdleUs; s.CsThreadId = cs.threadId;
+    s.OrderedDispatched = cs.dispatched; s.OrderedCompleted = cs.completed;
+    s.AvailableMask = 4u | (cs.cpuAvailable ? 2u : 0u);
+#ifdef _WIN32
+    s.MainThreadId = GetCurrentThreadId();
+    FILETIME created, exited, kernel, user;
+    if (GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
+      s.MainCpu100ns = (uint64_t(kernel.dwHighDateTime) << 32 | kernel.dwLowDateTime)
+        + (uint64_t(user.dwHighDateTime) << 32 | user.dwLowDateTime);
+      s.AvailableMask |= 1u;
+    }
+#endif
+    const auto stats = m_dxvkDevice->getStatCounters();
+    s.CsSyncCount = stats.getCtr(DxvkStatCounter::CsSyncCount);
+    s.CsSyncUs = stats.getCtr(DxvkStatCounter::CsSyncTicks);
+    s.GpuSyncCount = stats.getCtr(DxvkStatCounter::GpuSyncCount);
+    s.GpuSyncUs = stats.getCtr(DxvkStatCounter::GpuSyncTicks);
+    s.GpuIdleUs = stats.getCtr(DxvkStatCounter::GpuIdleTicks);
+    s.Chunks = stats.getCtr(DxvkStatCounter::CsChunkCount);
+    s.Submits = stats.getCtr(DxvkStatCounter::QueueSubmitCount);
+    *output = s;
+    return S_OK;
+  }
+
+  ULONG STDMETHODCALLTYPE D3D9BridgeDiagnostics::AddRef() { return m_device->AddRef(); }
+  ULONG STDMETHODCALLTYPE D3D9BridgeDiagnostics::Release() { return m_device->Release(); }
+  HRESULT STDMETHODCALLTYPE D3D9BridgeDiagnostics::QueryInterface(REFIID iid, void** output) {
+    return m_device->QueryInterface(iid, output);
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9BridgeDiagnostics::SetCaptureOwner(BOOL owner) {
+    auto lock = m_device->LockDevice();
+    if (!owner)
+      InterruptAudit("capture-owner-released");
+    else if (!IsCaptureOwner() && m_device->GetGtaSaCompat()->IsStateAuditActive())
+      m_device->GetGtaSaCompat()->FinishStateAudit("capture-owner-acquired");
+    m_owner.store(owner != FALSE, std::memory_order_relaxed);
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9BridgeDiagnostics::StartAudit(UINT64 captureId, UINT durationMs) {
+    auto lock = m_device->LockDevice();
+    if (!captureId || !durationMs || !IsCaptureOwner() || m_audit.Active)
+      return D3DERR_INVALIDCALL;
+    m_audit = { };
+    m_audit.StructSize = sizeof(m_audit);
+    m_audit.Version = D3D9_BRIDGE_DIAGNOSTICS_VERSION;
+    m_audit.CaptureId = captureId;
+    m_audit.DurationMs = durationMs;
+    m_audit.Available = m_device->GetGtaSaCompat()->IsEnabled();
+    if (!m_audit.Available) {
+      m_audit.Status = D3D9_BRIDGE_AUDIT_UNAVAILABLE;
+      return D3DERR_NOTAVAILABLE;
+    }
+    m_audit.Status = D3D9_BRIDGE_AUDIT_ACTIVE;
+    m_audit.Active = TRUE;
+    m_device->GetGtaSaCompat()->StartStateAudit("Bridge", durationMs);
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9BridgeDiagnostics::StopAudit(UINT64 captureId) {
+    auto lock = m_device->LockDevice();
+    if (!captureId || captureId != m_audit.CaptureId)
+      return D3DERR_INVALIDCALL;
+    if (!m_audit.Active)
+      return S_FALSE;
+    m_device->GetGtaSaCompat()->FinishStateAudit("bridge-complete");
+    return S_OK;
+  }
+
+  void D3D9BridgeDiagnostics::InterruptAudit(const char* reason) {
+    if (m_audit.Active)
+      m_device->GetGtaSaCompat()->FinishStateAudit(reason);
+  }
+
+  void D3D9BridgeDiagnostics::AuditFinished(const char* reason) {
+    if (!m_audit.Active)
+      return;
+    m_device->GetGtaSaCompat()->CopyStateAudit(m_audit);
+    m_audit.Active = FALSE;
+    m_audit.Status = reason && std::strcmp(reason, "bridge-complete") == 0
+      ? D3D9_BRIDGE_AUDIT_COMPLETE : D3D9_BRIDGE_AUDIT_INTERRUPTED;
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9BridgeDiagnostics::GetAudit(D3D9BridgeAuditSnapshot* output) {
+    if (!output)
+      return E_POINTER;
+    if (output->StructSize != sizeof(*output) || output->Version != D3D9_BRIDGE_DIAGNOSTICS_VERSION)
+      return D3DERR_INVALIDCALL;
+    auto lock = m_device->LockDevice();
+    auto snapshot = m_audit;
+    snapshot.StructSize = sizeof(snapshot);
+    snapshot.Version = D3D9_BRIDGE_DIAGNOSTICS_VERSION;
+    if (!snapshot.CaptureId) {
+      snapshot.Available = m_device->GetGtaSaCompat()->IsEnabled();
+      snapshot.Status = snapshot.Available ? D3D9_BRIDGE_AUDIT_IDLE : D3D9_BRIDGE_AUDIT_UNAVAILABLE;
+    }
+    if (snapshot.Active)
+      m_device->GetGtaSaCompat()->CopyStateAudit(snapshot);
+    *output = snapshot;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9BridgeDiagnostics::PublishHud(const D3D9BridgeHudSnapshot* input) {
+    if (!input)
+      return E_POINTER;
+    if (input->StructSize != sizeof(*input) || input->Version != D3D9_BRIDGE_DIAGNOSTICS_VERSION
+     || input->LineCount > D3D9_BRIDGE_HUD_LINE_COUNT || input->ProgressPermille > 1000)
+      return D3DERR_INVALIDCALL;
+    for (UINT i = 0; i < input->LineCount; i++) {
+      const auto* end = static_cast<const char*>(std::memchr(input->Lines[i], 0, D3D9_BRIDGE_HUD_LINE_CAPACITY));
+      if (!end)
+        return D3DERR_INVALIDCALL;
+      for (const char* c = input->Lines[i]; c != end; ++c) {
+        if (static_cast<unsigned char>(*c) < 32 || static_cast<unsigned char>(*c) > 126)
+          return D3DERR_INVALIDCALL;
+      }
+    }
+    std::lock_guard<std::mutex> lock(m_hudMutex);
+    m_hud = *input;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9BridgeDiagnostics::GetHud(D3D9BridgeHudSnapshot* output) {
+    if (!output)
+      return E_POINTER;
+    if (output->StructSize != sizeof(*output) || output->Version != D3D9_BRIDGE_DIAGNOSTICS_VERSION)
+      return D3DERR_INVALIDCALL;
+    std::lock_guard<std::mutex> lock(m_hudMutex);
+    *output = m_hud;
+    output->StructSize = sizeof(*output);
+    output->Version = D3D9_BRIDGE_DIAGNOSTICS_VERSION;
+    if (!m_hud.StructSize && IsCaptureOwner()) {
+      output->Visible = TRUE;
+      output->LineCount = 1;
+      std::strcpy(output->Lines[0], "RenderStack ready: F8 / F7 capture");
+    }
+    return S_OK;
+  }
+
+
   D3D9DeviceEx::D3D9DeviceEx(
           D3D9InterfaceEx*       pParent,
           D3D9Adapter*           pAdapter,
@@ -214,7 +530,8 @@ namespace dxvk {
     , m_gtaSaCompat        ( this, m_d3d9Options.gtaSaCompat, m_d3d9Options.gtaSaCompatDiagnostics )
     , m_d3d9On12Args       ( pAdapter->Get9On12Args() )
     , m_d3d9On12           ( this )
-    , m_d3d8Bridge         ( this ) {
+    , m_d3d8Bridge         ( this )
+    , m_bridgeDiagnostics ( this ) {
 
     InitShaderOptions();
 
@@ -335,6 +652,21 @@ namespace dxvk {
 
     *ppvObject = nullptr;
 
+    if (riid == IID_D3D9BridgeThreadStats) {
+      *ppvObject = ref(&m_threadStats);
+      return S_OK;
+    }
+
+    if (riid == IID_D3D9BridgeDiagnostics) {
+      *ppvObject = ref(&m_bridgeDiagnostics);
+      return S_OK;
+    }
+
+    if (riid == IID_D3D9BridgeLifecycle) {
+      *ppvObject = ref(static_cast<ID3D9BridgeLifecycle*>(this));
+      return S_OK;
+    }
+
     bool extended = m_parent->IsExtended()
                  && riid == __uuidof(IDirect3DDevice9Ex);
 
@@ -389,6 +721,38 @@ namespace dxvk {
     return E_NOINTERFACE;
   }
 
+
+  ULONG STDMETHODCALLTYPE D3D9DeviceEx::Release() {
+    uint32_t refs = m_refCount.load();
+    do {
+      if (!refs) return 0;
+    } while (!m_refCount.compare_exchange_weak(refs, refs - 1));
+    if (refs == 1) {
+      m_bridgeDiagnostics.InterruptAudit("device-final-release");
+      NotifyBridge(D3D9BridgeEvent::FinalRelease);
+      ReleasePrivate();
+    }
+    return refs - 1;
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetObserver(const D3D9BridgeObserver* observer) {
+    std::lock_guard<std::recursive_mutex> lock(m_bridgeObserverMutex);
+    if (observer && (observer->StructSize < sizeof(*observer)
+     || !observer->Notify || m_bridgeObserver.Notify))
+      return D3DERR_INVALIDCALL;
+    m_bridgeObserver = observer ? *observer : D3D9BridgeObserver{};
+    return S_OK;
+  }
+
+  void D3D9DeviceEx::NotifyBridge(D3D9BridgeEvent event, HRESULT result,
+      D3DPRESENT_PARAMETERS* params, const D3D9BridgePresentArgs* present) {
+    std::lock_guard<std::recursive_mutex> lock(m_bridgeObserverMutex);
+    const auto observer = m_bridgeObserver;
+    if (event == D3D9BridgeEvent::FinalRelease)
+      m_bridgeObserver = {};
+    if (observer.Notify)
+      observer.Notify(observer.Context, this, event, result, params, present);
+  }
 
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::TestCooperativeLevel() {
     D3D9DeviceLock lock = LockDevice();
@@ -617,6 +981,7 @@ namespace dxvk {
 
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::Reset(D3DPRESENT_PARAMETERS* pPresentationParameters) {
     D3D9DeviceLock lock = LockDevice();
+    NotifyBridge(D3D9BridgeEvent::ResetBefore, S_OK, pPresentationParameters);
 
     if (m_d3d9Options.gtaSaDeferShaderBinding) {
       InvalidateGtaSaDeferredShaderBinding<D3D9ShaderType::VertexShader>();
@@ -625,6 +990,7 @@ namespace dxvk {
     m_gtaSaCompat.OnResetBegin();
     auto finishReset = [this, pPresentationParameters] (HRESULT result) {
       m_gtaSaCompat.OnResetEnd(result, pPresentationParameters);
+      NotifyBridge(D3D9BridgeEvent::ResetAfter, result, pPresentationParameters);
       return result;
     };
 
@@ -1262,6 +1628,9 @@ namespace dxvk {
         Logger::warn("D3D9DeviceEx::UpdateTexture: Source dimensions exceed the destination");
     }
 
+#ifdef DXVK_USE_UNMAPPABLE_MEMORY
+    TextureUploadMappingScope mappingScope(*this, srcTexInfo);
+#endif
     for (uint32_t a = 0; a < arraySlices; a++) {
       // The docs claim that the dirty box is just a performance optimization, however in practice games rely on it.
       const D3DBOX& box = srcTexInfo->GetDirtyBox(a);
@@ -1858,6 +2227,8 @@ namespace dxvk {
       }
 
       if (m_state.viewport != viewport) {
+        if (unlikely(ShouldCaptureGtaSaStateJournal()))
+          m_gtaSaStateJournal->CaptureCurrentViewport();
         m_dirty.set(D3D9DeviceDirtyFlag::FFViewport);
         m_dirty.set(D3D9DeviceDirtyFlag::PointScale);
         m_dirty.set(D3D9DeviceDirtyFlag::ViewportScissor);
@@ -1866,6 +2237,8 @@ namespace dxvk {
       }
 
       if (m_state.scissorRect != scissorRect) {
+        if (unlikely(ShouldCaptureGtaSaStateJournal()))
+          m_gtaSaStateJournal->CaptureCurrentScissorRect();
         m_dirty.set(D3D9DeviceDirtyFlag::ViewportScissor);
         m_state.scissorRect = scissorRect;
         gtaSaStateChanged = true;
@@ -2543,6 +2916,7 @@ namespace dxvk {
 
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
     D3D9DeviceLock lock = LockDevice();
+    D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::RenderState);
 
     // D3D9 only allows reading for values 0 and 7-255 so we don't need to do anything but return OK
     if (unlikely(State > 255 || (State < D3DRS_ZENABLE && State != 0))) {
@@ -3076,6 +3450,7 @@ namespace dxvk {
 
     for (UINT i = 0u; i < pBatch->VertexFloatRangeCount; i++) {
       const auto& range = pBatch->VertexFloatRanges[i];
+      D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::VertexFloatConstants);
       result = SetShaderConstants<
         D3D9ShaderType::VertexShader,
         D3D9ConstantType::Float>(
@@ -3085,6 +3460,7 @@ namespace dxvk {
 
     for (UINT i = 0u; i < pBatch->VertexBoolRangeCount; i++) {
       const auto& range = pBatch->VertexBoolRanges[i];
+      D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::VertexBoolConstants);
       result = SetShaderConstants<
         D3D9ShaderType::VertexShader,
         D3D9ConstantType::Bool>(
@@ -3094,6 +3470,7 @@ namespace dxvk {
 
     for (UINT i = 0u; i < pBatch->PixelFloatRangeCount; i++) {
       const auto& range = pBatch->PixelFloatRanges[i];
+      D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::PixelFloatConstants);
       result = SetShaderConstants<
         D3D9ShaderType::PixelShader,
         D3D9ConstantType::Float>(
@@ -3103,6 +3480,7 @@ namespace dxvk {
 
     for (UINT i = 0u; i < pBatch->PixelBoolRangeCount; i++) {
       const auto& range = pBatch->PixelBoolRanges[i];
+      D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::PixelBoolConstants);
       result = SetShaderConstants<
         D3D9ShaderType::PixelShader,
         D3D9ConstantType::Bool>(
@@ -3376,6 +3754,7 @@ namespace dxvk {
 
     for (UINT i = 0u; i < pBatch->VertexFloatRangeCount; i++) {
       const auto& range = pBatch->VertexFloatRanges[i];
+      D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::VertexFloatConstants);
       result = SetShaderConstants<
         D3D9ShaderType::VertexShader,
         D3D9ConstantType::Float>(
@@ -3385,6 +3764,7 @@ namespace dxvk {
 
     for (UINT i = 0u; i < pBatch->VertexIntRangeCount; i++) {
       const auto& range = pBatch->VertexIntRanges[i];
+      D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::VertexIntConstants);
       result = SetShaderConstants<
         D3D9ShaderType::VertexShader,
         D3D9ConstantType::Int>(
@@ -3394,6 +3774,7 @@ namespace dxvk {
 
     for (UINT i = 0u; i < pBatch->VertexBoolRangeCount; i++) {
       const auto& range = pBatch->VertexBoolRanges[i];
+      D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::VertexBoolConstants);
       result = SetShaderConstants<
         D3D9ShaderType::VertexShader,
         D3D9ConstantType::Bool>(
@@ -3403,6 +3784,7 @@ namespace dxvk {
 
     for (UINT i = 0u; i < pBatch->PixelFloatRangeCount; i++) {
       const auto& range = pBatch->PixelFloatRanges[i];
+      D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::PixelFloatConstants);
       result = SetShaderConstants<
         D3D9ShaderType::PixelShader,
         D3D9ConstantType::Float>(
@@ -3412,6 +3794,7 @@ namespace dxvk {
 
     for (UINT i = 0u; i < pBatch->PixelIntRangeCount; i++) {
       const auto& range = pBatch->PixelIntRanges[i];
+      D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::PixelIntConstants);
       result = SetShaderConstants<
         D3D9ShaderType::PixelShader,
         D3D9ConstantType::Int>(
@@ -3421,6 +3804,7 @@ namespace dxvk {
 
     for (UINT i = 0u; i < pBatch->PixelBoolRangeCount; i++) {
       const auto& range = pBatch->PixelBoolRanges[i];
+      D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::PixelBoolConstants);
       result = SetShaderConstants<
         D3D9ShaderType::PixelShader,
         D3D9ConstantType::Bool>(
@@ -3503,6 +3887,7 @@ namespace dxvk {
       m_dirty.set(D3D9DeviceDirtyFlag::FFVertexData);
 
     light = D3D9LightState();
+    NotifyGtaSaStateChanged();
   }
 
 
@@ -3910,6 +4295,8 @@ namespace dxvk {
      || upStream.offset != 0u
      || upStream.length != 0u
      || upStream.stride != 0u) {
+      if (unlikely(ShouldCaptureGtaSaStateJournal()))
+        m_gtaSaStateJournal->CaptureCurrentStreamSource(0u);
       upStream.vertexBuffer = nullptr;
       upStream.offset       = 0u;
       upStream.length       = 0u;
@@ -3989,6 +4376,13 @@ namespace dxvk {
       || upStream.length != 0u
       || upStream.stride != 0u;
     const bool indicesChanged = m_state.indices != nullptr;
+
+    if (unlikely(ShouldCaptureGtaSaStateJournal())) {
+      if (streamChanged)
+        m_gtaSaStateJournal->CaptureCurrentStreamSource(0u);
+      if (indicesChanged)
+        m_gtaSaStateJournal->CaptureCurrentIndices();
+    }
 
     upStream.vertexBuffer = nullptr;
     upStream.offset       = 0u;
@@ -4324,6 +4718,7 @@ namespace dxvk {
 
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetVertexShader(IDirect3DVertexShader9* pShader) {
     D3D9DeviceLock lock = LockDevice();
+    D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::VertexShader);
 
     D3D9VertexShader* shader = static_cast<D3D9VertexShader*>(pShader);
 
@@ -4400,6 +4795,13 @@ namespace dxvk {
     const float* pConstantData,
           UINT   Vector4fCount) {
     D3D9DeviceLock lock = LockDevice();
+    if (unlikely(m_gtaSaCompat.IsStateAuditActive()))
+      return SetShaderConstantsTimed<
+        D3D9ShaderType::VertexShader,
+        D3D9ConstantType::Float>(
+          StartRegister,
+          pConstantData,
+          Vector4fCount);
 
     return SetShaderConstants<
       D3D9ShaderType::VertexShader,
@@ -4430,6 +4832,13 @@ namespace dxvk {
     const int* pConstantData,
           UINT Vector4iCount) {
     D3D9DeviceLock lock = LockDevice();
+    if (unlikely(m_gtaSaCompat.IsStateAuditActive()))
+      return SetShaderConstantsTimed<
+        D3D9ShaderType::VertexShader,
+        D3D9ConstantType::Int>(
+          StartRegister,
+          pConstantData,
+          Vector4iCount);
 
     return SetShaderConstants<
       D3D9ShaderType::VertexShader,
@@ -4460,6 +4869,13 @@ namespace dxvk {
     const BOOL* pConstantData,
           UINT  BoolCount) {
     D3D9DeviceLock lock = LockDevice();
+    if (unlikely(m_gtaSaCompat.IsStateAuditActive()))
+      return SetShaderConstantsTimed<
+        D3D9ShaderType::VertexShader,
+        D3D9ConstantType::Bool>(
+          StartRegister,
+          pConstantData,
+          BoolCount);
 
     return SetShaderConstants<
       D3D9ShaderType::VertexShader,
@@ -4717,6 +5133,7 @@ namespace dxvk {
 
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetPixelShader(IDirect3DPixelShader9* pShader) {
     D3D9DeviceLock lock = LockDevice();
+    D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::PixelShader);
 
     D3D9PixelShader* shader = static_cast<D3D9PixelShader*>(pShader);
 
@@ -4803,6 +5220,13 @@ namespace dxvk {
     const float* pConstantData,
     UINT   Vector4fCount) {
     D3D9DeviceLock lock = LockDevice();
+    if (unlikely(m_gtaSaCompat.IsStateAuditActive()))
+      return SetShaderConstantsTimed <
+        D3D9ShaderType::PixelShader,
+        D3D9ConstantType::Float>(
+          StartRegister,
+          pConstantData,
+          Vector4fCount);
 
     return SetShaderConstants <
       D3D9ShaderType::PixelShader,
@@ -4833,6 +5257,13 @@ namespace dxvk {
     const int* pConstantData,
     UINT Vector4iCount) {
     D3D9DeviceLock lock = LockDevice();
+    if (unlikely(m_gtaSaCompat.IsStateAuditActive()))
+      return SetShaderConstantsTimed<
+        D3D9ShaderType::PixelShader,
+        D3D9ConstantType::Int>(
+          StartRegister,
+          pConstantData,
+          Vector4iCount);
 
     return SetShaderConstants<
       D3D9ShaderType::PixelShader,
@@ -4863,6 +5294,13 @@ namespace dxvk {
     const BOOL* pConstantData,
     UINT  BoolCount) {
     D3D9DeviceLock lock = LockDevice();
+    if (unlikely(m_gtaSaCompat.IsStateAuditActive()))
+      return SetShaderConstantsTimed<
+        D3D9ShaderType::PixelShader,
+        D3D9ConstantType::Bool>(
+          StartRegister,
+          pConstantData,
+          BoolCount);
 
     return SetShaderConstants<
       D3D9ShaderType::PixelShader,
@@ -5064,6 +5502,9 @@ namespace dxvk {
     const RGNDATA* pDirtyRegion,
           DWORD dwFlags) {
 
+    const D3D9BridgePresentArgs present{pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion};
+    NotifyBridge(D3D9BridgeEvent::PresentBefore, S_OK, nullptr, &present);
+
     if (m_cursor.IsSoftwareCursor()) {
       D3D9_SOFTWARE_CURSOR* pSoftwareCursor = m_cursor.GetSoftwareCursor();
 
@@ -5086,12 +5527,14 @@ namespace dxvk {
       }
     }
 
-    return m_implicitSwapchain->Present(
+    const HRESULT result = m_implicitSwapchain->Present(
       pSourceRect,
       pDestRect,
       hDestWindowOverride,
       pDirtyRegion,
       dwFlags);
+    NotifyBridge(D3D9BridgeEvent::PresentAfter, result, nullptr, &present);
+    return result;
   }
 
 
@@ -5306,6 +5749,7 @@ namespace dxvk {
           D3DPRESENT_PARAMETERS* pPresentationParameters,
           D3DDISPLAYMODEEX*      pFullscreenDisplayMode) {
     D3D9DeviceLock lock = LockDevice();
+    NotifyBridge(D3D9BridgeEvent::ResetBefore, S_OK, pPresentationParameters);
 
     if (m_d3d9Options.gtaSaDeferShaderBinding) {
       InvalidateGtaSaDeferredShaderBinding<D3D9ShaderType::VertexShader>();
@@ -5314,6 +5758,7 @@ namespace dxvk {
     m_gtaSaCompat.OnResetBegin();
     auto finishReset = [this, pPresentationParameters] (HRESULT result) {
       m_gtaSaCompat.OnResetEnd(result, pPresentationParameters);
+      NotifyBridge(D3D9BridgeEvent::ResetAfter, result, pPresentationParameters);
       return result;
     };
 
@@ -5388,6 +5833,7 @@ namespace dxvk {
     D3DSAMPLERSTATETYPE Type,
     DWORD               Value) {
     D3D9DeviceLock lock = LockDevice();
+    D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::SamplerState);
 
     if (unlikely(ShouldRecord()))
       return m_recorder->SetStateSamplerState(StateSampler, Type, Value);
@@ -5404,15 +5850,24 @@ namespace dxvk {
     if (unlikely(ShouldCaptureGtaSaStateJournal()))
       m_gtaSaStateJournal->CaptureCurrentStateSamplerState(StateSampler, Type);
 
+    const DWORD oldValue = state[StateSampler][Type];
     state[StateSampler][Type] = Value;
     NotifyGtaSaStateChanged();
 
     const uint32_t samplerBit = 1u << StateSampler;
 
-    m_textureSlotTracking.samplerStateDirty |= samplerBit;
+    // Only D3D9SamplerInfo fields affect sampler creation. Keep ignored state
+    // stored/captured, and defer an unused border color until border is enabled.
+    if (Type <= D3DSAMP_MAXANISOTROPY
+     && (Type != D3DSAMP_BORDERCOLOR || SamplerUsesBorderColor(StateSampler)))
+      m_textureSlotTracking.samplerStateDirty |= samplerBit;
 
-    if (Type == D3DSAMP_SRGBTEXTURE && (m_textureSlotTracking.bound & samplerBit))
+    if (Type == D3DSAMP_SRGBTEXTURE && ((oldValue ^ Value) & 1u)
+     && (m_textureSlotTracking.bound & samplerBit)) {
       m_textureSlotTracking.textureDirty |= samplerBit;
+      if (SamplerUsesBorderColor(StateSampler))
+        m_textureSlotTracking.samplerStateDirty |= samplerBit;
+    }
 
     constexpr DWORD Fetch4Enabled  = MAKEFOURCC('G', 'E', 'T', '4');
     constexpr DWORD Fetch4Disabled = MAKEFOURCC('G', 'E', 'T', '1');
@@ -5435,6 +5890,7 @@ namespace dxvk {
 
   HRESULT D3D9DeviceEx::SetStateTexture(DWORD StateSampler, IDirect3DBaseTexture9* pTexture) {
     D3D9DeviceLock lock = LockDevice();
+    D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::Texture);
 
     if (unlikely(ShouldRecord()))
       return m_recorder->SetStateTexture(StateSampler, pTexture);
@@ -5480,15 +5936,17 @@ namespace dxvk {
     DWORD oldUsage = oldTexture != nullptr ? oldTexture->Desc()->Usage : 0;
     DWORD newUsage = newTexture != nullptr ? newTexture->Desc()->Usage : 0;
     DWORD combinedUsage = oldUsage | newUsage;
+    // Replacing the private binding may destroy the old texture.
+    const bool formatChanged = !oldTexture || !newTexture
+      || oldTexture->Desc()->Format != newTexture->Desc()->Format;
     TextureChangePrivate(m_state.textures[StateSampler], pTexture);
     NotifyGtaSaStateChanged();
     m_textureSlotTracking.textureDirty |= 1u << StateSampler;
-    UpdateTextureBitmasks(StateSampler, combinedUsage);
+    UpdateTextureBitmasks(StateSampler, newTexture, combinedUsage);
 
     // If the texture format changes and the corresponding sampler uses
     // border colors, we may need to update the border color swizzle
-    if ((!oldTexture || !newTexture || oldTexture->Desc()->Format != newTexture->Desc()->Format)
-      && SamplerUsesBorderColor(StateSampler))
+    if (formatChanged && SamplerUsesBorderColor(StateSampler))
         m_textureSlotTracking.samplerStateDirty |= 1u << StateSampler;
 
     return D3D_OK;
@@ -5535,6 +5993,7 @@ namespace dxvk {
     Type = std::min(Type, D3D9TextureStageStateTypes(DXVK_TSS_COUNT - 1));
 
     D3D9DeviceLock lock = LockDevice();
+    D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::TextureStageState);
 
     if (unlikely(ShouldRecord()))
       return m_recorder->SetStateTextureStageState(Stage, Type, Value);
@@ -7093,7 +7552,7 @@ namespace dxvk {
   }
 
 
-  inline void D3D9DeviceEx::UpdateTextureBitmasks(uint32_t index, DWORD combinedUsage) {
+  inline void D3D9DeviceEx::UpdateTextureBitmasks(uint32_t index, D3D9CommonTexture* tex, DWORD combinedUsage) {
     const uint32_t bit = 1 << index;
 
     m_textureSlotTracking.rtUsage                &= ~bit;
@@ -7101,8 +7560,6 @@ namespace dxvk {
     m_textureSlotTracking.bound                  &= ~bit;
     m_textureSlotTracking.needsUpload            &= ~bit;
     m_textureSlotTracking.needsMipGen            &= ~bit;
-
-    auto tex = GetCommonTexture(m_state.textures[index]);
 
     if (likely(IsPSSampler(index))) {
       const uint32_t textureType = tex != nullptr
@@ -7360,6 +7817,9 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::UploadManagedTexture(D3D9CommonTexture* pResource) {
+#ifdef DXVK_USE_UNMAPPABLE_MEMORY
+    TextureUploadMappingScope mappingScope(*this, pResource);
+#endif
     for (uint32_t subresource = 0; subresource < pResource->CountSubresources(); subresource++) {
       if (!pResource->NeedsUpload(subresource))
         continue;
@@ -8204,10 +8664,9 @@ namespace dxvk {
     const std::array<DWORD, SamplerStateCount> samplerState =
       m_state.samplerStates[Sampler];
 
-    Rc<DxvkImageView> imageView;
-
-    if (tex && SamplerUsesBorderColor(Sampler))
-      imageView = tex->GetSampleView(srgb);
+    const Rc<DxvkImageView> noView;
+    const auto& imageView = tex && SamplerUsesBorderColor(Sampler)
+      ? tex->GetSampleView(srgb) : noView;
 
     if (!PrepareGtaSaSamplerBinding(
           Sampler,
@@ -8226,7 +8685,7 @@ namespace dxvk {
       cIsCube     = tex && tex->IsCube(),
       cIsMultiMip = tex && (tex->Desc()->MipLevels > 1u),
       cIsDepth    = bool(m_textureSlotTracking.depth & (1u << Sampler)),
-      cView       = std::move(imageView),
+      cView       = imageView,
       cBindId     = m_samplerBindCount
     ] (DxvkContext* ctx) {
       DxvkSamplerKey key = { };
@@ -8294,14 +8753,14 @@ namespace dxvk {
   void D3D9DeviceEx::BindTexture(DWORD StateSampler) {
     bool srgb = m_state.samplerStates[StateSampler][D3DSAMP_SRGBTEXTURE] & 0x1;
     D3D9CommonTexture* commonTex = GetCommonTexture(m_state.textures[StateSampler]);
-    Rc<DxvkImageView> imageView = commonTex->GetSampleView(srgb);
+    const auto& imageView = commonTex->GetSampleView(srgb);
 
     if (!PrepareGtaSaTextureBinding(StateSampler, imageView))
       return;
 
     EmitCs([
       cSlot       = StateSampler,
-      cImageView  = std::move(imageView)
+      cImageView  = imageView
     ](DxvkContext* ctx) mutable {
       auto [stage, slot] = D3D9ShaderResourceMapping::getTextureSlotInfo(cSlot);
       ctx->bindResourceImageView(stage, slot, std::move(cImageView));
@@ -8310,6 +8769,11 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::BindSamplerBatch(uint32_t mask) {
+    // A single dirty slot needs only the existing compact command. Avoid
+    // constructing and capturing the full SamplerCount array for that case.
+    if (TryD3D9SingleBinding(mask, [this](uint32_t slot) { BindSampler(slot); }))
+      return;
+
     struct PendingSampler {
       DWORD                   slot = 0u;
       D3D9SamplerInfo         state = D3D9SamplerInfo(std::array<DWORD, SamplerStateCount> { });
@@ -8329,9 +8793,9 @@ namespace dxvk {
       const std::array<DWORD, SamplerStateCount> samplerState =
         m_state.samplerStates[i];
 
-      Rc<DxvkImageView> imageView;
-      if (tex && SamplerUsesBorderColor(i))
-        imageView = tex->GetSampleView(srgb);
+      const Rc<DxvkImageView> noView;
+      const auto& imageView = tex && SamplerUsesBorderColor(i)
+        ? tex->GetSampleView(srgb) : noView;
 
       if (!PrepareGtaSaSamplerBinding(
             i,
@@ -8350,7 +8814,7 @@ namespace dxvk {
       binding.isCube = tex && tex->IsCube();
       binding.isMultiMip = tex && (tex->Desc()->MipLevels > 1u);
       binding.isDepth = bool(m_textureSlotTracking.depth & (1u << i));
-      binding.view = std::move(imageView);
+      binding.view = imageView;
       binding.bindId = m_samplerBindCount;
     }
 
@@ -8429,6 +8893,9 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::BindTextureBatch(uint32_t mask) {
+    if (TryD3D9SingleBinding(mask, [this](uint32_t slot) { BindTexture(slot); }))
+      return;
+
     struct PendingTexture {
       DWORD             slot = 0u;
       Rc<DxvkImageView> view;
@@ -8440,14 +8907,14 @@ namespace dxvk {
     for (uint32_t i : bit::BitMask(mask)) {
       bool srgb = m_state.samplerStates[i][D3DSAMP_SRGBTEXTURE] & 0x1;
       D3D9CommonTexture* commonTex = GetCommonTexture(m_state.textures[i]);
-      Rc<DxvkImageView> imageView = commonTex->GetSampleView(srgb);
+      const auto& imageView = commonTex->GetSampleView(srgb);
 
       if (!PrepareGtaSaTextureBinding(i, imageView))
         continue;
 
       auto& binding = bindings[bindingCount++];
       binding.slot = i;
-      binding.view = std::move(imageView);
+      binding.view = imageView;
     }
 
     if (bindingCount == 0u)
@@ -9245,6 +9712,10 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::SetVertexBoolBitfield(uint32_t idx, uint32_t mask, uint32_t bits) {
+    if (unlikely(ShouldCaptureGtaSaStateJournal())) {
+      for (uint32_t bit : bit::BitMask(mask))
+        m_gtaSaStateJournal->CaptureCurrentVertexShaderConstantB(idx * 32u + bit, 1u);
+    }
     m_state.vsConsts->bConsts[idx] &= ~mask;
     m_state.vsConsts->bConsts[idx] |= bits & mask;
     NotifyGtaSaStateChanged();
@@ -9254,6 +9725,10 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::SetPixelBoolBitfield(uint32_t idx, uint32_t mask, uint32_t bits) {
+    if (unlikely(ShouldCaptureGtaSaStateJournal())) {
+      for (uint32_t bit : bit::BitMask(mask))
+        m_gtaSaStateJournal->CaptureCurrentPixelShaderConstantB(idx * 32u + bit, 1u);
+    }
     m_state.psConsts->bConsts[idx] &= ~mask;
     m_state.psConsts->bConsts[idx] |= bits & mask;
     NotifyGtaSaStateChanged();
@@ -9430,132 +9905,6 @@ namespace dxvk {
 
     *pShaderModule   = std::move(commonShader);
     *pBytecodeLength = bytecodeLength;
-    return D3D_OK;
-  }
-
-
-  template<D3D9ShaderType ShaderType, D3D9ConstantType ConstantType, typename T>
-  HRESULT D3D9DeviceEx::SetShaderConstants(
-          UINT  StartRegister,
-    const T*    pConstantData,
-          UINT  Count) {
-    uint32_t maxRegCount = DetermineSoftwareRegCount<ShaderType, ConstantType>();
-
-    // Error out in case of StartRegister + Count overflow
-    if (unlikely(StartRegister > maxRegCount) || unlikely(Count > maxRegCount - StartRegister))
-      return D3DERR_INVALIDCALL;
-
-    if (unlikely(!Count))
-      return D3D_OK;
-
-    // Clamp count to the maximum that we are going to access in shaders.
-    // For PS or SWVP VS, constant counts won't change, so skip.
-    if (ShaderType == D3D9ShaderType::VertexShader && likely(!CanSWVP())) {
-      maxRegCount = DetermineHardwareRegCount<ShaderType, ConstantType>();
-
-      if (unlikely(StartRegister >= maxRegCount))
-        return D3D_OK;
-
-      Count = std::min(maxRegCount - StartRegister, Count);
-    }
-
-    if (unlikely(!pConstantData))
-      return D3DERR_INVALIDCALL;
-
-    if (unlikely(ShouldRecord())) {
-      return m_recorder->SetShaderConstants<ShaderType, ConstantType, T>(
-        StartRegister, pConstantData, Count);
-    }
-
-    if (GetOptions()->gtaSaConstantDedup && AreConstantsEqual<ShaderType, ConstantType, T>(
-          &m_state, StartRegister, pConstantData, Count)) {
-      if constexpr (ShaderType == D3D9ShaderType::VertexShader) {
-        if constexpr (ConstantType == D3D9ConstantType::Float)
-          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::VertexFloatConstants, true, Count);
-        else if constexpr (ConstantType == D3D9ConstantType::Int)
-          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::VertexIntConstants, true, Count);
-        else
-          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::VertexBoolConstants, true, Count);
-      } else {
-        if constexpr (ConstantType == D3D9ConstantType::Float)
-          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::PixelFloatConstants, true, Count);
-        else if constexpr (ConstantType == D3D9ConstantType::Int)
-          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::PixelIntConstants, true, Count);
-        else
-          m_gtaSaCompat.RecordStateAudit(D3D9GtaSaStateAuditKind::PixelBoolConstants, true, Count);
-      }
-      return D3D_OK;
-    }
-
-    if (unlikely(ShouldCaptureGtaSaStateJournal())) {
-      if constexpr (ShaderType == D3D9ShaderType::VertexShader) {
-        if constexpr (ConstantType == D3D9ConstantType::Float)
-          m_gtaSaStateJournal->CaptureCurrentVertexShaderConstantF(StartRegister, Count);
-        else if constexpr (ConstantType == D3D9ConstantType::Int)
-          m_gtaSaStateJournal->CaptureCurrentVertexShaderConstantI(StartRegister, Count);
-        else
-          m_gtaSaStateJournal->CaptureCurrentVertexShaderConstantB(StartRegister, Count);
-      } else {
-        if constexpr (ConstantType == D3D9ConstantType::Float)
-          m_gtaSaStateJournal->CaptureCurrentPixelShaderConstantF(StartRegister, Count);
-        else if constexpr (ConstantType == D3D9ConstantType::Int)
-          m_gtaSaStateJournal->CaptureCurrentPixelShaderConstantI(StartRegister, Count);
-        else
-          m_gtaSaStateJournal->CaptureCurrentPixelShaderConstantB(StartRegister, Count);
-      }
-    }
-
-    // Only mark constants as dirty if any of the actual data has changed
-    bool anyConstantDirty = UpdateStateConstants<ShaderType, ConstantType, T>(
-      &m_state, StartRegister, pConstantData, Count);
-
-    if constexpr (ShaderType == D3D9ShaderType::VertexShader) {
-      if constexpr (ConstantType == D3D9ConstantType::Float) {
-        m_gtaSaCompat.RecordStateAudit(
-          D3D9GtaSaStateAuditKind::VertexFloatConstants, !anyConstantDirty, Count);
-      } else if constexpr (ConstantType == D3D9ConstantType::Int) {
-        m_gtaSaCompat.RecordStateAudit(
-          D3D9GtaSaStateAuditKind::VertexIntConstants, !anyConstantDirty, Count);
-      } else {
-        m_gtaSaCompat.RecordStateAudit(
-          D3D9GtaSaStateAuditKind::VertexBoolConstants, !anyConstantDirty, Count);
-      }
-    } else {
-      if constexpr (ConstantType == D3D9ConstantType::Float) {
-        m_gtaSaCompat.RecordStateAudit(
-          D3D9GtaSaStateAuditKind::PixelFloatConstants, !anyConstantDirty, Count);
-      } else if constexpr (ConstantType == D3D9ConstantType::Int) {
-        m_gtaSaCompat.RecordStateAudit(
-          D3D9GtaSaStateAuditKind::PixelIntConstants, !anyConstantDirty, Count);
-      } else {
-        m_gtaSaCompat.RecordStateAudit(
-          D3D9GtaSaStateAuditKind::PixelBoolConstants, !anyConstantDirty, Count);
-      }
-    }
-
-    if (unlikely(!anyConstantDirty))
-      return D3D_OK;
-
-    NotifyGtaSaStateChanged();
-
-    D3D9ConstantSets& constSet = m_consts[uint32_t(ShaderType)];
-
-    if (ConstantType == D3D9ConstantType::Float) {
-      // Check whether the constant range has any effect on the bound shader.
-      // Also update the dynamic float count for vertex shaders, which is used
-      // to reduce the number of constants copied with dynamic indexing.q
-      constSet.dirty |= StartRegister < constSet.shaderConstantsInfo.floatCount;
-
-      if (ShaderType == D3D9ShaderType::VertexShader)
-        constSet.changedFloatCount = std::max(constSet.changedFloatCount, StartRegister + Count);
-    } else if (ConstantType == D3D9ConstantType::Int) {
-      // Same logic as above except we need to check against the used integer count.
-      constSet.dirty |= StartRegister < constSet.shaderConstantsInfo.intCount;
-    } else if (ConstantType == D3D9ConstantType::Bool && ShaderType == D3D9ShaderType::VertexShader) {
-      // Bool constants are only backed by memory for SWVP vertex shaders
-      constSet.dirty |= StartRegister < constSet.shaderConstantsInfo.boolCount && CanSWVP();
-    }
-
     return D3D_OK;
   }
 
@@ -10529,7 +10878,8 @@ namespace dxvk {
 
     auto iter = m_mappedTextures.leastRecentlyUsedIter();
     while (m_memoryAllocator.getStats().memoryMapped >= threshold && iter != m_mappedTextures.leastRecentlyUsedEndIter()) {
-      if (unlikely((*iter)->IsAnySubresourceLocked() != 0)) {
+      if (unlikely((*iter)->IsAnySubresourceLocked() != 0
+        || (m_textureUploadMappingScope && m_textureUploadMappingScope->Contains(*iter)))) {
         iter++;
         continue;
       }

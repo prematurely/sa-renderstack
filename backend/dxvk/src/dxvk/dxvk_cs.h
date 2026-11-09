@@ -558,6 +558,13 @@ namespace dxvk {
      * \param [in] seq Sequence number to wait for.
      */
     void synchronize(uint64_t seq);
+
+    struct Activity {
+      uint64_t wallUs, cpu100ns, queueIdleUs, dispatched, completed;
+      uint32_t threadId;
+      bool cpuAvailable;
+    };
+    Activity getActivity();
     
     /**
      * \brief Retrieves last executed sequence number
@@ -590,6 +597,10 @@ namespace dxvk {
 
     DxvkCsChunkQueue            m_queueOrdered;
     DxvkCsChunkQueue            m_queueHighPrio;
+
+    // Protected by m_mutex, which the condition wait releases while idle.
+    uint64_t                   m_queueIdleUs = 0u;
+    uint64_t                   m_queueIdleStartUs = 0u;
 
     dxvk::thread                m_thread;
 

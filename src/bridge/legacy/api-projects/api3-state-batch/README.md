@@ -2,6 +2,12 @@
 
 This standalone C++23 project builds `api3-state-batch-lib` (a reusable `StateBatchBuilder`) plus a demo and unit test. The builder accepts `std::span` data, merges adjacent register ranges, validates capacity before constructing the ABI view, and submits through one COM transaction. The demo dynamically loads a supplied D3D9 backend, creates a hidden D3D9 device, and exercises `ID3D9GtaSaCompatDevice2::SubmitStateBatch`.
 
+Overlapping additions follow caller order: the last write wins even when its
+start register is lower than an earlier range. Rejected input or allocation
+failure preserves the existing builder. A returned view borrows builder storage
+until the next mutation or `view()` call. VS register 255 and PS register 223
+each accept one float4; a nonempty range starting at 256/224 is out of bounds.
+
 ```text
 api3-state-batch.exe path\to\d3d9.dll
 ```

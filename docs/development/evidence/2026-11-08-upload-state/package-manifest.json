@@ -1,0 +1,22 @@
+[
+  {
+    "path": "d3d9.dll",
+    "bytes": 1692672,
+    "sha256": "A2407964045254C9D010E496D5A7BAB8D3AA2925960A48CB99F01BA603853391"
+  },
+  {
+    "path": "d3d9.dll.rsym",
+    "bytes": 2194869,
+    "sha256": "F06843D4C61EE82E6CE0AFAE2B735EDD79D8629145DDE9490287FD0883B14FA3"
+  },
+  {
+    "path": "backend\\dxvk-gta\\d3d9.dll",
+    "bytes": 8142848,
+    "sha256": "ECB34529DA46E6671D628D8BC56366017D17A625EDDB8B44F8226085252DA574"
+  },
+  {
+    "path": "backend\\dxvk-gta\\d3d9.dll.rsym",
+    "bytes": 3500510,
+    "sha256": "A0BE3823C413791B000F46D943BEFF6AB50F4B1999829CCE85920331949C05B2"
+  }
+]

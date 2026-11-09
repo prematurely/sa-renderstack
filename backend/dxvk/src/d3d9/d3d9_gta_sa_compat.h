@@ -1,6 +1,7 @@
 #pragma once
 
 #include "d3d9_interfaces.h"
+#include "d3d9_bridge_diagnostics.h"
 
 #include "../dxvk/dxvk_stats.h"
 
@@ -41,6 +42,7 @@ namespace dxvk {
     uint64_t RedundantUnits = 0u;
     uint64_t QpcTicks = 0u;
     uint64_t MaxQpcTicks = 0u;
+    uint64_t TimedCalls = 0u;
   };
 
   enum class D3D9GtaSaDrawKind : uint32_t {
@@ -161,6 +163,7 @@ namespace dxvk {
   };
 
   class D3D9GtaSaCompatDevice final : public ID3D9GtaSaCompatDevice6 {
+    friend class D3D9GtaSaStateAuditScope;
 
   public:
 
@@ -225,6 +228,10 @@ namespace dxvk {
 
     void OnDeviceDestroy();
 
+    void StartStateAudit(const char* source = "F7", UINT durationMs = 3000u);
+    void FinishStateAudit(const char* reason);
+    void CopyStateAudit(D3D9BridgeAuditSnapshot& snapshot) const;
+
     bool IsStateAuditActive() const {
       return m_stateAuditActive;
     }
@@ -249,6 +256,10 @@ namespace dxvk {
     uint64_t BeginStateAuditTiming() const;
 
     void RecordStateAuditTiming(
+            D3D9GtaSaStateAuditKind kind,
+            uint64_t                beginQpc);
+
+    void RecordStateAuditElapsed(
             D3D9GtaSaStateAuditKind kind,
             uint64_t                beginQpc);
 
@@ -321,10 +332,6 @@ namespace dxvk {
     void UpdatePresentationState(
       const D3DPRESENT_PARAMETERS* params);
 
-    void StartStateAudit();
-
-    void FinishStateAudit(const char* reason);
-
     struct VulkanPassEntry {
       UINT64                      Token = 0u;
       UINT64                      Sequence = 0u;
@@ -373,6 +380,28 @@ namespace dxvk {
     std::mutex                   m_passExecutionMutex;
     std::mutex                   m_passMutex;
     std::vector<VulkanPassEntry> m_passes;
+  };
+
+  // Construct only after the existing device lock is acquired. The scope
+  // records elapsed time only when the existing path actually increments its
+  // API counter, so rejected/record-only calls cannot invent timed coverage.
+  class D3D9GtaSaStateAuditScope {
+  public:
+    D3D9GtaSaStateAuditScope(D3D9GtaSaCompatDevice& compat,
+      D3D9GtaSaStateAuditKind kind)
+    : m_compat(compat), m_kind(kind),
+      m_beginQpc(compat.IsStateAuditActive() ? compat.BeginStateAuditTiming() : 0u),
+      m_calls(m_beginQpc ? compat.m_stateAuditCounters[uint32_t(kind)].Calls : 0u) { }
+    ~D3D9GtaSaStateAuditScope() {
+      if (m_beginQpc && m_compat.m_stateAuditCounters[uint32_t(m_kind)].Calls != m_calls)
+        m_compat.RecordStateAuditElapsed(m_kind, m_beginQpc);
+    }
+    D3D9GtaSaStateAuditScope(const D3D9GtaSaStateAuditScope&) = delete;
+    D3D9GtaSaStateAuditScope& operator=(const D3D9GtaSaStateAuditScope&) = delete;
+  private:
+    D3D9GtaSaCompatDevice& m_compat;
+    D3D9GtaSaStateAuditKind m_kind;
+    uint64_t m_beginQpc, m_calls;
   };
 
 }

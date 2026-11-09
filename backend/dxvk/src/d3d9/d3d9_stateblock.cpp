@@ -1,4 +1,5 @@
 #include "d3d9_stateblock.h"
+#include "d3d9_state_capture.h"
 
 #include "d3d9_caps.h"
 #include "d3d9_device.h"
@@ -34,6 +35,8 @@ namespace dxvk {
 
   void D3D9StateBlock::ResetJournal() {
     m_hasApplied = false;
+    if (m_captures.flags.isClear())
+      return;
 
     m_state.vertexDecl = nullptr;
     m_state.indices = nullptr;
@@ -41,48 +44,45 @@ namespace dxvk {
     m_state.pixelShader = nullptr;
 
     if (m_state.vertexBuffers) {
-      for (auto& stream : m_state.vertexBuffers.get()) {
+      for (uint32_t idx : bit::BitMask(m_captures.vertexBuffers.dword(0))) {
+        auto& stream = m_state.vertexBuffers[idx];
         stream.vertexBuffer = nullptr;
-        stream.offset = 0u;
-        stream.length = 0u;
-        stream.stride = 0u;
+        stream.offset = stream.length = stream.stride = 0u;
       }
     }
-
     if (m_state.textures) {
-      for (auto& texture : m_state.textures.get())
-        TextureChangePrivate(texture, nullptr);
+      for (uint32_t idx : bit::BitMask(m_captures.textures.dword(0)))
+        TextureChangePrivate(m_state.textures[idx], nullptr);
     }
 
-    m_state.lights.clear();
-
-    m_captures.flags = D3D9CapturedStateFlags();
+    // Capture masks are the ownership/dirty sets. Uncaptured entries are
+    // already empty after the previous reset; do not revisit every slot.
+    if (m_captures.flags.test(D3D9CapturedStateFlag::Lights)) {
+      m_state.lights.clear();
+      m_captures.lightChanges.clearAll();
+      m_captures.lightEnabledChanges.clearAll();
+    }
     m_captures.renderStates.clearAll();
+    for (uint32_t idx : bit::BitMask(m_captures.samplers.dword(0)))
+      m_captures.samplerStates[idx].clearAll();
     m_captures.samplers.clearAll();
-    for (auto& states : m_captures.samplerStates)
-      states.clearAll();
     m_captures.vertexBuffers.clearAll();
     m_captures.textures.clearAll();
     m_captures.clipPlanes.clearAll();
     m_captures.streamFreq.clearAll();
     m_captures.transforms.clearAll();
+    for (uint32_t idx : bit::BitMask(m_captures.textureStages.dword(0)))
+      m_captures.textureStageStates[idx].clearAll();
     m_captures.textureStages.clearAll();
-    for (auto& states : m_captures.textureStageStates)
-      states.clearAll();
-    m_captures.vsConsts.fConsts.clearAll();
-    m_captures.vsConsts.iConsts.clearAll();
-    m_captures.vsConsts.bConsts.clearAll();
-    m_captures.vsConsts.fDwordCount = 0u;
-    m_captures.vsConsts.iDwordCount = 0u;
-    m_captures.vsConsts.bDwordCount = 0u;
-    m_captures.psConsts.fConsts.clearAll();
-    m_captures.psConsts.iConsts.clearAll();
-    m_captures.psConsts.bConsts.clearAll();
-    m_captures.psConsts.fDwordCount = 0u;
-    m_captures.psConsts.iDwordCount = 0u;
-    m_captures.psConsts.bDwordCount = 0u;
-    m_captures.lightChanges.clearAll();
-    m_captures.lightEnabledChanges.clearAll();
+    const auto clearConstants = [] (auto& captures) {
+      for (uint32_t i = 0; i < captures.fDwordCount; i++) captures.fConsts.dword(i) = 0u;
+      for (uint32_t i = 0; i < captures.iDwordCount; i++) captures.iConsts.dword(i) = 0u;
+      for (uint32_t i = 0; i < captures.bDwordCount; i++) captures.bConsts.dword(i) = 0u;
+      captures.fDwordCount = captures.iDwordCount = captures.bDwordCount = 0u;
+    };
+    clearConstants(m_captures.vsConsts);
+    clearConstants(m_captures.psConsts);
+    m_captures.flags.clrAll();
   }
 
   HRESULT STDMETHODCALLTYPE D3D9StateBlock::QueryInterface(
@@ -593,30 +593,23 @@ namespace dxvk {
           ? D3D9CapturedStateFlag::VsConstants
           : D3D9CapturedStateFlag::PsConstants);
 
-        for (UINT reg = StartRegister; reg < endRegister; reg++) {
-          if (captures.bConsts.get(reg))
-            continue;
-
+        for (UINT reg = StartRegister; reg < endRegister;) {
           const uint32_t dword = reg / 32u;
-          const uint32_t mask = 1u << (reg % 32u);
-          captures.bConsts.set(reg, true);
-          captures.bDwordCount = std::max(captures.bDwordCount, dword + 1u);
-          saved.bConsts[dword] &= ~mask;
-          saved.bConsts[dword] |= current.bConsts[dword] & mask;
+          const uint32_t next = std::min(endRegister, (dword + 1u) * 32u);
+          const uint32_t mask = (~0u << (reg % 32u))
+            & (~0u >> (32u - (next - dword * 32u)))
+            & ~captures.bConsts.dword(dword);
+          if (mask) {
+            captures.bConsts.dword(dword) |= mask;
+            captures.bDwordCount = std::max(captures.bDwordCount, dword + 1u);
+            saved.bConsts[dword] = (saved.bConsts[dword] & ~mask)
+              | (current.bConsts[dword] & mask);
+          }
+          reg = next;
         }
       } else {
         auto captureRanges = [&] (auto& captured, auto&& captureRange) {
-          UINT reg = StartRegister;
-          while (reg < endRegister) {
-            while (reg < endRegister && captured.get(reg))
-              reg++;
-            const UINT rangeStart = reg;
-            while (reg < endRegister && !captured.get(reg))
-              reg++;
-            const UINT rangeCount = reg - rangeStart;
-            if (rangeCount)
-              captureRange(rangeStart, rangeCount);
-          }
+          ForEachD3D9UncapturedRange(captured, StartRegister, Count, captureRange);
         };
 
         if constexpr (ConstantType == D3D9ConstantType::Float) {

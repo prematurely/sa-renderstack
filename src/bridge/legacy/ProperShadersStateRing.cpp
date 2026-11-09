@@ -12,6 +12,7 @@
 #include <cstring>
 #include <format>
 #include <print>
+#include <atomic>
 
 namespace
 {
@@ -39,7 +40,35 @@ ProperShadersStateTraceRecord* g_properShadersStateTraceRing = nullptr;
 uint32_t g_properShadersStateTraceSequence = 0;
 LONG g_properShadersStateTraceCaptureId = 0;
 LONG g_properShadersStateTraceTriggerDown = 0;
+std::atomic<bool> g_properShadersStateTraceActive{false};
+std::atomic<uint32_t> g_properShadersStateTraceGeneration{0};
+std::atomic<ULONGLONG> g_properShadersStateTraceDeadline{0};
+constexpr ULONGLONG kManualCaptureMs = 1000;
 } // namespace
+
+bool IsProperShadersStateTraceCaptureActive() noexcept
+{
+    return g_properShadersRenderStateGuardConfig.enableStateRing &&
+        g_properShadersStateTraceActive.load(std::memory_order_acquire) &&
+        GetTickCount64() < g_properShadersStateTraceDeadline.load(std::memory_order_relaxed);
+}
+
+bool BeginProperShadersStateTraceCapture()
+{
+    if (!g_properShadersRenderStateGuardConfig.enableStateRing) return false;
+    AcquireSRWLockExclusive(&g_properShadersStateTraceLock);
+    if (g_properShadersStateTraceActive.load(std::memory_order_acquire)) {
+        ReleaseSRWLockExclusive(&g_properShadersStateTraceLock);
+        return false;
+    }
+    g_properShadersStateTraceGeneration.fetch_add(1, std::memory_order_relaxed);
+    g_properShadersStateTraceSequence = 0;
+    g_properShadersStateTraceDeadline.store(GetTickCount64() + kManualCaptureMs, std::memory_order_relaxed);
+    g_properShadersStateTraceActive.store(true, std::memory_order_release);
+    ReleaseSRWLockExclusive(&g_properShadersStateTraceLock);
+    Log("proper shaders state ring: on-demand capture started durationMs={}", kManualCaptureMs);
+    return true;
+}
 
 static const char* ProperShadersStateTraceKindName(uint32_t kind)
 {
@@ -212,31 +241,42 @@ void DumpProperShadersStateTraceRing()
 
 void MaybeDumpProperShadersStateTraceRing()
 {
-    if (!g_properShadersRenderStateGuardConfig.enableStateRing) {
-        return;
-    }
-
     const bool triggerDown =
         (GetAsyncKeyState(g_properShadersRenderStateGuardConfig.stateRingTriggerVirtualKey) & 0x8000) != 0;
-    if (!triggerDown) {
-        InterlockedExchange(&g_properShadersStateTraceTriggerDown, 0);
+    const bool pressed = InterlockedExchange(&g_properShadersStateTraceTriggerDown, triggerDown ? 1 : 0) == 0 && triggerDown;
+    if (!g_properShadersRenderStateGuardConfig.enableStateRing) {
+        g_properShadersStateTraceActive.store(false, std::memory_order_release);
         return;
     }
-    if (InterlockedCompareExchange(&g_properShadersStateTraceTriggerDown, 1, 0) != 0) {
+    const auto now = GetTickCount64();
+    const bool wasActive = g_properShadersStateTraceActive.load(std::memory_order_acquire);
+    if (wasActive) {
+        if (now >= g_properShadersStateTraceDeadline.load(std::memory_order_relaxed)) {
+            g_properShadersStateTraceActive.store(false, std::memory_order_release);
+            DumpProperShadersStateTraceRing();
+        }
+        // A key edge during the active window is consumed, never deferred.
         return;
     }
-    DumpProperShadersStateTraceRing();
+    if (!pressed) return;
+    BeginProperShadersStateTraceCapture();
 }
 
 void StoreProperShadersStateTraceRecord(ProperShadersStateTraceRecord* record)
 {
-    if (!record || !g_properShadersRenderStateGuardConfig.enableStateRing) {
+    if (!record || !IsProperShadersStateTraceCaptureActive() ||
+        record->captureGeneration != g_properShadersStateTraceGeneration.load(std::memory_order_relaxed)) {
         return;
     }
 
     record->endTick = GetTickCount64();
     DWORD allocationError = ERROR_SUCCESS;
     AcquireSRWLockExclusive(&g_properShadersStateTraceLock);
+    if (!IsProperShadersStateTraceCaptureActive() ||
+        record->captureGeneration != g_properShadersStateTraceGeneration.load(std::memory_order_relaxed)) {
+        ReleaseSRWLockExclusive(&g_properShadersStateTraceLock);
+        return;
+    }
     if (!g_properShadersStateTraceRing) {
         g_properShadersStateTraceRing =
             static_cast<ProperShadersStateTraceRecord*>(VirtualAlloc(
@@ -263,7 +303,6 @@ void StoreProperShadersStateTraceRecord(ProperShadersStateTraceRecord* record)
         }
         return;
     }
-    MaybeDumpProperShadersStateTraceRing();
 }
 
 void InitializeProperShadersStateTraceRecord(
@@ -274,6 +313,7 @@ void InitializeProperShadersStateTraceRecord(
         return;
     }
     *record = ProperShadersStateTraceRecord{};
+    record->captureGeneration = g_properShadersStateTraceGeneration.load(std::memory_order_relaxed);
     record->kind = static_cast<uint32_t>(kind);
     record->threadId = GetCurrentThreadId();
     record->beginTick = GetTickCount64();
@@ -283,7 +323,8 @@ void CaptureProperShadersStateTracePoint(
     ProperShadersStateTraceRecord* record,
     uint32_t snapshotIndex)
 {
-    if (!record || snapshotIndex >= 3 || !g_properShadersRenderStateGuardConfig.enableStateRing) {
+    if (!record || snapshotIndex >= 3 || !IsProperShadersStateTraceCaptureActive() ||
+        record->captureGeneration != g_properShadersStateTraceGeneration.load(std::memory_order_relaxed)) {
         return;
     }
 
@@ -298,7 +339,11 @@ void CaptureProperShadersStateTracePoint(
 
 void ShutdownProperShadersStateRing()
 {
+    g_properShadersStateTraceActive.store(false, std::memory_order_release);
     AcquireSRWLockExclusive(&g_properShadersStateTraceLock);
+    g_properShadersStateTraceGeneration.fetch_add(1, std::memory_order_relaxed);
+    // Require release before a held key can arm a new window after shutdown.
+    InterlockedExchange(&g_properShadersStateTraceTriggerDown, 1);
     if (g_properShadersStateTraceRing) {
         VirtualFree(g_properShadersStateTraceRing, 0, MEM_RELEASE);
         g_properShadersStateTraceRing = nullptr;
