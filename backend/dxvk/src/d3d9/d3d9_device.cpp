@@ -736,6 +736,7 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetObserver(const D3D9BridgeObserver* observer) {
+    D3D9DeviceLock deviceLock = LockDevice();
     std::lock_guard<std::recursive_mutex> lock(m_bridgeObserverMutex);
     if (observer && (observer->StructSize < sizeof(*observer)
      || !observer->Notify || m_bridgeObserver.Notify))
@@ -746,6 +747,9 @@ namespace dxvk {
 
   void D3D9DeviceEx::NotifyBridge(D3D9BridgeEvent event, HRESULT result,
       D3DPRESENT_PARAMETERS* params, const D3D9BridgePresentArgs* present) {
+    // Reset already owns the device lock. Present and final release must use
+    // the same device -> observer order: callbacks may reenter device APIs.
+    D3D9DeviceLock deviceLock = LockDevice();
     std::lock_guard<std::recursive_mutex> lock(m_bridgeObserverMutex);
     const auto observer = m_bridgeObserver;
     if (event == D3D9BridgeEvent::FinalRelease)

@@ -231,25 +231,141 @@ static void PresentHud(IDirect3DDevice9* device, HWND window) {
   Sleep(100);
 }
 struct ReleaseResult { ID3D9BridgeDiagnostics* Diagnostics; D3D9BridgeAuditSnapshot Snapshot; bool Called; };
+
+struct ConcurrentLifecycle {
+  ID3D9BridgeDiagnostics* diagnostics;
+  HANDLE entered = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+  HANDLE resetStarting = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+  std::atomic<bool> auditOk{true}, callbackFinished{false};
+  std::atomic<unsigned> resetBefore{0}, resetAfter{0};
+  ~ConcurrentLifecycle() { CloseHandle(entered); CloseHandle(resetStarting); }
+};
+static void STDMETHODCALLTYPE ObserveConcurrent(void* context, IDirect3DDevice9*,
+  D3D9BridgeEvent event, HRESULT, D3DPRESENT_PARAMETERS*, const D3D9BridgePresentArgs*) {
+  auto& state = *static_cast<ConcurrentLifecycle*>(context);
+  if (event == D3D9BridgeEvent::PresentAfter) {
+    SetEvent(state.entered);
+    if (WaitForSingleObject(state.resetStarting, 5000) != WAIT_OBJECT_0) state.auditOk = false;
+    // Give the creating thread's announced Reset time to enter the actual
+    // backend. On the old DLL it holds the device lock and waits for this
+    // observer, so the following reentrant audit completes the deadlock cycle.
+    Sleep(100);
+  }
+  D3D9BridgeAuditSnapshot snapshot{};
+  snapshot.StructSize = sizeof(snapshot); snapshot.Version = 1;
+  if (state.diagnostics->GetAudit(&snapshot) != S_OK) state.auditOk = false;
+  if (event == D3D9BridgeEvent::ResetBefore) ++state.resetBefore;
+  if (event == D3D9BridgeEvent::ResetAfter) ++state.resetAfter;
+  if (event == D3D9BridgeEvent::PresentAfter) state.callbackFinished = true;
+}
+static void TestLifecycleLockOrder(IDirect3DDevice9* device, ID3D9BridgeDiagnostics* diagnostics,
+  D3DPRESENT_PARAMETERS& parameters) {
+  ID3D9BridgeLifecycle* lifecycle = nullptr;
+  CHECK(device->QueryInterface(IID_D3D9BridgeLifecycle, reinterpret_cast<void**>(&lifecycle)) == S_OK);
+  if (!lifecycle) return;
+  HANDLE finished = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+  std::thread watchdog([&] {
+    if (WaitForSingleObject(finished, 12000) != WAIT_OBJECT_0) {
+      std::fputs("FAIL: concurrent native Reset/Present audit callback deadlocked\n", stderr);
+      std::fflush(stderr); TerminateProcess(GetCurrentProcess(), 86);
+    }
+  });
+  for (unsigned round = 0; round < 4; ++round) {
+    ConcurrentLifecycle state{diagnostics};
+    D3D9BridgeObserver observer{sizeof(observer), &state, &ObserveConcurrent};
+    CHECK(lifecycle->SetObserver(&observer) == S_OK);
+    HRESULT presented = E_FAIL;
+    std::thread presenter([&] { presented = device->Present(nullptr, nullptr, nullptr, nullptr); });
+    CHECK(WaitForSingleObject(state.entered, 5000) == WAIT_OBJECT_0);
+    SetEvent(state.resetStarting);
+    if (round != 3) {
+      // This is the thread that created the device, as D3D9 Reset requires.
+      CHECK(device->Reset(&parameters) == S_OK);
+      CHECK(state.resetBefore == 1 && state.resetAfter == 1);
+      CHECK(lifecycle->SetObserver(nullptr) == S_OK);
+    } else {
+      CHECK(lifecycle->SetObserver(nullptr) == S_OK);
+      CHECK(state.callbackFinished.load());
+    }
+    presenter.join();
+    CHECK(SUCCEEDED(presented) && state.auditOk && state.callbackFinished);
+    const auto before = state.resetBefore.load();
+    CHECK(device->Reset(&parameters) == S_OK);
+    CHECK(state.resetBefore == before);
+  }
+  SetEvent(finished); watchdog.join(); CloseHandle(finished); lifecycle->Release();
+}
+
 static void STDMETHODCALLTYPE Observe(void* context, IDirect3DDevice9*,
   D3D9BridgeEvent event, HRESULT, D3DPRESENT_PARAMETERS*, const D3D9BridgePresentArgs*) {
   if (event != D3D9BridgeEvent::FinalRelease) return;
   auto& result=*static_cast<ReleaseResult*>(context);
   result.Snapshot=Audit(result.Diagnostics);result.Called=true;
 }
+struct LifecycleBenchmark {
+  ID3D9BridgeDiagnostics* diagnostics;
+  unsigned calls = 0;
+  bool valid = true;
+};
+static void STDMETHODCALLTYPE ObserveBenchmark(void* context, IDirect3DDevice9*,
+  D3D9BridgeEvent event, HRESULT, D3DPRESENT_PARAMETERS*, const D3D9BridgePresentArgs*) {
+  if (event != D3D9BridgeEvent::PresentAfter) return;
+  auto& state = *static_cast<LifecycleBenchmark*>(context);
+  D3D9BridgeAuditSnapshot snapshot{};
+  snapshot.StructSize = sizeof(snapshot); snapshot.Version = 1;
+  state.valid &= state.diagnostics->GetAudit(&snapshot) == S_OK;
+  ++state.calls;
+}
+static void BenchmarkLifecycle(IDirect3DDevice9* device, ID3D9BridgeDiagnostics* diagnostics,
+  bool withObserver) {
+  ID3D9BridgeLifecycle* lifecycle = nullptr;
+  CHECK(device->QueryInterface(IID_D3D9BridgeLifecycle, reinterpret_cast<void**>(&lifecycle)) == S_OK);
+  if (!lifecycle) return;
+  LifecycleBenchmark state{diagnostics};
+  D3D9BridgeObserver observer{sizeof(observer), &state, &ObserveBenchmark};
+  CHECK(lifecycle->SetObserver(withObserver ? &observer : nullptr) == S_OK);
+  constexpr unsigned warmup = 128, iterations = 2000;
+  for (unsigned i = 0; i < warmup; ++i)
+    CHECK(device->Present(nullptr, nullptr, nullptr, nullptr) == S_OK);
+  LARGE_INTEGER frequency{}, start{}, end{};
+  ULONG64 cyclesBefore = 0, cyclesAfter = 0;
+  CHECK(QueryPerformanceFrequency(&frequency));
+  CHECK(QueryThreadCycleTime(GetCurrentThread(), &cyclesBefore));
+  CHECK(QueryPerformanceCounter(&start));
+  unsigned failedPresents = 0;
+  for (unsigned i = 0; i < iterations; ++i)
+    failedPresents += device->Present(nullptr, nullptr, nullptr, nullptr) != S_OK;
+  CHECK(QueryPerformanceCounter(&end));
+  CHECK(QueryThreadCycleTime(GetCurrentThread(), &cyclesAfter));
+  CHECK(lifecycle->SetObserver(nullptr) == S_OK);
+  CHECK(!failedPresents && state.valid);
+  CHECK(state.calls == (withObserver ? warmup + iterations : 0));
+  std::printf("{\"observer\":%u,\"iterations\":%u,\"ns\":%.6f,\"cycles\":%.6f,\"callbacks\":%u,\"failedPresents\":%u,\"failures\":%u}\n",
+    unsigned(withObserver), iterations, double(end.QuadPart-start.QuadPart)*1e9/frequency.QuadPart/iterations,
+    double(cyclesAfter-cyclesBefore)/iterations, state.calls, failedPresents, failures);
+  lifecycle->Release();
+}
 int main(int argc,char**argv) {
-  if (argc!=2 && argc!=3) return 2;
+  if (argc<2 || argc>5) return 2;
   const bool disabled=argc==3 && std::strcmp(argv[2],"--disabled")==0;
-  const bool render=argc==3 && std::strcmp(argv[2],"--render")==0;
+  const bool fullHud=argc>=3 && std::strcmp(argv[2],"--render-full")==0;
+  const bool render=fullHud || (argc>=3 && std::strcmp(argv[2],"--render")==0);
+  const bool lifecycleOnly=argc==3 && std::strcmp(argv[2],"--lifecycle-locks")==0;
+  const bool lifecycleBenchmark=argc==3 && (std::strcmp(argv[2],"--bench-present")==0
+    || std::strcmp(argv[2],"--bench-observer")==0);
   auto module=LoadLibraryA(argv[1]);
   if (!module) {std::printf("FAIL LoadLibrary %lu\n",GetLastError());return 2;}
   auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(module,"Direct3DCreate9"));
   auto factory=create?create(D3D_SDK_VERSION):nullptr;
   if (!factory) return 2;
-  auto window=CreateWindowA("STATIC","Measurement backend fixture",WS_OVERLAPPEDWINDOW,0,0,640,480,nullptr,nullptr,GetModuleHandle(nullptr),nullptr);
+  const UINT width=argc>=4?std::strtoul(argv[3],nullptr,10):640;
+  const UINT height=argc>=5?std::strtoul(argv[4],nullptr,10):480;
+  // Borderless client area makes rendered-pixel dimensions exact, including
+  // the user's 2560x1600 viewport at the edge of the desktop.
+  auto window=CreateWindowA("STATIC","Measurement backend fixture",WS_POPUP,0,0,width,height,nullptr,nullptr,GetModuleHandle(nullptr),nullptr);
   D3DPRESENT_PARAMETERS pp{};
   pp.Windowed=TRUE;pp.SwapEffect=D3DSWAPEFFECT_DISCARD;pp.hDeviceWindow=window;
-  pp.BackBufferWidth=640;pp.BackBufferHeight=480;pp.BackBufferFormat=D3DFMT_X8R8G8B8;
+  pp.BackBufferWidth=width;pp.BackBufferHeight=height;pp.BackBufferFormat=D3DFMT_X8R8G8B8;
   pp.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
   IDirect3DDevice9* device=nullptr;
   auto hr=factory->CreateDevice(0,D3DDEVTYPE_HAL,window,D3DCREATE_HARDWARE_VERTEXPROCESSING|D3DCREATE_MULTITHREADED,&pp,&device);
@@ -259,28 +375,43 @@ int main(int argc,char**argv) {
   std::printf("diagnostics QI hr=0x%08lx\n",(unsigned long)hr);
   CHECK(hr==S_OK && d);
   if (!d) return 1;
+  if (lifecycleBenchmark) {
+    BenchmarkLifecycle(device,d,std::strcmp(argv[2],"--bench-observer")==0);
+    d->Release();device->Release();factory->Release();DestroyWindow(window);
+    return failures?1:0;
+  }
   if (render) {
     ShowWindow(window,SW_SHOWNORMAL);UpdateWindow(window);
     PresentHud(device,window);
     const auto idlePixels=CaptureHud(window,"hud-unowned.bmp");
-    CHECK(idlePixels==0);
+    if (!fullHud) CHECK(idlePixels==0);
     CHECK(d->SetCaptureOwner(TRUE)==S_OK);
     D3D9BridgeHudSnapshot visible{};visible.StructSize=sizeof(visible);visible.Version=1;
     visible.Visible=1;visible.LineCount=8;visible.CaptureId=5001;
-    const char* lines[]={"RenderStack capture 5001: state attribution","Elapsed 1.0 / 3.0 sec; progress 33%",
-      "Baseline: 100 FPS, avg 10 ms, max 12 ms","CPU: 85 FPS; samples 2100, missed 2",
-      "Hotspot: verified function @ module+RVA","State API: 300 calls, 200 redundant",
-      "Journal: inclusive spans; backend available","Complete report: out/perf/measurement"};
+    const char* lines[]={"RenderStack #5001: state attribution",
+      "F8/F7: baseline -> CPU -> state | 1000 / 3000 ms",
+      "Live: 100.0 FPS | mean 10.00 ms | max 12.00 ms",
+      "Phase FPS: base 100.0 | CPU 85.0* | state 80.0* (*instrumented)",
+      "CPU: 2100 samples, 2 missed, 0 dropped | suspended 12.00 ms",
+      "Top: 50.0% dxvk::D3D9DeviceEx::SetStateSamplerStateImpl<true>(unsigned long, D3DSAMPLERSTATETYPE, unsigned long) [exact]",
+      "State: 1000 transactions | API 300000 calls, 200000 redundant | missing=0x0",
+      "Detailed functions, slow frames, technique/pass and API timing in report"};
     for(unsigned i=0;i<8;i++)std::strcpy(visible.Lines[i],lines[i]);
     CHECK(d->PublishHud(&visible)==S_OK);PresentHud(device,window);
     const auto visiblePixels=CaptureHud(window,"hud-published.bmp");
-    CHECK(visiblePixels>100);
+    if (!fullHud) CHECK(visiblePixels>100);
     visible.Visible=0;CHECK(d->PublishHud(&visible)==S_OK);
     CHECK(d->SetCaptureOwner(FALSE)==S_OK);PresentHud(device,window);
-    const auto hiddenPixels=CaptureHud(window,"hud-hidden.bmp");CHECK(hiddenPixels==0);
+    const auto hiddenPixels=CaptureHud(window,"hud-hidden.bmp");if (!fullHud) CHECK(hiddenPixels==0);
     std::printf("post-HUD client pixels unowned=%u visible=%u hidden=%u\n",idlePixels,visiblePixels,hiddenPixels);
     d->Release();device->Release();factory->Release();DestroyWindow(window);
     std::printf("measurement backend HUD checks=%u failures=%u\n",checks,failures);
+    return failures?1:0;
+  }
+  if (!disabled) TestLifecycleLockOrder(device, d, pp);
+  if (lifecycleOnly) {
+    d->Release();device->Release();factory->Release();DestroyWindow(window);
+    std::printf("lifecycle lock checks=%u failures=%u\n",checks,failures);
     return failures?1:0;
   }
   IUnknown* identity=nullptr;CHECK(d->QueryInterface(IID_IUnknown,reinterpret_cast<void**>(&identity))==S_OK);

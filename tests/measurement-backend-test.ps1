@@ -1,5 +1,6 @@
-param([string]$Backend, [string]$OutputDirectory, [switch]$CompileOnly, [switch]$DisableCompat, [switch]$RenderHud,
-    [string]$LlvmMingwBin)
+param([string]$Backend, [string]$OutputDirectory, [switch]$CompileOnly, [switch]$DisableCompat, [switch]$RenderHud, [switch]$LifecycleLocks,
+    [string]$LlvmMingwBin, [string]$HudItems = 'renderstack,fps,frametimes',
+    [switch]$FullHud, [int]$Width = 640, [int]$Height = 480)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 if (-not $Backend) { $Backend=Join-Path $root 'out/build/dxvk-x86/src/d3d9/d3d9.dll' }
@@ -14,13 +15,15 @@ if ($LASTEXITCODE -ne 0) { throw "Probe compile failed: $LASTEXITCODE" }
 if ($CompileOnly) { exit 0 }
 $backendPath=(Resolve-Path -LiteralPath $Backend).Path
 $enabled=if ($DisableCompat) { 'False' } else { 'True' }
-$env:DXVK_CONFIG="d3d9.gtaSaCompat = $enabled; d3d9.gtaSaCompatDiagnostics = False; d3d9.gtaSaResourceBindingCache = True; dxvk.hud = renderstack,fps,frametimes"
-$env:DXVK_HUD='renderstack,fps,frametimes'
+$env:DXVK_CONFIG="d3d9.gtaSaCompat = $enabled; d3d9.gtaSaCompatDiagnostics = False; d3d9.gtaSaResourceBindingCache = True; dxvk.hud = $HudItems"
+$env:DXVK_HUD=$HudItems
 $env:DXVK_LOG_PATH=$OutputDirectory
 Push-Location $OutputDirectory
 try {
   if ($DisableCompat) { & $exe $backendPath --disabled }
-  elseif ($RenderHud) { & $exe $backendPath --render }
+  elseif ($FullHud) { & $exe $backendPath --render-full $Width $Height }
+  elseif ($RenderHud) { & $exe $backendPath --render $Width $Height }
+  elseif ($LifecycleLocks) { & $exe $backendPath --lifecycle-locks }
   else { & $exe $backendPath }
   $result=$LASTEXITCODE
 } finally { Pop-Location }

@@ -581,6 +581,7 @@ function Add-MeasurementGates {
         @{ Name='patch-retry-native'; Script='patch-retry-test.ps1'; Args=(@('-Backend',$Backend) + $backendTools) },
         @{ Name='measurement-backend-unavailable'; Script='measurement-backend-test.ps1'; Args=(@('-Backend',$Backend,'-DisableCompat') + $backendTools) },
         @{ Name='measurement-hud-render'; Script='measurement-backend-test.ps1'; Args=(@('-Backend',$Backend,'-RenderHud') + $backendTools) },
+        @{ Name='measurement-hud-full'; Script='measurement-hud-full-test.ps1'; Args=(@('-Backend',$Backend,'-Python',$pythonPath) + $backendTools) },
         @{ Name='measurement-runtime-local'; Script='measurement-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-local') + $nativeTools) },
         @{ Name='measurement-runtime-native'; Script='measurement-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-native','-Backend',$Backend) + $nativeTools) },
         @{ Name='journal-attribution-native'; Script='journal-attribution-test.ps1'; Args=(@('-EvidenceName','pipeline-native','-Device','-Backend',$Backend) + $nativeTools) }

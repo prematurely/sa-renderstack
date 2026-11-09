@@ -1,4 +1,5 @@
 #include "d3d9_hud.h"
+#include "../dxvk/hud/dxvk_hud_font.h"
 
 namespace dxvk::hud {
 
@@ -8,8 +9,13 @@ namespace dxvk::hud {
     m_snapshot.StructSize = sizeof(m_snapshot);
     m_snapshot.Version = D3D9_BRIDGE_DIAGNOSTICS_VERSION;
     m_device->GetBridgeHudSnapshot(&m_snapshot);
-    for (UINT i = 0; i < m_snapshot.LineCount; ++i)
+    size_t maxCharacters = 0;
+    for (UINT i = 0; i < m_snapshot.LineCount; ++i) {
       m_lines[i] = m_snapshot.Lines[i];
+      maxCharacters = std::max(maxCharacters, m_lines[i].size());
+    }
+    m_textWidth = (maxCharacters * 16 * g_hudFont.advance + g_hudFont.size - 1) / g_hudFont.size;
+    m_renderWidth = -1;
     m_lastUpdate = time;
   }
 
@@ -18,9 +24,32 @@ namespace dxvk::hud {
     HudPos position) {
     if (!m_snapshot.Visible)
       return position;
+    const auto surface = renderer.getPushConstants().surfaceSize;
+    const auto width = int32_t(surface.width / options.scale);
+    const auto height = int32_t(surface.height / options.scale);
+    // The frame-time graph occupies the bottom 144 logical pixels. When the
+    // full statistics column reaches it, continue in a separate right column;
+    // following D3D9 memory items inherit that position as well.
+    if (position.y + int32_t(m_snapshot.LineCount * 16 + 8) > height - 144
+     && width >= 560 + 256 + 16)
+      position = { std::max(568, width - m_textWidth - 8), 8 };
+    const int32_t available = std::max(0, width - position.x - 8);
+    if (m_renderWidth != available) {
+      m_renderWidth = available;
+      const size_t characters = available * g_hudFont.size / (16 * g_hudFont.advance);
+      for (UINT i = 0; i < m_snapshot.LineCount; ++i) {
+        m_renderLines[i] = m_lines[i];
+        if (m_renderLines[i].size() > characters) {
+          // Long symbols remain complete in the report. Cache visible text
+          // until the next snapshot/resize, keeping per-frame rendering cheap.
+          m_renderLines[i].resize(characters > 3 ? characters - 3 : 0);
+          m_renderLines[i].append(std::min(characters, size_t(3)), '.');
+        }
+      }
+    }
     for (UINT i = 0; i < m_snapshot.LineCount; ++i) {
       position.y += 16;
-      renderer.drawText(16, position, i ? 0xffffffffu : 0xffc0ff00u, m_lines[i]);
+      renderer.drawText(16, position, i ? 0xffffffffu : 0xffc0ff00u, m_renderLines[i]);
     }
     position.y += 8;
     return position;
