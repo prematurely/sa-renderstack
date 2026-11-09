@@ -3,4 +3,26 @@
 #include <expected>
 #include <string>
 #include <thread>
-namespace api7 { class SelectiveJournal { ID3D9GtaSaCompatDevice6* api_{}; std::thread::id owner_; bool active_{}; public: explicit SelectiveJournal(ID3D9GtaSaCompatDevice6*a):api_(a),owner_(std::this_thread::get_id()){if(api_)api_->AddRef();} ~SelectiveJournal(){if(api_)api_->Release();} std::expected<void,std::string> begin() noexcept; std::expected<void,std::string> capture(bool on) noexcept; std::expected<void,std::string> restore() noexcept; }; }
+namespace api7 {
+// An active journal must be restored, moved and destroyed on its owner thread.
+// Moving transfers ownership; it does not change the backend transaction thread.
+class SelectiveJournal {
+public:
+  explicit SelectiveJournal(ID3D9GtaSaCompatDevice6* api);
+  SelectiveJournal(const SelectiveJournal&) = delete;
+  SelectiveJournal& operator=(const SelectiveJournal&) = delete;
+  SelectiveJournal(SelectiveJournal&& other) noexcept;
+  SelectiveJournal& operator=(SelectiveJournal&& other) noexcept;
+  ~SelectiveJournal();
+
+  std::expected<void, std::string> begin() noexcept;
+  std::expected<void, std::string> capture(bool on) noexcept;
+  std::expected<void, std::string> restore() noexcept;
+
+private:
+  void close() noexcept;
+  ID3D9GtaSaCompatDevice6* api_{};
+  std::thread::id owner_;
+  bool active_{};
+};
+}

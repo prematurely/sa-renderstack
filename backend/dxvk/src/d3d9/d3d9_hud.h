@@ -5,6 +5,19 @@
 
 namespace dxvk::hud {
 
+  class HudRenderStack : public HudItem {
+  public:
+    explicit HudRenderStack(D3D9DeviceEx* device) : m_device(device) { }
+    void update(dxvk::high_resolution_clock::time_point time);
+    HudPos render(const Rc<DxvkCommandList>& ctx, const HudPipelineKey& key,
+      const HudOptions& options, HudRenderer& renderer, HudPos position);
+  private:
+    D3D9DeviceEx* m_device;
+    D3D9BridgeHudSnapshot m_snapshot = { };
+    std::array<std::string, D3D9_BRIDGE_HUD_LINE_COUNT> m_lines;
+    dxvk::high_resolution_clock::time_point m_lastUpdate = { };
+  };
+
   /**
    * \brief HUD item to display unmappable memory
    */

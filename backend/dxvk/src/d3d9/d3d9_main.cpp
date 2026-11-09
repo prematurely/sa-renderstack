@@ -4,8 +4,6 @@
 #include "d3d9_shader_validator.h"
 
 #include "d3d9_annotation.h"
-#include "../util/util_thread_scheduling.h"
-#include <mutex>
 
 class D3DFE_PROCESSVERTICES;
 using PSGPERRORID = UINT;
@@ -30,38 +28,9 @@ namespace dxvk {
 
 extern "C" {
 
-#if defined(_WIN32)
-  static void ApplyGtaSaPCoreAffinity() {
-    SYSTEM_INFO sysInfo{};
-    GetSystemInfo(&sysInfo);
-    DWORD numProcs = sysInfo.dwNumberOfProcessors;
-
-    // Allow process to utilize all physical P-Cores freely without hard-pinning a single core
-    // In opt-in per-thread mode the Bridge's explicit process mask remains
-    // authoritative. Only read configuration here; CPU Sets/MMCSS setup runs
-    // later on the owning threads, outside DllMain.
-    if (numProcs >= 16 && !renderstack::scheduling::ReadOptions().enabled) {
-      DWORD_PTR pCoreMask = 0x0000FFFF; // P-Cores 0~7 with SMT
-      SetProcessAffinityMask(GetCurrentProcess(), pCoreMask);
-    }
-
-    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-
-    // Enable Low Fragmentation Heap (LFH) on default process heap
-    ULONG lfh = 2;
-    HeapSetInformation(GetProcessHeap(), HeapCompatibilityInformation, &lfh, sizeof(lfh));
-  }
-
-  static void ApplyGtaSaPCoreAffinityOnce() {
-    static std::once_flag once;
-    std::call_once(once, [] { ApplyGtaSaPCoreAffinity(); });
-  }
-#endif
-
+  // Process affinity and priority are owned by the host/Bridge configuration.
+  // Opt-in per-thread scheduling remains local to the threads that own it.
   DLLEXPORT IDirect3D9* __stdcall Direct3DCreate9(UINT nSDKVersion) {
-#if defined(_WIN32)
-    ApplyGtaSaPCoreAffinityOnce();
-#endif
     IDirect3D9Ex* pDirect3D = nullptr;
     dxvk::CreateD3D9(false, &pDirect3D, nullptr, 0);
 
@@ -69,9 +38,6 @@ extern "C" {
   }
 
   DLLEXPORT HRESULT __stdcall Direct3DCreate9Ex(UINT nSDKVersion, IDirect3D9Ex** ppDirect3D9Ex) {
-#if defined(_WIN32)
-    ApplyGtaSaPCoreAffinityOnce();
-#endif
     return dxvk::CreateD3D9(true, ppDirect3D9Ex, nullptr, 0);
   }
 

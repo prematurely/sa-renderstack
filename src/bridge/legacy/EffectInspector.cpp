@@ -1641,9 +1641,29 @@ std::uint64_t g_journalAttributionDroppedTechniques = 0;
 std::uint64_t g_journalAttributionDroppedPasses = 0;
 std::uint64_t g_journalAttributionOrphanRestores = 0;
 std::atomic<LONG> g_journalAttributionInFlight{ 0 };
+JournalAttributionSummary g_journalAttributionSummary{};
+std::uint64_t g_journalAttributionCaptureId = 0;
 
 thread_local JournalAttributionTechniqueStat* g_pendingAttributionTechnique = nullptr;
 thread_local std::uint64_t g_pendingAttributionSequence = 0;
+thread_local JournalAttributionFrameSummary* g_pendingAttributionFrame = nullptr;
+thread_local bool g_pendingAttribution = false;
+
+JournalAttributionFrameSummary* FindAttributionFrame(std::uint64_t frame)
+{
+    if (frame >= kJournalAttributionSummaryFrames) {
+        g_journalAttributionSummary.droppedFrames = (std::max)(
+            g_journalAttributionSummary.droppedFrames,
+            frame - kJournalAttributionSummaryFrames + 1);
+        return nullptr;
+    }
+    auto& summary = g_journalAttributionSummary;
+    summary.frameStatCount = (std::max)(summary.frameStatCount,
+        static_cast<unsigned>(frame + 1));
+    auto& result = summary.frameStats[frame];
+    result.frame = frame;
+    return &result;
+}
 
 JournalAttributionTechniqueStat* FindAttributionTechnique(const char* name)
 {
@@ -1659,7 +1679,11 @@ JournalAttributionTechniqueStat* FindAttributionTechnique(const char* name)
     }
     JournalAttributionTechniqueStat& result =
         g_journalAttribution[g_journalAttributionTechniqueCount++];
-    FormatTo(result.name, sizeof(result.name), "{}", normalized);
+    // Names are copied once on insertion; no formatting/allocation is needed
+    // in transaction admission or aggregation.
+    const std::size_t length = (std::min)(std::strlen(normalized), sizeof(result.name) - 1);
+    std::memcpy(result.name, normalized, length);
+    result.name[length] = '\0';
     return &result;
 }
 
@@ -1712,7 +1736,27 @@ void JournalAttributionObserveTransaction(const char* techniqueName,
     // not re-check the global flag here: a transaction already in flight must
     // still publish its final record set and restore timing.
     AcquireSRWLockExclusive(&g_journalAttributionLock);
+    auto& summary = g_journalAttributionSummary;
+    ++summary.transactions;
+    summary.records += records.size();
+    summary.transactionSpanQpc += info.qpcTicks;
+    summary.maxTransactionSpanQpc = (std::max)(summary.maxTransactionSpanQpc, info.qpcTicks);
+    if (info.native) ++summary.nativeTransactions;
+    else ++summary.localTransactions;
+    if (records.empty()) ++summary.emptyTransactions;
+    if (truncated) ++summary.truncatedTransactions;
+    auto* frame = FindAttributionFrame(info.frame);
+    if (frame) {
+        ++frame->transactions;
+        frame->records += records.size();
+        frame->transactionSpanQpc += info.qpcTicks;
+        if (truncated) ++frame->truncatedTransactions;
+    }
     JournalAttributionTechniqueStat* technique = FindAttributionTechnique(techniqueName);
+    g_pendingAttributionTechnique = technique;
+    g_pendingAttributionSequence = info.sequence;
+    g_pendingAttributionFrame = frame;
+    g_pendingAttribution = true;
     if (!technique) {
         ReleaseSRWLockExclusive(&g_journalAttributionLock);
         return;
@@ -1764,18 +1808,30 @@ void JournalAttributionObserveRestore(std::uint64_t sequence,
     std::uint64_t qpcTicks)
 {
     AcquireSRWLockExclusive(&g_journalAttributionLock);
-    if (!g_pendingAttributionTechnique ||
+    if (!g_pendingAttribution ||
         g_pendingAttributionSequence != sequence) {
         ++g_journalAttributionOrphanRestores;
         ReleaseSRWLockExclusive(&g_journalAttributionLock);
         return;
     }
-    JournalAttributionTechniqueStat& technique = *g_pendingAttributionTechnique;
-    ++technique.restoreCount;
-    technique.restoreQpc += qpcTicks;
-    if (qpcTicks > technique.maxRestoreQpc) technique.maxRestoreQpc = qpcTicks;
+    auto& summary = g_journalAttributionSummary;
+    ++summary.restoreCount;
+    summary.restoreQpc += qpcTicks;
+    summary.maxRestoreQpc = (std::max)(summary.maxRestoreQpc, qpcTicks);
+    if (g_pendingAttributionTechnique) {
+        auto& technique = *g_pendingAttributionTechnique;
+        ++technique.restoreCount;
+        technique.restoreQpc += qpcTicks;
+        if (qpcTicks > technique.maxRestoreQpc) technique.maxRestoreQpc = qpcTicks;
+    }
+    if (g_pendingAttributionFrame) {
+        ++g_pendingAttributionFrame->restoreCount;
+        g_pendingAttributionFrame->restoreQpc += qpcTicks;
+    }
     g_pendingAttributionTechnique = nullptr;
     g_pendingAttributionSequence = 0;
+    g_pendingAttributionFrame = nullptr;
+    g_pendingAttribution = false;
     ReleaseSRWLockExclusive(&g_journalAttributionLock);
 }
 
@@ -1789,24 +1845,93 @@ void JournalAttributionReset()
     g_journalAttributionDroppedTechniques = 0;
     g_journalAttributionDroppedPasses = 0;
     g_journalAttributionOrphanRestores = 0;
+    g_journalAttributionSummary = {};
+    g_journalAttributionSummary.captureId = g_journalAttributionCaptureId;
+    LARGE_INTEGER frequency{};
+    g_journalAttributionSummary.timingAvailable =
+        QueryPerformanceFrequency(&frequency) && frequency.QuadPart > 0;
+    g_journalAttributionSummary.qpcFrequency = static_cast<std::uint64_t>(frequency.QuadPart);
     g_pendingAttributionTechnique = nullptr;
     g_pendingAttributionSequence = 0;
+    g_pendingAttributionFrame = nullptr;
+    g_pendingAttribution = false;
     ReleaseSRWLockExclusive(&g_journalAttributionLock);
+}
+
+void JournalAttributionSetCaptureIdentity(std::uint64_t captureId)
+{
+    AcquireSRWLockExclusive(&g_journalAttributionLock);
+    if (!g_properShadersStateAttributionActive.load(std::memory_order_acquire) &&
+        g_journalAttributionInFlight.load(std::memory_order_acquire) == 0) {
+        g_journalAttributionCaptureId = captureId;
+    }
+    ReleaseSRWLockExclusive(&g_journalAttributionLock);
+}
+
+bool JournalAttributionGetSummary(JournalAttributionSummary* summary)
+{
+    if (!summary) return false;
+    AcquireSRWLockShared(&g_journalAttributionLock);
+    *summary = g_journalAttributionSummary;
+    summary->frames = g_journalAttributionFrame;
+    summary->presents = g_journalAttributionPresentCount;
+    summary->techniqueCount = g_journalAttributionTechniqueCount;
+    summary->droppedTechniques = g_journalAttributionDroppedTechniques;
+    summary->droppedPasses = g_journalAttributionDroppedPasses;
+    summary->orphanRestores = g_journalAttributionOrphanRestores;
+    summary->active = g_properShadersStateAttributionActive.load(std::memory_order_acquire);
+    summary->inFlight = static_cast<unsigned>(g_journalAttributionInFlight.load(std::memory_order_acquire));
+    summary->available = summary->transactions != 0;
+    for (unsigned i = 0; i < g_journalAttributionTechniqueCount; ++i) {
+        const auto& technique = g_journalAttribution[i];
+        summary->passCount += technique.passCount;
+        unsigned rank = 0;
+        while (rank < summary->topTechniqueCount &&
+            summary->topTechniques[rank].transactionSpanQpc >= technique.totalQpc) ++rank;
+        if (rank == kJournalAttributionSummaryTechniques) continue;
+        const unsigned count = (std::min)(summary->topTechniqueCount + 1,
+            kJournalAttributionSummaryTechniques);
+        for (unsigned slot = count - 1; slot > rank; --slot)
+            summary->topTechniques[slot] = summary->topTechniques[slot - 1];
+        auto& entry = summary->topTechniques[rank];
+        std::memcpy(entry.name, technique.name, sizeof(entry.name));
+        entry.transactions = technique.transactions;
+        entry.records = technique.records;
+        entry.nativeTransactions = technique.nativeTransactions;
+        entry.localTransactions = technique.localTransactions;
+        entry.emptyTransactions = technique.emptyTransactions;
+        entry.truncatedTransactions = technique.truncated;
+        entry.transactionSpanQpc = technique.totalQpc;
+        entry.maxTransactionSpanQpc = technique.maxQpc;
+        entry.restoreQpc = technique.restoreQpc;
+        entry.maxRestoreQpc = technique.maxRestoreQpc;
+        entry.restoreCount = technique.restoreCount;
+        entry.passCount = technique.passCount;
+        summary->topTechniqueCount = count;
+    }
+    ReleaseSRWLockShared(&g_journalAttributionLock);
+    return true;
 }
 
 void JournalAttributionStartCapture()
 {
     JournalAttributionReset();
     AcquireSRWLockExclusive(&g_journalAttributionLock);
+    g_journalAttributionSummary.captureStarted = true;
     g_properShadersStateAttributionActive.store(true, std::memory_order_release);
+    ReleaseSRWLockExclusive(&g_journalAttributionLock);
+}
+
+void JournalAttributionCloseAdmission()
+{
+    AcquireSRWLockExclusive(&g_journalAttributionLock);
+    g_properShadersStateAttributionActive.store(false, std::memory_order_release);
     ReleaseSRWLockExclusive(&g_journalAttributionLock);
 }
 
 void JournalAttributionStopCapture()
 {
-    AcquireSRWLockExclusive(&g_journalAttributionLock);
-    g_properShadersStateAttributionActive.store(false, std::memory_order_release);
-    ReleaseSRWLockExclusive(&g_journalAttributionLock);
+    JournalAttributionCloseAdmission();
     while (g_journalAttributionInFlight.load(std::memory_order_acquire) != 0) {
         Sleep(0);
     }
@@ -1814,6 +1939,10 @@ void JournalAttributionStopCapture()
 
 bool JournalAttributionTryBeginTransaction()
 {
+    // The common inactive path never contends with snapshots or another
+    // thread's aggregation. Admission still rechecks under the StopCapture
+    // lock, so a stale true read cannot admit work after the stop boundary.
+    if (!g_properShadersStateAttributionActive.load(std::memory_order_acquire)) return false;
     AcquireSRWLockExclusive(&g_journalAttributionLock);
     const bool active = g_properShadersStateAttributionActive.load(
         std::memory_order_acquire);
@@ -1839,6 +1968,7 @@ void JournalAttributionOnPresent()
     // this lock acquisition. Do not count a Present that belongs to the next
     // capture window.
     if (g_properShadersStateAttributionActive.load(std::memory_order_acquire)) {
+        FindAttributionFrame(g_journalAttributionFrame);
         ++g_journalAttributionFrame;
         ++g_journalAttributionPresentCount;
     }
@@ -1853,18 +1983,12 @@ std::uint64_t JournalAttributionCurrentFrame()
     return frame;
 }
 
-void JournalAttributionDump()
+bool JournalAttributionWriteReport(std::FILE* report)
 {
+    if (!report) return false;
     AcquireSRWLockShared(&g_journalAttributionLock);
-    if (!g_journalAttributionTechniqueCount) {
-        ReleaseSRWLockShared(&g_journalAttributionLock);
-        return;
-    }
-    FILE* report = std::fopen("scripts\\BridgeD3D9.state-attribution.log", "a");
-    if (!report) {
-        ReleaseSRWLockShared(&g_journalAttributionLock);
-        return;
-    }
+    bool succeeded = false;
+    try {
 
     LARGE_INTEGER frequency{};
     QueryPerformanceFrequency(&frequency);
@@ -1878,6 +2002,9 @@ void JournalAttributionDump()
         std::fputc('\n', report);
     };
     line("---- ProperShaders state attribution (observation only) ----");
+    line("captureId={} available={} transactionTiming=transaction-span-inclusive restoreTiming=restore-inclusive frameTotal=not-computed",
+        g_journalAttributionSummary.captureId,
+        g_journalAttributionSummary.transactions != 0);
     line("frames={} presents={} techniques={} droppedTechniques={} droppedPasses={} orphanRestores={} qpcToMs={:.9f}",
         g_journalAttributionFrame,
         g_journalAttributionPresentCount,
@@ -1918,7 +2045,30 @@ void JournalAttributionDump()
             DumpAttributionOps(report, pass);
         }
     }
+    for (unsigned i = 0; i < g_journalAttributionSummary.frameStatCount; ++i) {
+        const auto& frame = g_journalAttributionSummary.frameStats[i];
+        line("frame={} transactions={} records={} truncated={} transactionSpanInclusiveQpc={} restoreInclusiveQpc={} restoreCount={}",
+            frame.frame, frame.transactions, frame.records, frame.truncatedTransactions,
+            frame.transactionSpanQpc, frame.restoreQpc, frame.restoreCount);
+    }
+    line("droppedFrames={} transactionSpanInclusiveQpc={} restoreInclusiveQpc={}",
+        g_journalAttributionSummary.droppedFrames,
+        g_journalAttributionSummary.transactionSpanQpc,
+        g_journalAttributionSummary.restoreQpc);
     line("---- end ProperShaders state attribution ----");
-    std::fclose(report);
+    succeeded = std::fflush(report) == 0 && std::ferror(report) == 0;
+    } catch (...) {
+        // std::print can throw on actual FILE output failure. The caller gets
+        // an explicit failure and subsequent captures can still acquire the lock.
+    }
     ReleaseSRWLockShared(&g_journalAttributionLock);
+    return succeeded;
+}
+
+void JournalAttributionDump()
+{
+    FILE* report = std::fopen("scripts\\BridgeD3D9.state-attribution.log", "a");
+    if (!report) return;
+    JournalAttributionWriteReport(report);
+    std::fclose(report);
 }

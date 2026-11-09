@@ -1111,6 +1111,7 @@ namespace dxvk {
         m_latencyHud = hud->addItem<hud::HudLatencyItem>("latency", 4);
 
       hud->addItem<hud::HudSWVPState>("swvp", -1, m_parent);
+      hud->addItem<hud::HudRenderStack>("renderstack", -1, m_parent);
 
 #ifdef DXVK_USE_UNMAPPABLE_MEMORY
       hud->addItem<hud::HudTextureMemory>("memory", -1, m_parent);

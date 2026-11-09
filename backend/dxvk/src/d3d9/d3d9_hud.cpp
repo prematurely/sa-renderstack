@@ -2,6 +2,30 @@
 
 namespace dxvk::hud {
 
+  void HudRenderStack::update(dxvk::high_resolution_clock::time_point time) {
+    if (std::chrono::duration_cast<std::chrono::microseconds>(time - m_lastUpdate).count() < 200'000)
+      return;
+    m_snapshot.StructSize = sizeof(m_snapshot);
+    m_snapshot.Version = D3D9_BRIDGE_DIAGNOSTICS_VERSION;
+    m_device->GetBridgeHudSnapshot(&m_snapshot);
+    for (UINT i = 0; i < m_snapshot.LineCount; ++i)
+      m_lines[i] = m_snapshot.Lines[i];
+    m_lastUpdate = time;
+  }
+
+  HudPos HudRenderStack::render(const Rc<DxvkCommandList>& ctx,
+    const HudPipelineKey& key, const HudOptions& options, HudRenderer& renderer,
+    HudPos position) {
+    if (!m_snapshot.Visible)
+      return position;
+    for (UINT i = 0; i < m_snapshot.LineCount; ++i) {
+      position.y += 16;
+      renderer.drawText(16, position, i ? 0xffffffffu : 0xffc0ff00u, m_lines[i]);
+    }
+    position.y += 8;
+    return position;
+  }
+
   HudTextureMemory::HudTextureMemory(D3D9DeviceEx* device)
   : m_device          (device)
   , m_allocatedString ("")

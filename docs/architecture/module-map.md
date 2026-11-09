@@ -124,6 +124,40 @@ external integration. It must not maintain a stale cache that bypasses state cha
 DXVK-native restores or unwrapped state blocks. Experimental direct-effect
 and batch modes remain disabled unless a separate test proves them safe.
 
+## Private Lifecycle Integration
+
+`backend/dxvk/src/d3d9/d3d9_bridge_lifecycle.h` defines a private COM observer
+between the Bridge and backend, independent of the public API1-7 interfaces and
+the DLL export set. Raw devices notify Present, Reset/ResetEx and final public
+Release boundaries. A borrowed host interface does not keep the device alive;
+the Bridge detaches its pass bindings before final release and admits later
+devices. Backends lacking the private interface use the existing device wrapper.
+Plugins/PostFX and per-call diagnostics continue to select the wrapped path.
+
+Instruction patches are published at the sole active device's owner-thread
+Present boundary. The guard no longer has a patch-writing watcher, and the
+support worker no longer suspends the render thread to install patches. Patch
+transactions preserve original bytes/protection and retain failed rollback
+state for retry; teardown refuses to overwrite another owner's bytes.
+
+Bridge initialization runs on the first exported call. DllMain only records its
+module and disables thread notifications. Query `IID_D3D9BridgeRuntime` on the
+Bridge factory for explicit `Shutdown()`, outside callbacks and loader lock,
+after releasing all devices admitted through that factory. Shutdown refuses
+live devices, stops/joins workers, restores tracked patches and shuts down
+plugins. A restoration failure returns E_FAIL and retains state for retry;
+completed shutdown rejects new device creation.
+
+Once initialized, the Bridge remains module-pinned because a caller may have
+cached an old hook entry before restoration. Explicit shutdown releases runtime
+activity; it does not promise physical hot unloading through FreeLibrary.
+Third-party rendering on arbitrary threads and live module replacement require
+a separate compatibility contract and are not established by these regressions.
+
+Lifecycle/patch/config behavior tests run through `tools/test.ps1`. They use
+allocated executable code, real IAT calls, actual D3D9/Vulkan devices and isolated
+child processes. They do not replace the fixed game workload or visual testing.
+
 ## Build and Package Ownership
 
 - `tools/build.ps1` builds Bridge, DXVK, probes, tests, and build metadata.

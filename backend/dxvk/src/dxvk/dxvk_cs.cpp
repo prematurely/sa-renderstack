@@ -2,6 +2,30 @@
 #include "../util/util_thread_scheduling.h"
 
 namespace dxvk {
+
+  static uint64_t activityTimeUs() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+      dxvk::high_resolution_clock::now().time_since_epoch()).count();
+  }
+
+  DxvkCsThread::Activity DxvkCsThread::getActivity() {
+    std::unique_lock<dxvk::mutex> lock(m_mutex);
+    Activity result = { };
+    result.wallUs = activityTimeUs();
+    result.queueIdleUs = m_queueIdleUs + (m_queueIdleStartUs
+      ? result.wallUs - m_queueIdleStartUs : 0u);
+    result.dispatched = m_queueOrdered.seqDispatch;
+    result.completed = m_seqOrdered.load();
+#ifdef _WIN32
+    result.threadId = m_thread.get_id();
+    FILETIME created, exited, kernel, user;
+    result.cpuAvailable = GetThreadTimes(m_thread.native_handle(), &created, &exited, &kernel, &user);
+    if (result.cpuAvailable)
+      result.cpu100ns = (uint64_t(kernel.dwHighDateTime) << 32 | kernel.dwLowDateTime)
+        + (uint64_t(user.dwHighDateTime) << 32 | user.dwLowDateTime);
+#endif
+    return result;
+  }
   
   DxvkCsChunk::DxvkCsChunk() {
     
@@ -217,12 +241,15 @@ namespace dxvk {
 
           if (unlikely(!pred())) {
             auto t0 = dxvk::high_resolution_clock::now();
+            m_queueIdleStartUs = std::chrono::duration_cast<std::chrono::microseconds>(t0.time_since_epoch()).count();
 
             m_condOnAdd.wait(lock, [&] {
               return pred();
             });
 
             auto t1 = dxvk::high_resolution_clock::now();
+            m_queueIdleUs += std::chrono::duration_cast<std::chrono::microseconds>(t1.time_since_epoch()).count() - m_queueIdleStartUs;
+            m_queueIdleStartUs = 0u;
             m_device->addStatCtr(DxvkStatCounter::CsIdleTicks, std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
           }
 

@@ -9,6 +9,9 @@
 #include "ProperShadersBatchPolicy.h"
 #include "ProperShadersEffectBindingCache.h"
 #include "ProperShadersPatchValidation.h"
+#include "BridgeCodePatch.h"
+#include "BridgeLog.h"
+#include "ProperShadersIatHook.h"
 #include "EffectInspector.h"
 #include "ProperShadersStateJournal.h"
 #include "ProperShadersRenderStateGuard.h"
@@ -16,7 +19,9 @@
 #include "BridgePerformanceProviderV1.h"
 #include "PerformanceAdapterConfig.h"
 #include "PerformanceAdapters.h"
+#include "BridgeMeasurementRuntime.h"
 #include "../../../backend/dxvk/src/util/util_thread_scheduling.h"
+#include "../../../backend/dxvk/src/d3d9/d3d9_bridge_lifecycle.h"
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -52,6 +57,36 @@ static constexpr bool kBackendTraceBuild = false;
 static HMODULE g_selfModule = nullptr;
 static HMODULE g_realD3D9 = nullptr;
 static HMODULE g_psProxy = nullptr;
+static INIT_ONCE g_bridgeInitOnce = INIT_ONCE_STATIC_INIT;
+static std::recursive_mutex g_bridgeLifecycleMutex;
+static std::atomic<bool> g_bridgeStopping{ false };
+static std::atomic<bool> g_bridgeShutdownRunning{ false };
+static bool g_bridgeShutdownComplete = false;
+static UINT g_liveBridgeDevices = 0;
+static DWORD g_patchOwnerThread = 0;
+static HANDLE g_bridgeStopEvent = nullptr;
+static std::mutex g_bridgeWorkerMutex;
+static std::array<HANDLE, 16> g_bridgeWorkers{};
+static bool EnsureBridgeInitialized();
+static HRESULT ShutdownBridgeRuntime();
+
+static HANDLE StartBridgeWorker(LPTHREAD_START_ROUTINE entry, void* context)
+{
+    std::lock_guard<std::mutex> lock(g_bridgeWorkerMutex);
+    if (g_bridgeStopping.load()) return nullptr;
+    for (auto& worker : g_bridgeWorkers) {
+        if (worker && WaitForSingleObject(worker, 0) == WAIT_OBJECT_0) {
+            CloseHandle(worker);
+            worker = nullptr;
+        }
+        if (!worker) {
+            worker = CreateThread(nullptr, 0, entry, context, 0, nullptr);
+            return worker;
+        }
+    }
+    SetLastError(ERROR_TOO_MANY_TCBS);
+    return nullptr;
+}
 static bool g_useDxvkBackend = false;
 static bool g_enablePostFxHost = false;
 static char g_postFxIniPath[MAX_PATH]{};
@@ -94,7 +129,7 @@ static bool g_properShadersGeneralStateJournal = true;
 static bool g_properShadersEffectBatching = false;
 static bool g_properShadersSkipDuplicateMatrices = true;
 static bool g_properShadersSkipDuplicateParameters = true;
-static bool g_properShadersDirectConstants = true;
+static bool g_properShadersDirectConstants = false;
 static bool g_properShadersEffectOptimizationNoSaveState = false;
 static bool g_properShadersEffectOptimizationAutoBenchmark = false;
 static DWORD g_properShadersEffectOptimizationWarmupMs = 10000;
@@ -190,6 +225,7 @@ struct VulkanHostDevice
     ID3D9GtaSaCompatDevice1* compat = nullptr;
     D3D9GtaSaCompatStatus status{};
     bool suspended = false;
+    bool ownsDevice = true;
 };
 
 struct LoadedPlugin
@@ -247,7 +283,7 @@ static void FormatTo(char* output, size_t outputSize,
 }
 
 template <class... Args>
-static void Log(std::format_string<Args...> fmt, Args&&... args)
+static void Log(std::format_string<Args...> fmt, Args&&... args) noexcept
 {
     static FILE* f = nullptr;
     if (!f) {
@@ -256,13 +292,7 @@ static void Log(std::format_string<Args...> fmt, Args&&... args)
             : "scripts\\BridgeD3D9.log", "a");
         if (!f) return;
     }
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    std::print(f, "[{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}] ",
-        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    std::vprint_nonunicode(f, fmt.get(), std::make_format_args(args...));
-    fputc('\n', f);
-    fflush(f);
+    BridgeDiagnostics::Write(f, fmt, std::forward<Args>(args)...);
 }
 
 static void ThreadSchedulingLog(const char* message) noexcept
@@ -330,6 +360,7 @@ struct ProperShadersCallPatch
     void* replacement = nullptr;
     uint8_t original[6]{};
     bool installed = false;
+    BridgeCodePatch::CodePatch code{};
 };
 
 enum class ProperShadersAutoBenchmarkStage : uint32_t
@@ -358,8 +389,11 @@ struct ProperShadersAutoBenchmarkState
 static ProperShadersEffectProfileState g_properShadersEffectProfile;
 static ProperShadersAutoBenchmarkState g_properShadersAutoBenchmark;
 static HMODULE g_properShadersOptimizationModule = nullptr;
+// Rejected modules have already been pinned by the preflight path, so this
+// identity cannot be unloaded and reused for another image.
+static HMODULE g_properShadersOptimizationRejectedModule = nullptr;
+static size_t g_properShadersOptimizationRejectedPatch = SIZE_MAX;
 static bool g_properShadersOptimizationHooksInstalled = false;
-static PVOID volatile* g_properShadersCreateEffectIatSlot = nullptr;
 static std::atomic<bool> g_properShadersNoSaveStateActive{ false };
 static thread_local uint32_t g_properShadersOptimizationBeginCalls = 0;
 static thread_local uint32_t g_properShadersOptimizationModifiedCalls = 0;
@@ -422,7 +456,7 @@ using ProperShadersD3DXCreateEffectFn = HRESULT (WINAPI*)(
     IDirect3DDevice9*, const void*, UINT, const void*, void*, DWORD,
     void*, void**, void**);
 
-static ProperShadersD3DXCreateEffectFn g_originalProperShadersD3DXCreateEffect = nullptr;
+static ProperShadersPatching::IatHook g_properShadersCreateEffectHook;
 
 static uint64_t ReadPerformanceCounter()
 {
@@ -1568,7 +1602,8 @@ static HRESULT WINAPI HookedProperShadersD3DXCreateEffect(
     void** effect,
     void** compilationErrors)
 {
-    const auto original = g_originalProperShadersD3DXCreateEffect;
+    const auto original = reinterpret_cast<ProperShadersD3DXCreateEffectFn>(
+        g_properShadersCreateEffectHook.Original());
     if (!original) return E_FAIL;
 
     const HRESULT hr = original(
@@ -1581,6 +1616,7 @@ static HRESULT WINAPI HookedProperShadersD3DXCreateEffect(
         pool,
         effect,
         compilationErrors);
+    if (g_bridgeStopping.load()) return hr;
     if (SUCCEEDED(hr) && effect && *effect && g_properShadersGeneralStateJournal) {
         ProperShadersStateJournal* journal = AcquireProperShadersStateJournal(
             *effect, true, false);
@@ -3410,10 +3446,6 @@ static PVOID volatile* FindModuleImportSlot(
 static bool InstallProperShadersCreateEffectHook(HMODULE module)
 {
     if (!g_properShadersGeneralStateJournal) return true;
-    if (g_properShadersCreateEffectIatSlot &&
-        g_originalProperShadersD3DXCreateEffect) {
-        return true;
-    }
 
     PVOID volatile* slot = FindModuleImportSlot(
         module, "d3dx9_43.dll", "D3DXCreateEffect");
@@ -3422,56 +3454,42 @@ static bool InstallProperShadersCreateEffectHook(HMODULE module)
         return false;
     }
 
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(
-            const_cast<PVOID*>(slot), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-        Log("effectgeneral: IAT VirtualProtect failed err={}", GetLastError());
+    const HMODULE provider = GetModuleHandleA("d3dx9_43.dll");
+    const PVOID expectedOriginal = provider
+        ? reinterpret_cast<PVOID>(GetProcAddress(provider, "D3DXCreateEffect"))
+        : nullptr;
+    if (!expectedOriginal) {
+        Log("effectgeneral: D3DXCreateEffect export not found err={}", GetLastError());
         return false;
     }
 
-    PVOID current = *slot;
     const PVOID hook = reinterpret_cast<PVOID>(&HookedProperShadersD3DXCreateEffect);
-    bool installed = false;
-    if (current == hook && g_originalProperShadersD3DXCreateEffect) {
-        installed = true;
-    } else if (current && current != hook) {
-        PVOID previous = InterlockedCompareExchangePointer(slot, hook, current);
-        if (previous == current) {
-            g_originalProperShadersD3DXCreateEffect =
-                reinterpret_cast<ProperShadersD3DXCreateEffectFn>(current);
-            g_properShadersCreateEffectIatSlot = slot;
-            installed = true;
-        }
-    }
-
-    DWORD ignored = 0;
-    VirtualProtect(const_cast<PVOID*>(slot), sizeof(void*), oldProtect, &ignored);
+    HMODULE pinnedProvider = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+            reinterpret_cast<LPCSTR>(expectedOriginal), &pinnedProvider)) return false;
+    const bool installed = g_properShadersCreateEffectHook.Install(
+        slot, expectedOriginal, hook);
     if (installed) {
-        Log("effectgeneral: D3DXCreateEffect IAT hook installed slot={:08X} original={:08X}", reinterpret_cast<std::uintptr_t>(slot), reinterpret_cast<std::uintptr_t>(g_originalProperShadersD3DXCreateEffect));
+        Log("effectgeneral: D3DXCreateEffect IAT hook installed slot={:08X} original={:08X}", reinterpret_cast<std::uintptr_t>(slot), reinterpret_cast<std::uintptr_t>(g_properShadersCreateEffectHook.Original()));
     } else {
-        Log("effectgeneral: D3DXCreateEffect IAT hook install race current={:08X}", reinterpret_cast<std::uintptr_t>(current));
+        Log("effectgeneral: D3DXCreateEffect IAT hook install failed err={} owned={} protectionPending={}",
+            g_properShadersCreateEffectHook.Error(),
+            g_properShadersCreateEffectHook.OwnsSlot(),
+            g_properShadersCreateEffectHook.HasPendingProtection());
     }
     return installed;
 }
 
-static void RestoreProperShadersCreateEffectHook()
+static bool RestoreProperShadersCreateEffectHook()
 {
-    PVOID volatile* slot = g_properShadersCreateEffectIatSlot;
-    const auto original = g_originalProperShadersD3DXCreateEffect;
-    if (!slot || !original) return;
-
-    DWORD oldProtect = 0;
-    if (VirtualProtect(
-            const_cast<PVOID*>(slot), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-        InterlockedCompareExchangePointer(
-            slot,
-            reinterpret_cast<PVOID>(original),
-            reinterpret_cast<PVOID>(&HookedProperShadersD3DXCreateEffect));
-        DWORD ignored = 0;
-        VirtualProtect(const_cast<PVOID*>(slot), sizeof(void*), oldProtect, &ignored);
+    const bool restored = g_properShadersCreateEffectHook.Restore();
+    if (!restored) {
+        Log("effectgeneral: D3DXCreateEffect IAT hook restore failed err={} owned={} protectionPending={}",
+            g_properShadersCreateEffectHook.Error(),
+            g_properShadersCreateEffectHook.OwnsSlot(),
+            g_properShadersCreateEffectHook.HasPendingProtection());
     }
-    g_properShadersCreateEffectIatSlot = nullptr;
-    g_originalProperShadersD3DXCreateEffect = nullptr;
+    return restored;
 }
 
 static bool WriteProperShadersCallPatch(ProperShadersCallPatch& patch, HMODULE module)
@@ -3492,43 +3510,46 @@ static bool WriteProperShadersCallPatch(ProperShadersCallPatch& patch, HMODULE m
     const int32_t relative = static_cast<int32_t>(displacement);
     std::memcpy(bytes + 1, &relative, sizeof(relative));
 
-    DWORD oldProtect = 0;
-    if (!VirtualProtect(site, sizeof(bytes), PAGE_EXECUTE_READWRITE, &oldProtect)) return false;
-    std::memcpy(patch.original, site, sizeof(patch.original));
-    std::memcpy(site, bytes, sizeof(bytes));
-    FlushInstructionCache(GetCurrentProcess(), site, sizeof(bytes));
-    DWORD ignored = 0;
-    VirtualProtect(site, sizeof(bytes), oldProtect, &ignored);
-    patch.installed = true;
-    return true;
+    const bool installed = patch.code.Install(site, patch.expected, bytes, sizeof(bytes));
+    patch.installed = patch.code.OwnsBytes();
+    return installed;
 }
 
-static void RestoreProperShadersOptimizationPatches()
+static bool RestoreProperShadersOptimizationPatches()
 {
-    HMODULE module = g_properShadersOptimizationModule;
-    if (!module) return;
-    for (size_t i = sizeof(g_properShadersOptimizationPatches) /
-             sizeof(g_properShadersOptimizationPatches[0]); i > 0; --i) {
-        ProperShadersCallPatch& patch = g_properShadersOptimizationPatches[i - 1];
-        if (!patch.installed) continue;
-        uint8_t* site = reinterpret_cast<uint8_t*>(module) + patch.rva;
-        DWORD oldProtect = 0;
-        if (VirtualProtect(site, sizeof(patch.original), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            std::memcpy(site, patch.original, sizeof(patch.original));
-            FlushInstructionCache(GetCurrentProcess(), site, sizeof(patch.original));
-            DWORD ignored = 0;
-            VirtualProtect(site, sizeof(patch.original), oldProtect, &ignored);
+    bool restored = true;
+    for (auto& patch : g_properShadersOptimizationPatches) {
+        if (!patch.code.Restore()) {
+            restored = false;
+            Log("effectopt: restore pending name={} err={} owned={} protectionPending={}",
+                patch.name, patch.code.Error(), patch.code.OwnsBytes(), patch.code.HasPendingProtection());
         }
-        patch.installed = false;
+        patch.installed = patch.code.OwnsBytes();
     }
-    g_properShadersOptimizationHooksInstalled = false;
-    g_properShadersOptimizationModule = nullptr;
+    if (restored) {
+        g_properShadersOptimizationHooksInstalled = false;
+        g_properShadersOptimizationModule = nullptr;
+    }
     g_properShadersNoSaveStateActive.store(false, std::memory_order_relaxed);
+    return restored;
 }
 
 static bool InstallProperShadersOptimizationPatches(HMODULE module)
 {
     if (g_properShadersOptimizationHooksInstalled) return true;
+    if (g_properShadersOptimizationRejectedModule == module) {
+        if (g_properShadersOptimizationRejectedPatch == SIZE_MAX)
+            return false;
+        const auto& rejected = g_properShadersOptimizationPatches[g_properShadersOptimizationRejectedPatch];
+        const auto site = reinterpret_cast<const uint8_t*>(module) + rejected.rva;
+        // A live call site can be restored by another hook owner. Rechecking
+        // just this signature avoids repeated full preflights and log writes.
+        if (!ProperShadersPatching::BytesMatch(site, rejected.expected, sizeof(rejected.expected)))
+            return false;
+    }
+    HMODULE pinned = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+            reinterpret_cast<LPCSTR>(module), &pinned)) return false;
 
     size_t imageSize = 0;
     if (!GetModuleImageSize(module, imageSize)) {
@@ -3542,6 +3563,8 @@ static bool InstallProperShadersOptimizationPatches(HMODULE module)
         const ProperShadersCallPatch& patch = g_properShadersOptimizationPatches[i];
         if (patch.rva > imageSize ||
             sizeof(patch.expected) > imageSize - patch.rva) {
+            g_properShadersOptimizationRejectedModule = module;
+            g_properShadersOptimizationRejectedPatch = SIZE_MAX;
             Log("effectopt: signature out of image name={} rva=0x{:08X} imageSize=0x{:08X}",
                 patch.name, static_cast<unsigned>(patch.rva), static_cast<unsigned>(imageSize));
             return false;
@@ -3553,6 +3576,8 @@ static bool InstallProperShadersOptimizationPatches(HMODULE module)
     const size_t mismatch = ProperShadersPatching::FindFirstMismatch(
         patchBytes);
     if (mismatch != patchCount) {
+        g_properShadersOptimizationRejectedModule = module;
+        g_properShadersOptimizationRejectedPatch = mismatch;
         const ProperShadersCallPatch& patch =
             g_properShadersOptimizationPatches[mismatch];
         const uint8_t* actual = patchBytes[mismatch].actual;
@@ -3596,28 +3621,25 @@ static bool InstallProperShadersOptimizationPatches(HMODULE module)
     return true;
 }
 
-static void RestoreProperShadersCallPatches()
+static bool RestoreProperShadersCallPatches()
 {
-    HMODULE module = g_properShadersEffectProfile.module;
-    if (!module) return;
-    for (size_t i = sizeof(g_properShadersCallPatches) / sizeof(g_properShadersCallPatches[0]);
-         i > 0; --i) {
-        ProperShadersCallPatch& patch = g_properShadersCallPatches[i - 1];
-        if (!patch.installed) continue;
-        uint8_t* site = reinterpret_cast<uint8_t*>(module) + patch.rva;
-        DWORD oldProtect = 0;
-        if (VirtualProtect(site, sizeof(patch.original), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            std::memcpy(site, patch.original, sizeof(patch.original));
-            FlushInstructionCache(GetCurrentProcess(), site, sizeof(patch.original));
-            DWORD ignored = 0;
-            VirtualProtect(site, sizeof(patch.original), oldProtect, &ignored);
+    bool restored = true;
+    for (auto& patch : g_properShadersCallPatches) {
+        if (!patch.code.Restore()) {
+            restored = false;
+            Log("effectprofile: restore pending name={} err={} owned={} protectionPending={}",
+                patch.name, patch.code.Error(), patch.code.OwnsBytes(), patch.code.HasPendingProtection());
         }
-        patch.installed = false;
+        patch.installed = patch.code.OwnsBytes();
     }
+    return restored;
 }
 
 static bool InstallProperShadersCallPatches(HMODULE module)
 {
+    HMODULE pinned = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+            reinterpret_cast<LPCSTR>(module), &pinned)) return false;
     size_t imageSize = 0;
     if (!GetModuleImageSize(module, imageSize)) {
         Log("effectprofile: failed to read ProperShaders PE image");
@@ -3854,7 +3876,7 @@ static void __stdcall PluginLog(const char* message)
 }
 
 template <typename Fn, typename... Args>
-static void SafePluginCall(const char* name, Fn fn, Args... args)
+static void SafePluginCallSeh(const char* name, Fn fn, Args... args)
 {
     if (!fn) return;
     __try {
@@ -3862,6 +3884,12 @@ static void SafePluginCall(const char* name, Fn fn, Args... args)
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         Log("postfx: plugin callback {} crashed, ignored", name);
     }
+}
+
+template <typename Fn, typename... Args>
+static void SafePluginCall(const char* name, Fn fn, Args... args) noexcept
+{
+    BridgeDiagnostics::BestEffort([&] { SafePluginCallSeh(name, fn, args...); });
 }
 
 static BOOL SafePluginInit1(
@@ -3998,7 +4026,7 @@ static void UnregisterPassBindingsLocked(
     }
 }
 
-static VulkanHostDevice* AttachVulkanHost(IDirect3DDevice9* device)
+static VulkanHostDevice* AttachVulkanHost(IDirect3DDevice9* device, bool borrowed = false)
 {
     if (!device) return nullptr;
 
@@ -4034,27 +4062,57 @@ static VulkanHostDevice* AttachVulkanHost(IDirect3DDevice9* device)
         return nullptr;
     }
     host->compat = compat;
+    host->ownsDevice = !borrowed;
     host->status = status;
 
     size_t passCount = 0;
     size_t boundCount = 0;
     {
         std::lock_guard<std::mutex> lock(g_vulkanHostMutex);
-        g_vulkanHostDevices.push_back(host);
-        for (auto& plugin : g_plugins) {
-            for (auto& pass : plugin.vulkanPasses) {
-                ++passCount;
-                if (SUCCEEDED(RegisterPassOnHostLocked(*pass, *host))) ++boundCount;
+        try {
+            // Allocate every Bridge-owned vector before binding any pass. A
+            // failed allocation leaves no callback pointing at a partial host.
+            g_vulkanHostDevices.reserve(g_vulkanHostDevices.size() + 1);
+            for (auto& plugin : g_plugins)
+                for (auto& pass : plugin.vulkanPasses)
+                    pass->bindings.reserve(pass->bindings.size() + 1);
+            g_vulkanHostDevices.push_back(host);
+            for (auto& plugin : g_plugins) {
+                for (auto& pass : plugin.vulkanPasses) {
+                    ++passCount;
+                    if (SUCCEEDED(RegisterPassOnHostLocked(*pass, *host))) ++boundCount;
+                }
             }
+        } catch (...) {
+            // Cleanup must not allocate/log. Backend tokens and metadata are
+            // retired before releasing the interface or destroying the host.
+            for (auto& plugin : g_plugins) {
+                for (auto& pass : plugin.vulkanPasses) {
+                    for (size_t i = pass->bindings.size(); i > 0; --i) {
+                        if (pass->bindings[i-1].host != host) continue;
+                        (void)compat->UnregisterVulkanPass(pass->bindings[i-1].backendToken);
+                        pass->bindings.erase(pass->bindings.begin() + (i-1));
+                    }
+                }
+            }
+            std::erase(g_vulkanHostDevices, host);
+            compat->Release();
+            delete host;
+            return nullptr;
         }
     }
 
-    Log("vulkanhost: attached api={} flags=0x{:08X} backbuffer={}x{} queued={} bound={}",
-        status.ApiVersion, status.Flags, status.BackBufferWidth, status.BackBufferHeight,
-        static_cast<unsigned long long>(passCount),
-        static_cast<unsigned long long>(boundCount));
+    // Diagnostics must not unwind past a successfully registered host.
+    try {
+        Log("vulkanhost: attached api={} flags=0x{:08X} backbuffer={}x{} queued={} bound={}",
+            status.ApiVersion, status.Flags, status.BackBufferWidth, status.BackBufferHeight,
+            static_cast<unsigned long long>(passCount),
+            static_cast<unsigned long long>(boundCount));
+    } catch (...) { }
+    if (borrowed) compat->Release();
     return host;
 }
+
 
 static void SuspendVulkanHost(VulkanHostDevice* host)
 {
@@ -4101,7 +4159,7 @@ static void DetachVulkanHost(VulkanHostDevice*& host)
         if (entry != g_vulkanHostDevices.end()) g_vulkanHostDevices.erase(entry);
     }
 
-    host->compat->Release();
+    if (host->ownsDevice) host->compat->Release();
     delete host;
     host = nullptr;
     Log("vulkanhost: detached");
@@ -4433,7 +4491,7 @@ static void OnProperShadersEffectOptimizationPresent()
     if (!module) module = GetModuleHandleA("propershaders.asi");
     if (!module) return;
 
-    if (g_properShadersGeneralStateJournal && !g_properShadersCreateEffectIatSlot) {
+    if (g_properShadersGeneralStateJournal && !g_properShadersCreateEffectHook.OwnsSlot()) {
         InstallProperShadersCreateEffectHook(module);
     }
     if (!g_properShadersOptimizationHooksInstalled) {
@@ -4590,6 +4648,7 @@ static void OnProperShadersEffectOptimizationPresent()
 
 static bool StartProperShadersStateAttribution()
 {
+    if (BridgeMeasurement::RuntimeEnabled()) return false;
     if (!g_enableProperShadersStateAttribution ||
         g_properShadersStateAttributionActive.load(std::memory_order_acquire)) {
         return false;
@@ -4613,6 +4672,7 @@ static bool StartProperShadersStateAttribution()
 
 static void FinishProperShadersStateAttribution(const char* reason)
 {
+    if (BridgeMeasurement::RuntimeEnabled()) return;
     if (!g_properShadersStateAttributionActive.load(std::memory_order_acquire)) return;
     const ULONGLONG now = GetTickCount64();
     const ULONGLONG elapsed = g_properShadersStateAttributionStartTick
@@ -5284,6 +5344,47 @@ static void CollectPerformanceProviderRows(
     }
 }
 
+static void AppendUnifiedCpuAdapterReport(const char* path,
+    const BridgeMeasurement::RuntimeCpuReport& report)
+{
+    EnsurePerformanceConfigLoaded();
+    if (!g_performanceRuntimeConfig.enabled) return;
+    std::vector<std::pair<uintptr_t, uint64_t>> addresses;
+    std::vector<std::pair<CpuHotspotStackKey, uint64_t>> stacks;
+    std::vector<BridgePerformance::ModuleIdentity> modules;
+    for (const auto& row : report.addresses) addresses.emplace_back(row.address, row.samples);
+    // Heuristic stack words remain in the detailed report, but may not turn
+    // into confident shared-module ownership in the adapter attribution.
+    for (const auto& row : report.stacks) {
+        if (row.quality != BridgeMeasurement::ChainQuality::FrameChain) continue;
+        CpuHotspotStackKey key{};
+        key.instructionPointer = row.ip;
+        key.caller1 = row.callers[0]; key.caller2 = row.callers[1]; key.caller3 = row.callers[2];
+        stacks.emplace_back(key, row.samples);
+    }
+    for (const auto& module : report.modules) modules.push_back(MakePerformanceModuleIdentity(module.base));
+    auto capture = BuildPerformanceCaptureSamples(addresses, stacks, modules, report.samples);
+    const auto attribution = BridgePerformance::AttributeCapture(g_performanceRuntimeConfig.registry, capture);
+    BridgePerformance::CaptureMetadata metadata{};
+    metadata.captureId = report.captureId; metadata.elapsedMs = report.elapsedMs;
+    metadata.frameCount = report.presents; metadata.fps = report.fps;
+    BridgePerformance::ProcessMemoryEvidence memory;
+    if (g_performanceRuntimeConfig.includeProcessMemory) memory = BridgePerformance::CollectProcessMemory();
+    std::vector<BridgePerformance::AdapterMetricRow> metrics;
+    std::vector<BridgePerformance::AdapterConfigRow> configs;
+    auto warnings = g_performanceRuntimeConfig.warnings;
+    for (const auto& warning : attribution.warnings)
+        AppendPerformanceWarning(warnings, warning.adapter, warning.code.c_str(), warning.detail);
+    CollectPerformanceConfigRows(g_performanceRuntimeConfig, configs, warnings);
+    CollectPerformanceProviderRows(g_performanceRuntimeConfig, metadata, modules, metrics, warnings);
+    FILE* file = nullptr;
+    if (fopen_s(&file, path, "a") == 0 && file) {
+        std::print(file, "adapterEvidence callerPolicy=structural-frame-chain-only frameSource=successful-present-counter\n");
+        BridgePerformance::AppendAdapterReport(file, metadata, attribution, memory, metrics, configs, warnings);
+        fclose(file);
+    }
+}
+
 static std::expected<void, std::string> SaveD3D9BackBufferBmp(
     IDirect3DDevice9* device,
     const char* outputPath)
@@ -5475,7 +5576,7 @@ static DWORD WINAPI CpuHotspotWorker(void* parameter)
     GetLocalTime(&beginTime);
     const DWORD startTick = GetTickCount();
     while (GetTickCount() - startTick < context->durationMs) {
-        Sleep(context->intervalMs);
+        if (WaitForSingleObject(g_bridgeStopEvent, context->intervalMs) != WAIT_TIMEOUT) break;
 
         const DWORD suspendResult = SuspendThread(targetThread);
         if (suspendResult == static_cast<DWORD>(-1)) {
@@ -5771,47 +5872,30 @@ static bool g_forceDeviceWrap = false;
 static bool ShouldWrapD3D9Device()
 {
     // Only diagnostics that intercept individual D3D9 calls require the
-    // per-call device wrapper. Effect optimization, the F7/F8 profilers and
-    // the CPU hotspot sampler run without it: hook installation moved to the
-    // unwrapped support worker below, and F8 arming polls from that worker.
+    // per-call device wrapper. Hook installation runs at the owner-thread
+    // Present boundary; the support worker only polls the F8 diagnostic key.
     return kBackendTraceBuild || g_forceDeviceWrap || g_enablePostFxHost ||
         !g_plugins.empty() || g_enableD3D9Stats || g_enableD3D9Trace ||
         g_enableD3D9CallsiteProfile || g_enableD3D9Optimizer;
 }
 
 // ---- Unwrapped-device support ----------------------------------------------
-// With the per-call device wrapper removed, three responsibilities move here:
-//  1. ProperShaders hook installation (previously retried from the wrapped
-//     Present every frame) now runs on a worker thread. Code patches use a
-//     suspend + EIP-outside-module check so the render thread is never paused
-//     inside the bytes being rewritten.
-//  2. F8 CPU hotspot arming (previously polled in the wrapped Present).
-//     The backbuffer screenshot is skipped in this mode: this thread must not
-//     call into a device the render thread is using concurrently.
-//  3. Vulkan host attach and render-thread id capture happen at CreateDevice.
-static IDirect3DDevice9* g_unwrappedDevice = nullptr;
-static VulkanHostDevice* g_unwrappedVulkanHost = nullptr;
-static DWORD g_unwrappedRenderThreadId = 0;
-static std::atomic<LONG> g_unwrappedDeviceClaimed{ 0 };
-static std::atomic<LONG> g_unwrappedWorkerStarted{ 0 };
+// Only lifecycle boundaries are observed; Draw/Set calls remain raw DXVK calls.
+struct UnwrappedDeviceContext {
+    IDirect3DDevice9* device = nullptr;
+    ID3D9BridgeLifecycle* lifecycle = nullptr; // borrowed until FinalRelease
+    VulkanHostDevice* host = nullptr;
+    DWORD ownerThread = 0;
+};
+static std::vector<std::unique_ptr<UnwrappedDeviceContext>> g_unwrappedDevices;
+static std::atomic<DWORD> g_unwrappedRenderThreadId{0};
+static std::atomic<bool> g_unwrappedWorkerStarted{false};
 static bool g_unwrappedHotspotTriggerWasDown = false;
 static bool g_unwrappedStateAttributionTriggerWasDown = false;
 
-static bool ThreadOutsideModule(HANDLE thread, HMODULE module)
-{
-    uintptr_t base = 0;
-    uintptr_t size = 0;
-    uintptr_t preferred = 0;
-    if (!GetPeImageInfo(module, base, size, preferred) || !size) return false;
-    CONTEXT context{};
-    context.ContextFlags = CONTEXT_CONTROL;
-    if (!GetThreadContext(thread, &context)) return false;
-    const uintptr_t ip = context.Eip;
-    return ip < base || ip >= base + size;
-}
-
 static void MaybeArmCpuHotspotProfileUnwrapped()
 {
+    if (BridgeMeasurement::RuntimeEnabled()) return;
     if (!g_enableCpuHotspotProfile) return;
 
     const bool triggerDown = (GetAsyncKeyState(g_cpuHotspotTriggerKey) & 0x8000) != 0;
@@ -5841,8 +5925,8 @@ static void MaybeArmCpuHotspotProfileUnwrapped()
         return;
     }
 
-    context->targetThreadId = g_unwrappedRenderThreadId
-        ? g_unwrappedRenderThreadId
+    context->targetThreadId = g_unwrappedRenderThreadId.load()
+        ? g_unwrappedRenderThreadId.load()
         : GetCurrentThreadId();
     context->captureId = static_cast<UINT>(
         g_cpuHotspotCaptureId.fetch_add(1) + 1);
@@ -5857,7 +5941,7 @@ static void MaybeArmCpuHotspotProfileUnwrapped()
     const DWORD durationMs = context->durationMs;
     const DWORD intervalMs = context->intervalMs;
 
-    HANDLE worker = CreateThread(nullptr, 0, CpuHotspotWorker, context, 0, nullptr);
+    HANDLE worker = StartBridgeWorker(CpuHotspotWorker, context);
     if (!worker) {
         Log("cpuhotspots: capture={} CreateThread failed err={}",
             captureId, GetLastError());
@@ -5865,7 +5949,6 @@ static void MaybeArmCpuHotspotProfileUnwrapped()
         g_cpuHotspotActive.store(0);
         return;
     }
-    CloseHandle(worker);
 
     Log("cpuhotspots: capture={} armed targetThread={} durationMs={} intervalMs={} screenshotSaved=0 screenshot=(skipped-unwrapped)",
         captureId, targetThreadId, durationMs, intervalMs);
@@ -5876,86 +5959,131 @@ static DWORD WINAPI UnwrappedSupportThread(LPVOID)
     renderstack::scheduling::ThreadSchedulingScope scheduling(
         g_threadSchedulingOptions, renderstack::scheduling::Role::Background,
         &ThreadSchedulingLog);
-    if (!g_threadSchedulingOptions.enabled) {
-        // Preserve the existing worker affinity when the M1 policy is disabled.
-        SetThreadAffinityMask(GetCurrentThread(), kEfficiencyCoreMask);
-    }
-    Log("postfx: unwrapped support worker started renderThread={}",
-        g_unwrappedRenderThreadId);
-    const ULONGLONG installDeadline = GetTickCount64() + 180000ull;
-    bool installDone = !g_enableProperShadersEffectOptimization;
-    for (;;) {
-        if (!installDone) {
-            HMODULE module = GetModuleHandleA("ProperShaders.asi");
-            if (!module) module = GetModuleHandleA("propershaders.asi");
-            if (module) {
-                if (g_properShadersGeneralStateJournal && !g_properShadersCreateEffectIatSlot) {
-                    // Single aligned pointer store; safe without suspending.
-                    InstallProperShadersCreateEffectHook(module);
-                }
-                if (!g_properShadersOptimizationHooksInstalled) {
-                    HANDLE renderThread = OpenThread(
-                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
-                        FALSE, g_unwrappedRenderThreadId);
-                    if (renderThread) {
-                        if (SuspendThread(renderThread) != static_cast<DWORD>(-1)) {
-                            if (ThreadOutsideModule(renderThread, module)) {
-                                InstallProperShadersOptimizationPatches(module);
-                            }
-                            ResumeThread(renderThread);
-                        }
-                        CloseHandle(renderThread);
-                    }
-                }
-                const bool iatReady = !g_properShadersGeneralStateJournal ||
-                    g_properShadersCreateEffectIatSlot;
-                if (iatReady && g_properShadersOptimizationHooksInstalled) {
-                    installDone = true;
-                    g_properShadersNoSaveStateActive.store(true, std::memory_order_release);
-                    Log("effectopt: incremental state journal active; installed from unwrapped worker");
-                }
-            }
-            if (!installDone && GetTickCount64() >= installDeadline) {
-                installDone = true;
-                Log("effectopt: unwrapped install timed out after 180s; optimization inactive this session");
-            }
-        }
+    Log("postfx: unwrapped support worker started");
+    while (WaitForSingleObject(g_bridgeStopEvent, 30) == WAIT_TIMEOUT) {
         MaybeArmCpuHotspotProfileUnwrapped();
-        PollProperShadersStateAttribution(
-            g_unwrappedStateAttributionTriggerWasDown, false);
-        // The worker owns the diagnostic hotkeys in unwrapped mode. Keep its
-        // polling interval short only while a diagnostic is enabled so normal
-        // gameplay does not acquire a tighter wake-up loop.
-        const DWORD pollIntervalMs =
-            (g_enableCpuHotspotProfile || g_enableProperShadersStateAttribution)
-            ? 8u
-            : (installDone ? 30u : 100u);
-        Sleep(pollIntervalMs);
     }
+    Log("postfx: unwrapped support worker stopped");
     return 0;
 }
 
-static void OnUnwrappedDeviceCreated(IDirect3DDevice9* device)
+static void RunBridgeRenderSafePoint()
 {
-    // Only the first device is the game's render device. D3DX9 helper devices
-    // created later must not steal the render-thread id or the Vulkan host.
-    if (g_unwrappedDeviceClaimed.exchange(1) != 0) {
-        Log("postfx: additional device left unwrapped inner=0x{:08X} (not claimed)", reinterpret_cast<std::uintptr_t>(device));
-        return;
+    std::lock_guard<std::recursive_mutex> lock(g_bridgeLifecycleMutex);
+    if (g_bridgeStopping.load()) return;
+    if (g_liveBridgeDevices != 1) return;
+    if (!g_patchOwnerThread) g_patchOwnerThread = GetCurrentThreadId();
+    if (g_patchOwnerThread != GetCurrentThreadId()) return;
+    PollProperShadersRenderStateGuards();
+    OnProperShadersEffectOptimizationPresent();
+}
+
+static void STDMETHODCALLTYPE OnUnwrappedDeviceEvent(void* data,
+    IDirect3DDevice9* device, D3D9BridgeEvent event, HRESULT result,
+    D3DPRESENT_PARAMETERS* params, const D3D9BridgePresentArgs* present) noexcept
+{
+    BridgeDiagnostics::BestEffort([&] {
+    std::lock_guard<std::recursive_mutex> lock(g_bridgeLifecycleMutex);
+    auto* context = static_cast<UnwrappedDeviceContext*>(data);
+    switch (event) {
+    case D3D9BridgeEvent::PresentBefore:
+        // Hooks are installed only at the owning render thread's boundary.
+        // No other thread is suspended, so CRT/heap/log locks stay available.
+        if (GetCurrentThreadId() == context->ownerThread) RunBridgeRenderSafePoint();
+        for (auto& plugin : g_plugins)
+            SafePluginCall("OnPresentBefore", plugin.onPresentBefore, device,
+                present->Source, present->Destination, present->Window, present->DirtyRegion);
+        break;
+    case D3D9BridgeEvent::PresentAfter:
+        ++g_cpuHotspotPresents;
+        if (BridgeMeasurement::RuntimeEnabled()) BridgeMeasurement::RuntimePresent(device, result);
+        else PollProperShadersStateAttribution(g_unwrappedStateAttributionTriggerWasDown, true);
+        for (auto& plugin : g_plugins)
+            SafePluginCall("OnPresentAfter", plugin.onPresentAfter, device, result);
+        break;
+    case D3D9BridgeEvent::ResetBefore:
+        BridgeDiagnostics::BestEffort([&] {
+            InvalidateProperShadersDeviceApiCache();
+            ShutdownProperShadersStateRing();
+            BridgeMeasurement::RuntimeInterrupt(device, "device-reset");
+            FinishProperShadersEffectProfile("device-reset");
+            FinishProperShadersStateAttribution("device-reset");
+        });
+        SuspendVulkanHost(context->host);
+        for (auto& plugin : g_plugins)
+            SafePluginCall("OnResetBefore", plugin.onResetBefore, device, params);
+        break;
+    case D3D9BridgeEvent::ResetAfter:
+        for (auto& plugin : g_plugins)
+            SafePluginCall("OnResetAfter", plugin.onResetAfter, device, result, params);
+        if (SUCCEEDED(result)) ResumeVulkanHost(context->host);
+        break;
+    case D3D9BridgeEvent::FinalRelease:
+        BridgeDiagnostics::BestEffort([&] {
+            InvalidateProperShadersDeviceApiCache();
+            ShutdownProperShadersStateRing();
+            BridgeMeasurement::RuntimeInterrupt(device, "device-destroyed", true);
+            FinishProperShadersEffectProfile("device-destroyed");
+            FinishProperShadersStateAttribution("device-destroyed");
+        });
+        DetachVulkanHost(context->host);
+        for (auto& plugin : g_plugins)
+            SafePluginCall("OnReleaseDevice", plugin.onReleaseDevice, device);
+        std::erase_if(g_unwrappedDevices,
+            [context](const auto& entry) { return entry.get() == context; });
+        --g_liveBridgeDevices;
+        if (!g_liveBridgeDevices) g_patchOwnerThread = 0;
+        else if (!g_unwrappedDevices.empty()) g_patchOwnerThread = g_unwrappedDevices.front()->ownerThread;
+        g_unwrappedRenderThreadId.store(g_unwrappedDevices.empty()
+            ? 0 : g_unwrappedDevices.front()->ownerThread);
+        Log("postfx: unwrapped device released; remaining={}", g_liveBridgeDevices);
+        break;
     }
-    g_unwrappedDevice = device;
-    g_unwrappedRenderThreadId = GetCurrentThreadId();
-    g_unwrappedVulkanHost = AttachVulkanHost(device);
-    if (g_unwrappedWorkerStarted.exchange(1) == 0) {
-        HANDLE thread = CreateThread(nullptr, 0, UnwrappedSupportThread, nullptr, 0, nullptr);
-        if (thread) {
-            CloseHandle(thread);
-        } else {
-            g_unwrappedWorkerStarted.store(0);
-            Log("postfx: unwrapped support worker CreateThread failed err={}", GetLastError());
+    });
+}
+
+static bool OnUnwrappedDeviceCreated(IDirect3DDevice9* device)
+{
+    ID3D9BridgeLifecycle* lifecycle = nullptr;
+    if (FAILED(device->QueryInterface(IID_D3D9BridgeLifecycle,
+            reinterpret_cast<void**>(&lifecycle)))) return false;
+    const auto releaseLifecycle = [](ID3D9BridgeLifecycle* value) { value->Release(); };
+    std::unique_ptr<ID3D9BridgeLifecycle, decltype(releaseLifecycle)> lifecycleRef(lifecycle, releaseLifecycle);
+    std::unique_ptr<UnwrappedDeviceContext> context;
+    try {
+        context = std::make_unique<UnwrappedDeviceContext>();
+        g_unwrappedDevices.reserve(g_unwrappedDevices.size() + 1);
+    } catch (...) { return false; }
+    context->device = device;
+    context->lifecycle = lifecycle;
+    context->ownerThread = GetCurrentThreadId();
+    // Host allocation/registration is transactional and precedes publication.
+    context->host = AttachVulkanHost(device, true);
+    const D3D9BridgeObserver observer{sizeof(observer), context.get(), &OnUnwrappedDeviceEvent};
+    if (FAILED(lifecycle->SetObserver(&observer))) {
+        DetachVulkanHost(context->host);
+        return false;
+    }
+    // The preallocated unique_ptr move cannot throw after SetObserver. The QI
+    // scope releases its temporary reference after context ownership commits.
+    g_unwrappedDevices.push_back(std::move(context));
+    ++g_liveBridgeDevices;
+    if (g_unwrappedDevices.size() == 1)
+        g_unwrappedRenderThreadId.store(GetCurrentThreadId());
+    if (!g_unwrappedWorkerStarted.exchange(true)) {
+        if (!StartBridgeWorker(UnwrappedSupportThread, nullptr)) {
+            g_unwrappedWorkerStarted.store(false);
+            Log("postfx: unwrapped worker start failed err={}", GetLastError());
         }
     }
-    Log("postfx: device left unwrapped inner=0x{:08X} renderThread={} (per-call wrapper disabled)", reinterpret_cast<std::uintptr_t>(device), g_unwrappedRenderThreadId);
+    BridgeDiagnostics::BestEffort([&] {
+        InvalidateProperShadersDeviceApiCache();
+        ShutdownProperShadersStateRing();
+        BridgeMeasurement::RuntimePrepareDevice(device);
+    });
+    Log("postfx: lifecycle attached to raw device=0x{:08X} live={}",
+        reinterpret_cast<std::uintptr_t>(device), g_liveBridgeDevices);
+    return true;
 }
 
 
@@ -6325,7 +6453,7 @@ static DWORD WINAPI AffinityReapplyThread(void*)
     Log("affinity: reapply worker started count={} intervalMs={}",
         g_affinityReapplyCount, g_affinityReapplyIntervalMs);
     for (DWORD i = 0; i < g_affinityReapplyCount; ++i) {
-        Sleep(g_affinityReapplyIntervalMs);
+        if (WaitForSingleObject(g_bridgeStopEvent, g_affinityReapplyIntervalMs) != WAIT_TIMEOUT) break;
         ApplyAffinityAndPriority("reapply");
     }
     Log("affinity: reapply worker finished");
@@ -6411,7 +6539,10 @@ static bool SetDxvkEnvironment(const char* name, const char* value)
 static void ConfigureDxvkDiagnostics(const char* iniPath)
 {
     const bool enabled = GetPrivateProfileIntA("DXVKDiagnostics", "Enable", 0, iniPath) != 0;
+    const bool measurementHud = GetPrivateProfileIntA("Measurement", "Enable", 0, iniPath) != 0 &&
+        GetPrivateProfileIntA("Measurement", "ShowHud", 1, iniPath) != 0;
     if (!enabled) {
+        if (measurementHud) SetDxvkEnvironment("DXVK_HUD", "renderstack");
         Log("dxvkdiag: disabled");
         return;
     }
@@ -6445,6 +6576,10 @@ static void ConfigureDxvkDiagnostics(const char* iniPath)
     char debugMode[32]{};
     GetPrivateProfileStringA("DXVKDiagnostics", "LogLevel", "trace", logLevel, sizeof(logLevel), iniPath);
     GetPrivateProfileStringA("DXVKDiagnostics", "Hud", "full", hud, sizeof(hud), iniPath);
+    if (measurementHud && !std::strstr(hud, "renderstack")) {
+        if (hud[0]) strncat_s(hud, ",", _TRUNCATE);
+        strncat_s(hud, "renderstack", _TRUNCATE);
+    }
     GetPrivateProfileStringA("DXVKDiagnostics", "Debug", "markers", debugMode, sizeof(debugMode), iniPath);
 
     SetDxvkEnvironment("DXVK_LOG_LEVEL", logLevel);
@@ -7118,6 +7253,28 @@ static void RestoreSystemDirectoryHook()
     Log("backend: temporary GetSystemDirectoryA hook restored");
 }
 
+struct MeasurementWorkerStart {
+    LPTHREAD_START_ROUTINE entry;
+    void* context;
+};
+
+static DWORD WINAPI MeasurementBackgroundWorker(void* data)
+{
+    std::unique_ptr<MeasurementWorkerStart> start(static_cast<MeasurementWorkerStart*>(data));
+    renderstack::scheduling::ThreadSchedulingScope scheduling(
+        g_threadSchedulingOptions, renderstack::scheduling::Role::Background, &ThreadSchedulingLog);
+    return start->entry(start->context);
+}
+
+static HANDLE StartMeasurementWorker(LPTHREAD_START_ROUTINE entry, void* context)
+{
+    auto start = std::unique_ptr<MeasurementWorkerStart>(new (std::nothrow) MeasurementWorkerStart{entry, context});
+    if (!start) return nullptr;
+    HANDLE thread = StartBridgeWorker(&MeasurementBackgroundWorker, start.get());
+    if (thread) start.release();
+    return thread;
+}
+
 static void LoadBridgeConfig()
 {
     char gameDir[MAX_PATH]{};
@@ -7321,8 +7478,13 @@ static void LoadBridgeConfig()
         "ProperShadersEffectOptimization", "SkipDuplicateMatrices", 1, iniPath) != 0;
     g_properShadersSkipDuplicateParameters = GetPrivateProfileIntA(
         "ProperShadersEffectOptimization", "SkipDuplicateParameters", 1, iniPath) != 0;
-    g_properShadersDirectConstants = GetPrivateProfileIntA(
-        "ProperShadersEffectOptimization", "DirectConstants", 1, iniPath) != 0;
+    const bool requestedDirectConstants = GetPrivateProfileIntA(
+        "ProperShadersEffectOptimization", "DirectConstants", 0, iniPath) != 0;
+    // Quarantined after geometry/sprite state leaked into later draws. Keep
+    // this gate closed even for an older profile that explicitly requests it.
+    g_properShadersDirectConstants = false;
+    Log("directConstants: requested={} effective=0 reason=production-quarantine",
+        requestedDirectConstants ? 1 : 0);
     g_properShadersNativeStateJournalPolicy = GetPrivateProfileIntA(
         "ProperShadersEffectOptimization", "NativeStateJournal", 1, iniPath) != 0;
     g_properShadersInspectEffects = GetPrivateProfileIntA(
@@ -7384,6 +7546,26 @@ static void LoadBridgeConfig()
         g_enablePostFxHost ? "enabled" : "disabled",
         g_enablePostFxHost ? "deferred-to-Direct3DCreate9" : "none");
     LoadProxyChainConfig(iniPath);
+
+    BridgeMeasurement::RuntimeConfig measurement{};
+    measurement.enabled = GetPrivateProfileIntA("Measurement", "Enable", 0, iniPath) != 0;
+    measurement.hud = GetPrivateProfileIntA("Measurement", "ShowHud", 1, iniPath) != 0;
+    measurement.cpu = GetPrivateProfileIntA("Measurement", "CpuHotspots", 1, iniPath) != 0;
+    measurement.journal = GetPrivateProfileIntA("Measurement", "JournalAttribution", 1, iniPath) != 0;
+    measurement.timing.baselineMs = std::clamp<UINT>(GetPrivateProfileIntA("Measurement", "BaselineMs", 5000, iniPath), 1000, 30000);
+    measurement.timing.cpuMs = g_cpuHotspotDurationMs;
+    measurement.timing.attributionMs = g_properShadersStateAttributionDurationMs;
+    measurement.timing.slowFrameMs = std::clamp<UINT>(GetPrivateProfileIntA("Measurement", "SlowFrameMs", 50, iniPath), 1, 1000);
+    measurement.intervalMs = g_cpuHotspotIntervalMs;
+    measurement.gameDirectory = g_gameDir; measurement.stopEvent = g_bridgeStopEvent;
+    measurement.startWorker = &StartMeasurementWorker;
+    measurement.log = +[](const char* message) { Log("measurement: {}", message); };
+    measurement.readFrame = &ReadGtasaFrameCounter;
+    measurement.appendCpuReport = &AppendUnifiedCpuAdapterReport;
+    BridgeMeasurement::ConfigureRuntime(measurement);
+    Log("measurement: enabled={} HUD={} F8/F7=combined baselineMs={} cpuMs={} stateMs={} samplingIntervalMs={}",
+        measurement.enabled, measurement.hud, measurement.timing.baselineMs, measurement.timing.cpuMs,
+        measurement.timing.attributionMs, measurement.intervalMs);
 
     int useDxvk = GetPrivateProfileIntA("Backend", "UseDxvkBackend", 0, iniPath);
     char backendRel[MAX_PATH]{};
@@ -7808,36 +7990,54 @@ public:
     explicit BridgeDirect3DDevice9(IDirect3DDevice9* inner)
         : m_inner(inner), m_refs(1), m_renderThreadId(GetCurrentThreadId())
     {
-        Log("postfx: wrapped IDirect3DDevice9 0x{:08X} -> 0x{:08X}", reinterpret_cast<std::uintptr_t>(inner), reinterpret_cast<std::uintptr_t>(this));
-        m_vulkanHost = AttachVulkanHost(inner);
-        m_lastStatsTick = GetTickCount();
-        m_lastStats = m_stats;
-        GetPeImageInfo(GetModuleHandleA(nullptr), m_gameImageBase, m_gameImageSize,
-            m_gamePreferredBase);
-        if (g_enableD3D9CallsiteProfile) {
-            Log("d3d9callsites: gameImage base={:08X} size=0x{:08X} preferred={:08X}", reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(m_gameImageBase)),
-                static_cast<unsigned>(m_gameImageSize), reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(m_gamePreferredBase)));
-            RefreshCallsiteRenderTarget();
+        try {
+            Log("postfx: wrapped IDirect3DDevice9 0x{:08X} -> 0x{:08X}", reinterpret_cast<std::uintptr_t>(inner), reinterpret_cast<std::uintptr_t>(this));
+            m_vulkanHost = AttachVulkanHost(inner);
+            m_lastStatsTick = GetTickCount();
+            m_lastStats = m_stats;
+            GetPeImageInfo(GetModuleHandleA(nullptr), m_gameImageBase, m_gameImageSize,
+                m_gamePreferredBase);
+            if (g_enableD3D9CallsiteProfile) {
+                Log("d3d9callsites: gameImage base={:08X} size=0x{:08X} preferred={:08X}", reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(m_gameImageBase)),
+                    static_cast<unsigned>(m_gameImageSize), reinterpret_cast<std::uintptr_t>(reinterpret_cast<void*>(m_gamePreferredBase)));
+                RefreshCallsiteRenderTarget();
+            }
+    #ifdef BRIDGE_D3D9_BACKEND_TRACE
+            m_backendAlphaRing = new (std::nothrow) BackendAlphaDrawRecord[kBackendAlphaRingCapacity];
+            Log("backendtrace: alpha ring allocated records={} bytes={} ptr={:08X}",
+                static_cast<unsigned>(kBackendAlphaRingCapacity),
+                static_cast<unsigned long long>(sizeof(BackendAlphaDrawRecord) * kBackendAlphaRingCapacity), reinterpret_cast<std::uintptr_t>(m_backendAlphaRing));
+    #endif
+            ++g_liveBridgeDevices;
+        } catch (...) {
+            DetachVulkanHost(m_vulkanHost);
+            throw;
         }
-#ifdef BRIDGE_D3D9_BACKEND_TRACE
-        m_backendAlphaRing = new (std::nothrow) BackendAlphaDrawRecord[kBackendAlphaRingCapacity];
-        Log("backendtrace: alpha ring allocated records={} bytes={} ptr={:08X}",
-            static_cast<unsigned>(kBackendAlphaRingCapacity),
-            static_cast<unsigned long long>(sizeof(BackendAlphaDrawRecord) * kBackendAlphaRingCapacity), reinterpret_cast<std::uintptr_t>(m_backendAlphaRing));
-#endif
+        // No fallible construction remains after publishing borrowed state.
+        BridgeDiagnostics::BestEffort([&] {
+            InvalidateProperShadersDeviceApiCache();
+            ShutdownProperShadersStateRing();
+            BridgeMeasurement::RuntimePrepareDevice(inner);
+        });
     }
 
     ~BridgeDirect3DDevice9()
     {
+        std::lock_guard<std::recursive_mutex> lifecycleLock(g_bridgeLifecycleMutex);
 #ifdef BRIDGE_D3D9_BACKEND_TRACE
         DumpBackendTrace("device-destroyed");
         delete[] m_backendAlphaRing;
         m_backendAlphaRing = nullptr;
 #endif
+        BridgeDiagnostics::BestEffort([&] {
         FinishCallsiteProfile("device-destroyed");
         FinishDrawTrace("device-destroyed");
         FinishProperShadersEffectProfile("device-destroyed");
         FinishProperShadersStateAttribution("device-destroyed");
+        InvalidateProperShadersDeviceApiCache();
+        ShutdownProperShadersStateRing();
+        BridgeMeasurement::RuntimeInterrupt(m_inner, "device-destroyed", true);
+        });
         DetachVulkanHost(m_vulkanHost);
         for (auto& plugin : g_plugins) {
             SafePluginCall("OnReleaseDevice", plugin.onReleaseDevice, m_inner);
@@ -7847,6 +8047,8 @@ public:
             m_inner = nullptr;
         }
         Log("postfx: device wrapper destroyed");
+        --g_liveBridgeDevices;
+        if (!g_liveBridgeDevices) g_patchOwnerThread = 0;
     }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObj) override
@@ -7893,6 +8095,9 @@ public:
         FinishDrawTrace("device-reset");
         FinishProperShadersEffectProfile("device-reset");
         FinishProperShadersStateAttribution("device-reset");
+        InvalidateProperShadersDeviceApiCache();
+        ShutdownProperShadersStateRing();
+        BridgeMeasurement::RuntimeInterrupt(m_inner, "device-reset");
         ResetTrackedState();
         SuspendVulkanHost(m_vulkanHost);
         for (auto& plugin : g_plugins) {
@@ -7908,6 +8113,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE Present(const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion) override
     {
+        RunBridgeRenderSafePoint();
         m_renderThreadId = GetCurrentThreadId();
         MaybeArmCpuHotspotProfile();
         for (auto& plugin : g_plugins) {
@@ -7931,8 +8137,9 @@ public:
 #endif
         OnCallsitePresent();
         OnProperShadersEffectProfilePresent();
-        PollProperShadersStateAttribution(m_stateAttributionTriggerWasDown, true);
-        OnProperShadersEffectOptimizationPresent();
+        if (BridgeMeasurement::RuntimeEnabled()) {
+            BridgeDiagnostics::BestEffort([&] { BridgeMeasurement::RuntimePresent(m_inner, hr); });
+        } else PollProperShadersStateAttribution(m_stateAttributionTriggerWasDown, true);
         ResetTrackedState();
         for (auto& plugin : g_plugins) {
             SafePluginCall("OnPresentAfter", plugin.onPresentAfter, m_inner, hr);
@@ -8786,6 +8993,7 @@ private:
 
     void OnProperShadersEffectProfilePresent()
     {
+        if (BridgeMeasurement::RuntimeEnabled()) return;
         if (!g_enableProperShadersEffectProfile) return;
 
         const DWORD currentThreadId = GetCurrentThreadId();
@@ -8816,6 +9024,7 @@ private:
 
     void MaybeArmCpuHotspotProfile()
     {
+        if (BridgeMeasurement::RuntimeEnabled()) return;
         if (!g_enableCpuHotspotProfile) return;
 
         const bool triggerDown = (GetAsyncKeyState(g_cpuHotspotTriggerKey) & 0x8000) != 0;
@@ -8886,7 +9095,7 @@ private:
         char screenshotPath[MAX_PATH]{};
         FormatTo(screenshotPath, sizeof(screenshotPath), "{}", context->screenshotPath);
 
-        HANDLE worker = CreateThread(nullptr, 0, CpuHotspotWorker, context, 0, nullptr);
+        HANDLE worker = StartBridgeWorker(CpuHotspotWorker, context);
         if (!worker) {
             Log("cpuhotspots: capture={} CreateThread failed err={}",
                 captureId, GetLastError());
@@ -8894,8 +9103,6 @@ private:
             g_cpuHotspotActive.store(0);
             return;
         }
-        CloseHandle(worker);
-
         Log("cpuhotspots: capture={} armed targetThread={} durationMs={} intervalMs={} screenshotSaved={} screenshot={}",
             captureId,
             targetThreadId,
@@ -9715,7 +9922,7 @@ private:
 #endif
 };
 
-class BridgeDirect3D9 final : public IDirect3D9
+class BridgeDirect3D9 final : public IDirect3D9, public ID3D9BridgeRuntime
 {
 public:
     explicit BridgeDirect3D9(IDirect3D9* inner)
@@ -9736,6 +9943,11 @@ public:
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObj) override
     {
         if (!ppvObj) return E_POINTER;
+        if (riid == IID_D3D9BridgeRuntime) {
+            *ppvObj = static_cast<ID3D9BridgeRuntime*>(this);
+            AddRef();
+            return S_OK;
+        }
         if (riid == IID_IUnknown || riid == IID_IDirect3D9) {
             *ppvObj = static_cast<IDirect3D9*>(this);
             AddRef();
@@ -9745,6 +9957,7 @@ public:
     }
 
     ULONG STDMETHODCALLTYPE AddRef() override { return m_refs.fetch_add(1) + 1; }
+    HRESULT STDMETHODCALLTYPE Shutdown() override { return ShutdownBridgeRuntime(); }
     ULONG STDMETHODCALLTYPE Release() override
     {
         ULONG refs = m_refs.fetch_sub(1) - 1;
@@ -9770,6 +9983,10 @@ public:
         DWORD BehaviorFlags, D3DPRESENT_PARAMETERS* pPresentationParameters,
         IDirect3DDevice9** ppReturnedDeviceInterface) override
     {
+        std::lock_guard<std::recursive_mutex> lifecycleLock(g_bridgeLifecycleMutex);
+        if (!ppReturnedDeviceInterface) return D3DERR_INVALIDCALL;
+        *ppReturnedDeviceInterface = nullptr;
+        if (g_bridgeStopping.load()) return D3DERR_INVALIDCALL;
         IDirect3DDevice9* device = nullptr;
         HRESULT hr = m_inner->CreateDevice(Adapter, DeviceType, hFocusWindow, BehaviorFlags,
             pPresentationParameters, &device);
@@ -9777,6 +9994,7 @@ public:
             if (ppReturnedDeviceInterface) *ppReturnedDeviceInterface = device;
             return hr;
         }
+        if (!g_liveBridgeDevices) g_patchOwnerThread = GetCurrentThreadId();
 
         // The device creation thread is also used in unwrapped mode. Keep M1
         // out of Present/Draw and apply it only once per creating thread.
@@ -9793,13 +10011,17 @@ public:
         // ProperShaders patches the same device the game renders with; the
         // render-state guard can only be installed once the device exists and
         // the ProperShaders module has been loaded.
-        StartProperShadersRenderStateGuardWatch();
-
-        if (ShouldWrapD3D9Device()) {
-            *ppReturnedDeviceInterface = new BridgeDirect3DDevice9(device);
-        } else {
-            OnUnwrappedDeviceCreated(device);
-            *ppReturnedDeviceInterface = device;
+        try {
+            if (ShouldWrapD3D9Device() || !OnUnwrappedDeviceCreated(device)) {
+                *ppReturnedDeviceInterface = new BridgeDirect3DDevice9(device);
+            } else {
+                *ppReturnedDeviceInterface = device;
+            }
+        } catch (...) {
+            for (auto& plugin : g_plugins)
+                SafePluginCall("OnReleaseDevice", plugin.onReleaseDevice, device);
+            device->Release();
+            return E_OUTOFMEMORY;
         }
         return hr;
     }
@@ -9811,6 +10033,9 @@ private:
 
 extern "C" __declspec(dllexport) IDirect3D9* __stdcall Direct3DCreate9(UINT SDKVersion)
 {
+    if (!EnsureBridgeInitialized()) return nullptr;
+    std::lock_guard<std::recursive_mutex> lifecycleLock(g_bridgeLifecycleMutex);
+    if (g_bridgeStopping.load()) return nullptr;
     Log("Direct3DCreate9 called SDKVersion={}", SDKVersion);
     EnsurePostFxPluginsLoaded();
 
@@ -9822,7 +10047,9 @@ extern "C" __declspec(dllexport) IDirect3D9* __stdcall Direct3DCreate9(UINT SDKV
             // The IDirect3D9 wrapper only intercepts creation-time calls and
             // costs nothing per frame; it must stay so CreateDevice can attach
             // the Vulkan host and the unwrapped support worker.
-            return new BridgeDirect3D9(result);
+            auto* wrapper = new (std::nothrow) BridgeDirect3D9(result);
+            if (!wrapper) result->Release();
+            return wrapper;
         }
         Log("Direct3DCreate9: ProperShaders proxy returned null, falling back to system d3d9");
     }
@@ -9835,7 +10062,9 @@ extern "C" __declspec(dllexport) IDirect3D9* __stdcall Direct3DCreate9(UINT SDKV
         if (result) {
             // Always wrap the interface (creation-time only, no per-frame cost)
             // so CreateDevice interception keeps working in unwrapped mode.
-            return new BridgeDirect3D9(result);
+            auto* wrapper = new (std::nothrow) BridgeDirect3D9(result);
+            if (!wrapper) result->Release();
+            return wrapper;
         }
         return result;
     }
@@ -9845,6 +10074,7 @@ extern "C" __declspec(dllexport) IDirect3D9* __stdcall Direct3DCreate9(UINT SDKV
 
 extern "C" __declspec(dllexport) int __stdcall DebugSetLevel()
 {
+    if (!EnsureBridgeInitialized()) return E_FAIL;
     if (g_psProxy) {
         auto fn = (PFN_DebugSetLevel)GetProcAddress(g_psProxy, "DebugSetLevel");
         if (fn) return fn();
@@ -9858,6 +10088,7 @@ extern "C" __declspec(dllexport) int __stdcall DebugSetLevel()
 
 extern "C" __declspec(dllexport) int __stdcall DebugSetMute()
 {
+    if (!EnsureBridgeInitialized()) return E_FAIL;
     if (g_psProxy) {
         auto fn = (PFN_DebugSetMute)GetProcAddress(g_psProxy, "DebugSetMute");
         if (fn) return fn();
@@ -9871,6 +10102,7 @@ extern "C" __declspec(dllexport) int __stdcall DebugSetMute()
 
 extern "C" __declspec(dllexport) void* __stdcall Direct3DShaderValidatorCreate9()
 {
+    if (!EnsureBridgeInitialized()) return nullptr;
     if (g_psProxy) {
         auto fn = (PFN_Direct3DShaderValidatorCreate9)GetProcAddress(g_psProxy, "Direct3DShaderValidatorCreate9");
         if (fn) return fn();
@@ -9884,6 +10116,7 @@ extern "C" __declspec(dllexport) void* __stdcall Direct3DShaderValidatorCreate9(
 
 extern "C" __declspec(dllexport) void* __stdcall PSGPError()
 {
+    if (!EnsureBridgeInitialized()) return nullptr;
     if (g_psProxy) {
         auto fn = (PFN_PSGPError)GetProcAddress(g_psProxy, "PSGPError");
         if (fn) return fn();
@@ -9897,6 +10130,7 @@ extern "C" __declspec(dllexport) void* __stdcall PSGPError()
 
 extern "C" __declspec(dllexport) void* __stdcall PSGPSampleTexture()
 {
+    if (!EnsureBridgeInitialized()) return nullptr;
     if (g_psProxy) {
         auto fn = (PFN_PSGPSampleTexture)GetProcAddress(g_psProxy, "PSGPSampleTexture");
         if (fn) return fn();
@@ -9910,6 +10144,7 @@ extern "C" __declspec(dllexport) void* __stdcall PSGPSampleTexture()
 
 extern "C" __declspec(dllexport) HRESULT __stdcall CreateDXGIFactory(REFIID riid, void** ppFactory)
 {
+    if (!EnsureBridgeInitialized()) return E_FAIL;
     if (g_realD3D9) {
         auto fn = reinterpret_cast<PFN_CreateDXGIFactory>(GetProcAddress(g_realD3D9, "CreateDXGIFactory"));
         if (fn) return fn(riid, ppFactory);
@@ -9919,6 +10154,7 @@ extern "C" __declspec(dllexport) HRESULT __stdcall CreateDXGIFactory(REFIID riid
 
 extern "C" __declspec(dllexport) HRESULT __stdcall CreateDXGIFactory1(REFIID riid, void** ppFactory)
 {
+    if (!EnsureBridgeInitialized()) return E_FAIL;
     if (g_realD3D9) {
         auto fn = reinterpret_cast<PFN_CreateDXGIFactory>(GetProcAddress(g_realD3D9, "CreateDXGIFactory1"));
         if (fn) return fn(riid, ppFactory);
@@ -9928,6 +10164,7 @@ extern "C" __declspec(dllexport) HRESULT __stdcall CreateDXGIFactory1(REFIID rii
 
 extern "C" __declspec(dllexport) HRESULT __stdcall CreateDXGIFactory2(UINT flags, REFIID riid, void** ppFactory)
 {
+    if (!EnsureBridgeInitialized()) return E_FAIL;
     if (g_realD3D9) {
         auto fn = reinterpret_cast<PFN_CreateDXGIFactory2>(GetProcAddress(g_realD3D9, "CreateDXGIFactory2"));
         if (fn) return fn(flags, riid, ppFactory);
@@ -9937,6 +10174,7 @@ extern "C" __declspec(dllexport) HRESULT __stdcall CreateDXGIFactory2(UINT flags
 
 extern "C" __declspec(dllexport) HRESULT __stdcall DXGIDeclareAdapterRemovalSupport()
 {
+    if (!EnsureBridgeInitialized()) return E_FAIL;
     if (g_realD3D9) {
         auto fn = reinterpret_cast<PFN_DXGIDeclareAdapterRemovalSupport>(
             GetProcAddress(g_realD3D9, "DXGIDeclareAdapterRemovalSupport"));
@@ -9947,6 +10185,7 @@ extern "C" __declspec(dllexport) HRESULT __stdcall DXGIDeclareAdapterRemovalSupp
 
 extern "C" __declspec(dllexport) HRESULT __stdcall DXGIGetDebugInterface1(UINT flags, REFIID riid, void** ppDebug)
 {
+    if (!EnsureBridgeInitialized()) return E_FAIL;
     if (g_realD3D9) {
         auto fn = reinterpret_cast<PFN_DXGIGetDebugInterface1>(
             GetProcAddress(g_realD3D9, "DXGIGetDebugInterface1"));
@@ -9982,48 +10221,102 @@ static void InstallSafeStub()
     }
 }
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
+static BOOL CALLBACK InitializeBridgeOnce(PINIT_ONCE, PVOID, PVOID*)
+{
+    HMODULE pinned = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+            reinterpret_cast<LPCSTR>(&EnsureBridgeInitialized), &pinned)) return FALSE;
+    g_bridgeStopEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    if (!g_bridgeStopEvent) return FALSE;
+    Log("BridgeD3D9: loaded mode={}", kBackendTraceBuild ? "backend-trace" : "root-proxy");
+
+    if (!kBackendTraceBuild) {
+        InstallSafeStub();
+    }
+    LoadBridgeConfig();
+    if (!kBackendTraceBuild) {
+        ApplyAffinityAndPriority("startup");
+    }
+    if (!kBackendTraceBuild && g_affinityEnable && g_affinityReapply && g_affinityReapplyCount > 0) {
+        HANDLE thread = StartBridgeWorker(AffinityReapplyThread, nullptr);
+        if (thread) {
+            // Handle retained for explicit shutdown.
+        } else {
+            Log("affinity: CreateThread failed err={}", GetLastError());
+        }
+    }
+
+    g_realD3D9 = LoadBackendD3D9();
+    if (g_realD3D9) {
+        g_real_Direct3DCreate9 = (PFN_Direct3DCreate9)GetProcAddress(g_realD3D9, "Direct3DCreate9");
+    }
+
+    if (!kBackendTraceBuild) {
+        g_psProxy = LoadPSProxy();
+        if (g_psProxy) {
+            PatchPSProxyBackend();
+            g_ps_Direct3DCreate9 = (PFN_Direct3DCreate9)GetProcAddress(g_psProxy, "Direct3DCreate9");
+            Log("BridgeD3D9: primary proxy={} Direct3DCreate9=0x{:08X}",
+                g_primaryProxyName[0] ? g_primaryProxyName : "(unnamed)", reinterpret_cast<std::uintptr_t>(g_ps_Direct3DCreate9));
+        }
+    }
+    return TRUE;
+}
+
+static bool EnsureBridgeInitialized()
+{
+    return !g_bridgeStopping.load() &&
+        InitOnceExecuteOnce(&g_bridgeInitOnce, InitializeBridgeOnce, nullptr, nullptr);
+}
+
+static HRESULT ShutdownBridgeRuntime()
+{
+    std::unique_lock<std::recursive_mutex> lock(g_bridgeLifecycleMutex);
+    if (g_bridgeShutdownComplete) return S_FALSE;
+    if (g_liveBridgeDevices) return D3DERR_INVALIDCALL;
+    if (g_bridgeShutdownRunning.exchange(true)) return E_PENDING;
+    struct ShutdownAttempt {
+        ~ShutdownAttempt() { g_bridgeShutdownRunning.store(false); }
+    } attempt;
+    g_bridgeStopping.store(true);
+    BridgeMeasurement::RuntimeShutdown();
+    SetEvent(g_bridgeStopEvent);
+    lock.unlock();
+    // No loader-lock waits. Module pinning keeps any cached hook entry mapped.
+    std::array<HANDLE, 16> workers;
+    {
+        std::lock_guard<std::mutex> workersLock(g_bridgeWorkerMutex);
+        workers = g_bridgeWorkers;
+    }
+    // A support worker can be finishing a failed child-worker admission. Do
+    // not hold the admission mutex while waiting for that worker to exit.
+    for (auto worker : workers)
+        if (worker && WaitForSingleObject(worker, 30000) != WAIT_OBJECT_0) return E_FAIL;
+    {
+        std::lock_guard<std::mutex> workersLock(g_bridgeWorkerMutex);
+        for (auto& worker : g_bridgeWorkers) {
+            if (worker) CloseHandle(worker);
+            worker = nullptr;
+        }
+    }
+    lock.lock();
+    bool restored = RestoreProperShadersCreateEffectHook();
+    restored = ShutdownProperShadersRenderStateGuards() && restored;
+    restored = RestoreProperShadersOptimizationPatches() && restored;
+    restored = RestoreProperShadersCallPatches() && restored;
+    if (!restored) return E_FAIL;
+    ShutdownProperShadersStateRing();
+    ShutdownPostFxPlugins();
+    g_bridgeShutdownComplete = true;
+    Log("postfx: explicit shutdown complete; workers stopped");
+    return S_OK;
+}
+
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH) {
         g_selfModule = hModule;
         DisableThreadLibraryCalls(hModule);
-        Log("BridgeD3D9: loaded mode={}", kBackendTraceBuild ? "backend-trace" : "root-proxy");
-
-        if (!kBackendTraceBuild) {
-            InstallSafeStub();
-        }
-        LoadBridgeConfig();
-        if (!kBackendTraceBuild) {
-            ApplyAffinityAndPriority("startup");
-        }
-        if (!kBackendTraceBuild && g_affinityEnable && g_affinityReapply && g_affinityReapplyCount > 0) {
-            HANDLE thread = CreateThread(nullptr, 0, AffinityReapplyThread, nullptr, 0, nullptr);
-            if (thread) {
-                CloseHandle(thread);
-            } else {
-                Log("affinity: CreateThread failed err={}", GetLastError());
-            }
-        }
-
-        g_realD3D9 = LoadBackendD3D9();
-        if (g_realD3D9) {
-            g_real_Direct3DCreate9 = (PFN_Direct3DCreate9)GetProcAddress(g_realD3D9, "Direct3DCreate9");
-        }
-
-        if (!kBackendTraceBuild) {
-            g_psProxy = LoadPSProxy();
-            if (g_psProxy) {
-                PatchPSProxyBackend();
-                g_ps_Direct3DCreate9 = (PFN_Direct3DCreate9)GetProcAddress(g_psProxy, "Direct3DCreate9");
-                Log("BridgeD3D9: primary proxy={} Direct3DCreate9=0x{:08X}",
-                    g_primaryProxyName[0] ? g_primaryProxyName : "(unnamed)", reinterpret_cast<std::uintptr_t>(g_ps_Direct3DCreate9));
-            }
-        }
-    } else if (reason == DLL_PROCESS_DETACH && reserved == nullptr) {
-        RestoreProperShadersCreateEffectHook();
-        RestoreProperShadersOptimizationPatches();
-        ShutdownProperShadersStateRing();
-        ShutdownPostFxPlugins();
     }
     return TRUE;
 }

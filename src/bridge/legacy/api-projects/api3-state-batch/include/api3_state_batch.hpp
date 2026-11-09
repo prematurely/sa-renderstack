@@ -9,6 +9,7 @@ class StateBatchBuilder {
 public:
   std::expected<void, HRESULT> add_vertex_float(UINT start, std::span<const float> values) noexcept;
   std::expected<void, HRESULT> add_pixel_float(UINT start, std::span<const float> values) noexcept;
+  // The view borrows builder storage until the next view() or mutation.
   std::expected<D3D9GtaSaStateBatch, HRESULT> view() const noexcept;
   HRESULT submit(ID3D9GtaSaCompatDevice2* device) const noexcept;
 private:

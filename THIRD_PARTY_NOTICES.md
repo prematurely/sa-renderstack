@@ -57,6 +57,15 @@ The exact notices from the build toolchain are preserved under
 The MinGW-w64 DirectX header notice is preserved at
 `backend/dxvk/include/native/directx/COPYING.MinGW-w64.txt`.
 
+## Test-only Improved Streaming INI reader
+
+The offline streaming regression vendors the unmodified INI reader/parser from
+JuniorDjjr/LoadWholeMap under `tests/vendor/loadwholemap-ini/`. Its pinned commit,
+file hashes and coverage limits are recorded in that directory's `README.md`;
+the original license is retained in `LICENSE.txt` and in the parser header.
+These files are used by test executables only and are not linked into the
+RenderStack runtime DLLs.
+
 ## Distribution Rules
 
 - Keep this file with source and binary distributions.

@@ -370,6 +370,27 @@ try {
             throw "Expected PE32 x86 output, found $($pe.Format)/$($pe.Machine): $output"
         }
     }
+    # Generate identity-bound function metadata after PE validation. Sidecars
+    # are ordinary artifacts, not additional PE images or public SDK inputs.
+    $symbolPython = Find-RenderStackPython -PythonPath $Python -RepoRoot $root
+    $symbolSpecs = @()
+    if ($Component -in @('All', 'Dxvk')) {
+        $symbolSpecs += [pscustomobject]@{ Binary = Join-Path $root 'out/build/dxvk-x86/src/d3d9/d3d9.dll'; Map = $null }
+    }
+    if ($Component -in @('All', 'Bridge')) {
+        $symbolSpecs += [pscustomobject]@{ Binary = Join-Path $root 'out/build/bridge/d3d9.dll'; Map = Join-Path $root 'out/build/bridge/d3d9.map' }
+    }
+    $demangler = if ($null -ne $toolchain.LlvmMingw) {
+        Join-Path $toolchain.LlvmMingw.BinPath 'llvm-cxxfilt.exe'
+    } else { $null }
+    foreach ($spec in $symbolSpecs) {
+        $arguments = @((Join-Path $root 'tools/prepare-measurement-symbols.py'), '--binary', $spec.Binary, '--output', ($spec.Binary + '.rsym'))
+        if ($spec.Map) { $arguments += @('--map', $spec.Map) }
+        if ($demangler -and (Test-Path -LiteralPath $demangler)) { $arguments += @('--demangle-tool', $demangler) }
+        Invoke-BuildProcess -Label ('measurement-symbols-' + (Split-Path -Leaf (Split-Path -Parent $spec.Binary))) `
+            -FilePath $symbolPython.Path -Arguments $arguments -WorkingDirectory $root | Out-Null
+        Add-ExpectedOutput -Path ($spec.Binary + '.rsym')
+    }
 } catch {
     if ($firstExitCode -eq 0) {
         $firstExitCode = 1

@@ -41,6 +41,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="BridgeD3D9.cpp" />
+    <ClCompile Include="BridgeMeasurementRuntime.cpp" />
+    <ClCompile Include="MeasurementSymbols.cpp" />
     <ClCompile Include="EffectInspector.cpp" />
     <ClCompile Include="ProperShadersStateJournal.cpp" />
     <ClCompile Include="ProperShadersRenderStateGuard.cpp" />

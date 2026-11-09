@@ -1,0 +1,38 @@
+[
+  {
+    "module": "backend",
+    "baseline": [
+      "ADVAPI32.dll",
+      "GDI32.dll",
+      "KERNEL32.dll",
+      "msvcrt.dll",
+      "SETUPAPI.dll",
+      "USER32.dll",
+      "VERSION.dll"
+    ],
+    "candidate": [
+      "ADVAPI32.dll",
+      "GDI32.dll",
+      "KERNEL32.dll",
+      "msvcrt.dll",
+      "SETUPAPI.dll",
+      "USER32.dll",
+      "VERSION.dll"
+    ],
+    "added": []
+  },
+  {
+    "module": "bridge",
+    "baseline": [
+      "bcrypt.dll",
+      "KERNEL32.dll",
+      "USER32.dll"
+    ],
+    "candidate": [
+      "bcrypt.dll",
+      "KERNEL32.dll",
+      "USER32.dll"
+    ],
+    "added": []
+  }
+]

@@ -1,0 +1,138 @@
+{
+  "waits-pinned": {
+    "elapsedMs": {
+      "baselineMedian": 473.98235,
+      "candidateMedian": 497.65160000000003,
+      "pairedMedianPct": 4.522197273722961,
+      "aaMedianAbsPct": 9.565002562632808,
+      "aaMaxAbsPct": 10.843317663779061,
+      "wins": 2,
+      "rangePct": [
+        -12.85321078731193,
+        15.875126562200204
+      ]
+    },
+    "mainCycles": {
+      "baselineMedian": 159452123.5,
+      "candidateMedian": 102582777.0,
+      "pairedMedianPct": -34.96349497216307,
+      "aaMedianAbsPct": 2.4673109022314788,
+      "aaMaxAbsPct": 5.173596464009234,
+      "wins": 6,
+      "rangePct": [
+        -40.14396035914176,
+        -28.081575970028606
+      ]
+    },
+    "csSyncUs": {
+      "baselineMedian": 0.0,
+      "candidateMedian": 0.0,
+      "pairedMedianPct": null,
+      "aaMedianAbsPct": null,
+      "aaMaxAbsPct": null,
+      "wins": 0,
+      "rangePct": null
+    },
+    "gpuSyncUs": {
+      "baselineMedian": 0.0,
+      "candidateMedian": 0.0,
+      "pairedMedianPct": null,
+      "aaMedianAbsPct": null,
+      "aaMaxAbsPct": null,
+      "wins": 0,
+      "rangePct": null
+    },
+    "csIdleUs": {
+      "baselineMedian": 414992.0,
+      "candidateMedian": 442581.5,
+      "pairedMedianPct": 5.715433521834312,
+      "aaMedianAbsPct": 9.108243284964491,
+      "aaMaxAbsPct": 10.14522483286784,
+      "wins": 2,
+      "rangePct": [
+        -12.139436175967633,
+        18.065239404021405
+      ]
+    },
+    "gpuIdleUs": {
+      "baselineMedian": 351228.0,
+      "candidateMedian": 370037.0,
+      "pairedMedianPct": 5.436402810600871,
+      "aaMedianAbsPct": 11.971489597992758,
+      "aaMaxAbsPct": 14.038037061752483,
+      "wins": 2,
+      "rangePct": [
+        -13.952308592016049,
+        19.075446220880753
+      ]
+    }
+  },
+  "waits-normal": {
+    "elapsedMs": {
+      "baselineMedian": 468.62555,
+      "candidateMedian": 474.25555,
+      "pairedMedianPct": -1.437942183650437,
+      "aaMedianAbsPct": 6.5887633232413645,
+      "aaMaxAbsPct": 15.745492872370924,
+      "wins": 4,
+      "rangePct": [
+        -13.069587277726225,
+        5.699459114484995
+      ]
+    },
+    "mainCycles": {
+      "baselineMedian": 210038382.0,
+      "candidateMedian": 125518523.5,
+      "pairedMedianPct": -40.50790999469035,
+      "aaMedianAbsPct": 4.178546786942672,
+      "aaMaxAbsPct": 16.104590618711214,
+      "wins": 6,
+      "rangePct": [
+        -48.04933602378758,
+        -37.012738864037296
+      ]
+    },
+    "csSyncUs": {
+      "baselineMedian": 0.0,
+      "candidateMedian": 0.0,
+      "pairedMedianPct": null,
+      "aaMedianAbsPct": null,
+      "aaMaxAbsPct": null,
+      "wins": 0,
+      "rangePct": null
+    },
+    "gpuSyncUs": {
+      "baselineMedian": 0.0,
+      "candidateMedian": 0.0,
+      "pairedMedianPct": null,
+      "aaMedianAbsPct": null,
+      "aaMaxAbsPct": null,
+      "wins": 0,
+      "rangePct": null
+    },
+    "csIdleUs": {
+      "baselineMedian": 383421.5,
+      "candidateMedian": 409844.5,
+      "pairedMedianPct": 4.8772804439127455,
+      "aaMedianAbsPct": 7.055329887623962,
+      "aaMaxAbsPct": 11.43261695476021,
+      "wins": 2,
+      "rangePct": [
+        -6.714759694776761,
+        11.251670354666366
+      ]
+    },
+    "gpuIdleUs": {
+      "baselineMedian": 334383.5,
+      "candidateMedian": 337609.0,
+      "pairedMedianPct": 1.3019343586036958,
+      "aaMedianAbsPct": 3.63394909225786,
+      "aaMaxAbsPct": 18.133698549007992,
+      "wins": 3,
+      "rangePct": [
+        -16.20441712871672,
+        14.85095728814474
+      ]
+    }
+  }
+}

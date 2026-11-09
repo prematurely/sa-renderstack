@@ -4,6 +4,26 @@ This file separates evidence from assumptions for the `v0.1.0-alpha.1`
 release. It is intentionally conservative: a passing source or probe test is
 not evidence that every GTA mod combination is stable.
 
+## Current Source Configuration Policy
+
+The Bridge owns explicit process affinity and priority through `[Affinity]`
+`Enable=1`, `Mask`, and `Priority`. The DXVK factories preserve the host's
+process policy. Optional `PerThread` and `Mmcss` scheduling still follows its
+own configuration on the threads that own those scopes.
+
+`[ProperShadersEffectOptimization] DirectConstants` is quarantined after live
+captures showed geometry and sprite state leaking into later draws. Production
+always uses an effective value of `0`, including when an older profile requests
+`1` or omits the key. The Bridge logs both the requested value and the effective
+value with `reason=production-quarantine`. Both repository INI profiles declare
+`DirectConstants=0`; changing the key cannot reopen the production gate.
+
+The configuration regression loads the actual Bridge and backend DLLs in
+isolated child processes. It checks process policy around the real factories,
+Bridge-to-DXVK policy preservation, root/legacy configuration selection, and
+the Bridge's effective configuration diagnostic. This gate does not establish
+visual correctness for the quarantined path or amend a prior release's results.
+
 ## Verified by the Local Release Gate
 
 - Clean x86 Release builds complete for the Bridge and DXVK backend.
