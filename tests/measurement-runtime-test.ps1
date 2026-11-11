@@ -1,6 +1,6 @@
 param([string]$EvidenceName = 'green', [string]$Backend, [switch]$BuildOnly,
     [string]$MSBuild, [switch]$AllowNonV18MsBuild, [string]$RuntimeSource,
-    [switch]$PendingStopOnly)
+    [switch]$PendingStopOnly, [switch]$DeviceOwnerOnly, [switch]$UnicodeModulesOnly)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = Split-Path -Parent $PSScriptRoot
@@ -42,6 +42,8 @@ Push-Location $out
 try {
     $testArguments = @()
     if ($PendingStopOnly) { $testArguments += '--pending-stop-only' }
+    if ($DeviceOwnerOnly) { $testArguments += '--device-owner-only' }
+    if ($UnicodeModulesOnly) { $testArguments += '--unicode-modules-only' }
     if ($Backend) { $testArguments += $Backend }
     & $testExe @testArguments 2>&1 |
         Tee-Object -FilePath (Join-Path $out "$EvidenceName-test.log")

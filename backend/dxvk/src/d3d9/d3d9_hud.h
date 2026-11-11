@@ -15,6 +15,9 @@ namespace dxvk::hud {
     D3D9DeviceEx* m_device;
     D3D9BridgeHudSnapshot m_snapshot = { };
     std::array<std::string, D3D9_BRIDGE_HUD_LINE_COUNT> m_lines;
+    std::array<std::string, D3D9_BRIDGE_HUD_LINE_COUNT> m_renderLines;
+    int32_t m_textWidth = 0;
+    int32_t m_renderWidth = -1;
     dxvk::high_resolution_clock::time_point m_lastUpdate = { };
   };
 

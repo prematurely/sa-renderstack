@@ -12,6 +12,7 @@
 
 #if __has_include("../src/bridge/legacy/BridgeMeasurementRuntime.h")
 #include "../src/bridge/legacy/BridgeMeasurementRuntime.h"
+#include "../src/bridge/legacy/MeasurementSymbols.h"
 #include "../backend/dxvk/src/d3d9/d3d9_bridge_diagnostics.h"
 #define HAS_MEASUREMENT_RUNTIME 1
 #endif
@@ -85,7 +86,7 @@ struct DeviceFixture {
             path = std::string(systemDirectory) + "\\d3d9.dll";
         }
         libraryPath = path;
-        module = LoadLibraryExA(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        module = LoadLibraryExW(std::filesystem::u8path(path).c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
         using Create = IDirect3D9* (WINAPI*)(UINT);
         const auto create = module ? reinterpret_cast<Create>(GetProcAddress(module, "Direct3DCreate9")) : nullptr;
         d3d = create ? create(D3D_SDK_VERSION) : nullptr;
@@ -207,6 +208,85 @@ void TestDisabled(DeviceFixture& device)
     Check(!RuntimeEnabled() && snapshot.phase == Phase::Ready &&
         snapshot.captureId == 0 && !snapshot.workerBusy && g_workers.empty(),
         "disabled runtime admits no capture and starts no sampling worker");
+}
+
+void TestSecondaryDeviceCannotClaimCapture(DeviceFixture& selected)
+{
+    RuntimeFixture runtime(selected.backend ? "dxvk-selected-owner" : "system-selected-owner");
+    runtime.Configure();
+    RuntimePrepareDevice(selected.device);
+    g_f8 = true;
+    bool secondaryCreated = false, secondaryPresented = false;
+    std::thread secondary([&] {
+        DeviceFixture other(selected.backend ? selected.libraryPath.c_str() : nullptr);
+        secondaryCreated = other.device != nullptr;
+        if (other.device) {
+            secondaryPresented = SUCCEEDED(other.Present());
+            RuntimeInterrupt(other.device, "secondary device released", true);
+        }
+    });
+    secondary.join();
+    Check(secondaryCreated && secondaryPresented, "secondary real device Presents first on a different thread");
+    Check(Snapshot().captureId == 0 && Snapshot().phase == Phase::Ready && g_workers.empty(),
+        "secondary device neither consumes F8 nor starts selected-device capture");
+    selected.Present();
+    const auto started = Snapshot();
+    Check(started.captureId != 0 && started.phase == Phase::Baseline,
+        "selected device owns its render thread and accepts F8 after secondary first Present");
+    g_f8 = false;
+    if (started.captureId) {
+        Check(WaitPhase(selected, Phase::Complete),
+            "selected-device F8 capture completes after another device presented first");
+        Check(Snapshot().cpuSamples > 0, "selected render thread supplies actual CPU samples");
+    }
+    runtime.Stop();
+}
+
+std::string JsonString(std::string_view text);
+
+void TestUnicodeModuleEnumeration(DeviceFixture& original)
+{
+    if (!original.backend) return;
+    RuntimeFixture runtime("unicode-module-enumeration");
+    const auto folder = std::filesystem::path(runtime.directory) / L"\u6d4b\u8bd5-\u00e9-\u03a9";
+    std::filesystem::create_directories(folder);
+    const auto binary = folder / "d3d9.dll";
+    const auto source = std::filesystem::u8path(original.libraryPath);
+    std::filesystem::copy_file(source, binary, std::filesystem::copy_options::overwrite_existing);
+    auto sidecar = source; sidecar += L".rsym";
+    Check(std::filesystem::is_regular_file(sidecar), "Unicode fixture has matching real backend RSYM sidecar");
+    if (!std::filesystem::is_regular_file(sidecar)) return;
+    std::filesystem::copy_file(sidecar, folder / "d3d9.dll.rsym", std::filesystem::copy_options::overwrite_existing);
+    const auto encoded = binary.u8string();
+    const std::string utf8(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+    DeviceFixture unicode(utf8.c_str());
+    Check(unicode.device && unicode.module != original.module,
+        "actual backend loads as a separate module from mixed Unicode directory");
+    if (!unicode.device) return;
+    runtime.Configure();
+    g_f8 = true; unicode.Present(); g_f8 = false;
+    Check(WaitPhase(unicode, Phase::Complete), "Unicode-loaded backend completes production CPU capture");
+    const auto snapshot = Snapshot();
+    runtime.Stop();
+    std::ifstream input(snapshot.reportPath);
+    const std::string report((std::istreambuf_iterator<char>(input)), {});
+    const auto expected = "path=" + JsonString(utf8);
+    Check(report.find(expected) != std::string::npos,
+        "Toolhelp module path reaches capture report as lossless UTF-8");
+    // Resolve using the path emitted by the production enumerator, after the
+    // exact report/path comparison above. This uses the real on-disk sidecar.
+    if (report.find(expected) != std::string::npos) {
+        MeasurementSymbolResolver resolver;
+        const auto base = reinterpret_cast<std::uintptr_t>(unicode.module);
+        Check(resolver.LoadModule(base, utf8, utf8 + ".rsym") == SymbolLoadStatus::Ready,
+            "enumerated Unicode path opens and validates matching RSYM and binary");
+        const auto address = reinterpret_cast<std::uintptr_t>(GetProcAddress(unicode.module, "Direct3DCreate9"));
+        const auto symbol = resolver.Resolve(address);
+        Check(symbol.name.find("Direct3DCreate9") != std::string::npos &&
+            (symbol.quality == SymbolQuality::Exact || symbol.quality == SymbolQuality::Inferred),
+            "Unicode module resolves an actual executable address to its function");
+    }
+    std::printf("Unicode module enumeration tested with Windows ACP=%u\n", GetACP());
 }
 
 bool RecordJournal(ProperShadersStateJournal* journal)
@@ -778,7 +858,9 @@ int main(int argc, char** argv)
 #if defined(HAS_MEASUREMENT_RUNTIME)
     const bool benchmark = argc > 1 && std::strcmp(argv[1], "--benchmark") == 0;
     const bool pendingOnly = argc > 1 && std::strcmp(argv[1], "--pending-stop-only") == 0;
-    const char* backend = (benchmark || pendingOnly) ? (argc > 2 ? argv[2] : nullptr) : (argc > 1 ? argv[1] : nullptr);
+    const bool ownerOnly = argc > 1 && std::strcmp(argv[1], "--device-owner-only") == 0;
+    const bool unicodeOnly = argc > 1 && std::strcmp(argv[1], "--unicode-modules-only") == 0;
+    const char* backend = (benchmark || pendingOnly || ownerOnly || unicodeOnly) ? (argc > 2 ? argv[2] : nullptr) : (argc > 1 ? argv[1] : nullptr);
     DeviceFixture device(backend, benchmark ? 640u : 64u, benchmark ? 480u : 64u, benchmark);
     Check(device.device != nullptr, "real D3D9 HAL device creates for production runtime fixture");
     if (device.device && benchmark) {
@@ -796,8 +878,14 @@ int main(int argc, char** argv)
             argc > 5 && std::strcmp(argv[5], "--active") == 0);
     } else if (device.device && pendingOnly) {
         TestAdmittedJournalInterruption(device, false);
+    } else if (device.device && ownerOnly) {
+        TestSecondaryDeviceCannotClaimCapture(device);
+    } else if (device.device && unicodeOnly) {
+        TestUnicodeModuleEnumeration(device);
     } else if (device.device) {
         TestDisabled(device);
+        TestSecondaryDeviceCannotClaimCapture(device);
+        TestUnicodeModuleEnumeration(device);
         TestComplete(device);
         TestWorkerFailure(device);
         TestInterruption(device, false);
