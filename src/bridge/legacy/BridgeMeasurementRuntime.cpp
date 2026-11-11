@@ -146,18 +146,12 @@ bool CopyPe(std::uintptr_t base, PeCopy* copy) {
 void CollectModules(std::vector<RuntimeCpuModule>& modules, std::vector<Range>& ranges) {
   HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
   if (snapshot == INVALID_HANDLE_VALUE) return;
-  MODULEENTRY32W entry{}; entry.dwSize = sizeof(entry);
-  if (Module32FirstW(snapshot, &entry)) do {
+  MODULEENTRY32 entry{}; entry.dwSize = sizeof(entry);
+  if (Module32First(snapshot, &entry)) do {
     RuntimeCpuModule module;
     module.base = reinterpret_cast<std::uintptr_t>(entry.modBaseAddr);
     module.size = entry.modBaseSize;
-    // Reports and MeasurementSymbolResolver use UTF-8 regardless of Windows ACP.
-    const int pathLength = lstrlenW(entry.szExePath);
-    const int utf8Length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
-      entry.szExePath, pathLength, nullptr, 0, nullptr, nullptr);
-    module.path.resize(utf8Length);
-    if (utf8Length) WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
-      entry.szExePath, pathLength, module.path.data(), utf8Length, nullptr, nullptr);
+    module.path = entry.szExePath;
     PeCopy pe{};
     if (CopyPe(module.base, &pe)) {
       module.timestamp = pe.timestamp;
@@ -170,7 +164,7 @@ void CollectModules(std::vector<RuntimeCpuModule>& modules, std::vector<Range>& 
       }
     }
     modules.push_back(std::move(module));
-  } while (Module32NextW(snapshot, &entry));
+  } while (Module32Next(snapshot, &entry));
   CloseHandle(snapshot);
   std::sort(ranges.begin(), ranges.end(), [](const Range& a, const Range& b) { return a.begin < b.begin; });
 }
@@ -752,8 +746,6 @@ void RuntimePresent(IDirect3DDevice9* device, HRESULT result) {
   if (!RuntimeEnabled() || !device) return;
   RuntimePrepareDevice(device);
   std::lock_guard<std::mutex> lock(g_mutex);
-  // A secondary device must not claim the selected device's render thread.
-  if (g_device != device) return;
   const auto now = NowNs();
   if (g_journalDrainPending && !g_workers.load(std::memory_order_acquire)) {
     JournalAttributionGetSummary(&g_journal);
@@ -761,7 +753,7 @@ void RuntimePresent(IDirect3DDevice9* device, HRESULT result) {
   }
   if (!g_owner) g_owner = GetCurrentThreadId();
   g_controller.SetAvailable(g_config.cpu, g_config.journal || g_diagnostics != nullptr);
-  if (g_owner != GetCurrentThreadId()) return;
+  if (g_device != device || g_owner != GetCurrentThreadId()) return;
   const bool success = result == S_OK;
   if (success) g_successfulPresents.fetch_add(1, std::memory_order_relaxed);
   if (!g_liveStarted) { g_live.Begin(now); g_liveStarted = true; }

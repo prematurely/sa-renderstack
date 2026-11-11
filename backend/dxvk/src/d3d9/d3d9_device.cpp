@@ -736,7 +736,6 @@ namespace dxvk {
   }
 
   HRESULT STDMETHODCALLTYPE D3D9DeviceEx::SetObserver(const D3D9BridgeObserver* observer) {
-    D3D9DeviceLock deviceLock = LockDevice();
     std::lock_guard<std::recursive_mutex> lock(m_bridgeObserverMutex);
     if (observer && (observer->StructSize < sizeof(*observer)
      || !observer->Notify || m_bridgeObserver.Notify))
@@ -747,9 +746,6 @@ namespace dxvk {
 
   void D3D9DeviceEx::NotifyBridge(D3D9BridgeEvent event, HRESULT result,
       D3DPRESENT_PARAMETERS* params, const D3D9BridgePresentArgs* present) {
-    // Reset already owns the device lock. Present and final release must use
-    // the same device -> observer order: callbacks may reenter device APIs.
-    D3D9DeviceLock deviceLock = LockDevice();
     std::lock_guard<std::recursive_mutex> lock(m_bridgeObserverMutex);
     const auto observer = m_bridgeObserver;
     if (event == D3D9BridgeEvent::FinalRelease)
@@ -3732,9 +3728,7 @@ namespace dxvk {
 
     for (UINT i = 0u; i < pBatch->SamplerStateCount; i++) {
       const auto& binding = pBatch->SamplerStates[i];
-      // This batch was validated before mutation and owns the outer lock.
-      result = SetStateSamplerStateLocked(
-        RemapSamplerState(binding.Sampler), binding.Type, binding.Value);
+      result = SetSamplerState(binding.Sampler, binding.Type, binding.Value);
       if (FAILED(result)) return result;
     }
 
@@ -5834,39 +5828,29 @@ namespace dxvk {
   }
 
 
-  template<bool AlreadyLocked>
-  force_inline HRESULT D3D9DeviceEx::SetStateSamplerStateImpl(
+  HRESULT D3D9DeviceEx::SetStateSamplerState(
     DWORD               StateSampler,
     D3DSAMPLERSTATETYPE Type,
     DWORD               Value) {
-    D3D9DeviceLock lock = AlreadyLocked ? D3D9DeviceLock() : LockDevice();
+    D3D9DeviceLock lock = LockDevice();
+    D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::SamplerState);
 
-    // Recording must observe same-value writes without mutating live state.
     if (unlikely(ShouldRecord()))
       return m_recorder->SetStateSamplerState(StateSampler, Type, Value);
 
     auto& state = m_state.samplerStates;
-    const DWORD oldValue = state[StateSampler][Type];
-    const bool unchanged = oldValue == Value;
 
-    // Ordinary setters are mostly redundant. Locked batch/StateBlock callers
-    // also handle changed sequences, so avoid an extra branch on that route.
-    if constexpr (!AlreadyLocked) {
-      if (unchanged && likely(!m_gtaSaCompat.IsStateAuditActive()))
-        return D3D_OK;
-    }
-
-    D3D9GtaSaStateAuditScope audit(m_gtaSaCompat, D3D9GtaSaStateAuditKind::SamplerState);
     m_gtaSaCompat.RecordStateAudit(
       D3D9GtaSaStateAuditKind::SamplerState,
-      unchanged);
+      state[StateSampler][Type] == Value);
 
-    if (unchanged)
+    if (state[StateSampler][Type] == Value)
       return D3D_OK;
 
     if (unlikely(ShouldCaptureGtaSaStateJournal()))
       m_gtaSaStateJournal->CaptureCurrentStateSamplerState(StateSampler, Type);
 
+    const DWORD oldValue = state[StateSampler][Type];
     state[StateSampler][Type] = Value;
     NotifyGtaSaStateChanged();
 
@@ -5901,22 +5885,6 @@ namespace dxvk {
       UpdateActiveFetch4(StateSampler);
 
     return D3D_OK;
-  }
-
-
-  HRESULT D3D9DeviceEx::SetStateSamplerState(
-    DWORD               StateSampler,
-    D3DSAMPLERSTATETYPE Type,
-    DWORD               Value) {
-    return SetStateSamplerStateImpl<false>(StateSampler, Type, Value);
-  }
-
-
-  HRESULT D3D9DeviceEx::SetStateSamplerStateLocked(
-    DWORD               StateSampler,
-    D3DSAMPLERSTATETYPE Type,
-    DWORD               Value) {
-    return SetStateSamplerStateImpl<true>(StateSampler, Type, Value);
   }
 
 

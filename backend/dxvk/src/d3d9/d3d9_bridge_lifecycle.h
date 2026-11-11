@@ -7,8 +7,6 @@
 // outlive registration, must not retain the device, and may not throw. Clear
 // registration serializes with callbacks. FinalRelease runs while the device
 // is still usable, before its final public reference is retired.
-// On multithreaded devices notification and registration take the recursive
-// device lock before the observer lock, allowing same-device API reentry.
 inline constexpr GUID IID_D3D9BridgeLifecycle =
   {0x36f6d3a1,0xc28c,0x4dd0,{0x91,0xaf,0x23,0x1e,0x8b,0xa0,0xb2,0x01}};
 inline constexpr GUID IID_D3D9BridgeRuntime =

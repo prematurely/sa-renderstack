@@ -126,39 +126,6 @@ pwsh -NoProfile -File tests/control-path-benchmark.ps1 `
 - 完整流水线在 reference/optimized 配置各运行共享和双模块 pair、协议回归与原有
   状态和像素测试。CI 只验证行为和输出完整性，不使用机器相关的计时阈值。
 
-## 通用 sampler 与状态批提交验证（2026-11-09）
-
-`tests/sampler-batch-test.ps1` 直接加载指定的 x86 后端，在真实 D3D9/Vulkan 设备上
-验证 sampler setter、已有 API5 批提交和 StateBlock/Journal。覆盖全部 21 个槽位的
-13 种原始状态、同值录制、录制期间 live state 不变、Journal 首次变值捕获、非法批次
-不发生部分写入、重复条目的顺序、Reset、F8 计数和录制调用不计入 live audit。
-像素读回覆盖点/线性过滤、寻址、边框色、sRGB 和状态恢复；保护模式下同时提交批次
-和捕获 StateBlock，检查快照没有混合两个批次。测试不加载游戏或 MOD。
-
-完整流水线加入 `sampler-batch-native` 和 `sampler-batch-no-compat` 两项 gate，每项
-均运行开启/关闭 `D3DCREATE_MULTITHREADED` 的设备。GPU 显式跳过时记录 skip，不能
-把它表述为真实设备通过。性能不使用固定机器计时阈值作为 CI gate。
-
-```powershell
-pwsh -NoProfile -File tests/sampler-batch-test.ps1 -Backend <candidate.dll> `
-  -OutputDirectory out/perf/sampler-native
-pwsh -NoProfile -File tests/sampler-batch-benchmark.ps1 `
-  -Baseline <baseline.dll> -Candidate <candidate.dll> `
-  -Probe out/perf/sampler-native/sampler-batch-probe.exe `
-  -OutputDirectory out/perf/sampler-ab -Processes 12 -Rounds 4
-```
-
-配对基准在同一进程创建两个真实设备，交替 DLL 创建和测量顺序。8 个 case 包括
-同值/变值单 setter、16 项同值/变值批提交、两个 StateBlock 交替恢复，以及无 setter、
-同值 setter、变值 setter 三种 draw 控制。每个设备先完成行为回归；预热后记录
-主线程 QPC、线程周期、等待 event query 完成的总时间和 CS 活动快照。
-CS CPU 时间受系统计数粒度限制，不用微基准快照推算精确 CS 利用率。
-每进程先取成对变化中位数，再跨进程取中位数；原始样本、检查结果、DLL/probe 哈希
-全部保留。使用相同 DLL 的两个副本做双模块 A/A，保持 A/B 的模块和设备拓扑。
-
-重复 setter 收益必须和变值、批提交、draw 控制一起判断。单项 ns/call 或线程周期
-改善不等于游戏 FPS 提升，也不证明出门长帧改善。候选未部署时明确保留游戏验收。
-
 ## 工程参考
 
 - [NVIDIA Nsight 工作流](https://docs.nvidia.com/nsight-graphics/UserGuide/expected-workflow.html)：
