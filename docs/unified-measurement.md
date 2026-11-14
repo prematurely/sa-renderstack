@@ -121,9 +121,11 @@ accepted, written, reported, omitted and unread events, and records queue pressu
 file open/write/read errors, file-cap exhaustion, worker-start failure and shutdown
 cancellation. `complete=0` and the telemetry unavailable bit make partial evidence
 explicit. The report header is finalized after streaming so a read failure is also
-visible there. Backend drops, invalid capture IDs and operations still open at stop
-remain separate evidence gaps. Do not infer zero lost events merely from a report
-file existing or the phase controller reaching its end.
+visible there. Backend drops and operations still open or unread after stop also set
+the telemetry unavailable bit; their individual counters remain in the report.
+An operation in flight while capture is active is normal and does not alone mark
+the capture unavailable. Do not infer zero lost events merely from a report file
+existing or the phase controller reaching its end.
 Terminal accounting errors use bit 256: accepted/written/received ordering,
 written plus omissions, drained head/tail, and reported bounds must agree. The
 check flags a discrepancy without inventing omissions to repair the totals.

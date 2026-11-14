@@ -404,6 +404,12 @@ void EndTelemetryLocked(std::uint64_t now, const char* boundary) {
   }
   g_telemetryCapture->active = !stopped;
   DrainTelemetryLocked(true);
+  const auto& read = g_telemetryCapture->read;
+  // An in-flight span during capture is normal. After stop, however, its
+  // missing completion and any backend loss make telemetry evidence partial.
+  if (read.Dropped || read.LateDropped || read.InFlight || read.InFlightAtStop || read.Remaining ||
+      g_telemetryCapture->runtimeDropped)
+    g_unavailable |= RuntimeTelemetryUnavailable;
   if (g_telemetryCapture->storage) g_telemetryCapture->storage->sealed.store(true, std::memory_order_release);
 }
 void ResolveCpu(CpuResult& result) {
@@ -912,6 +918,7 @@ void WriteCombinedReport(ReportJob& job) {
       const auto omitted = storage.omitted.load();
       const bool conserved = received == accepted && accepted == written && written == reported && !omitted;
       const bool complete = conserved && !storage.errors.load() && !read.Dropped && !read.LateDropped && !read.InFlight && !read.InFlightAtStop && !read.Remaining && !telemetry.active && !telemetry.invalidEvents && !telemetry.error[0];
+      if (!complete) job.snapshot.unavailableMask |= RuntimeTelemetryUnavailable;
       std::fprintf(file, "telemetryStorage complete=%u stagingBytes=%zu fileLimitBytes=%llu received=%llu accepted=%llu written=%llu reported=%llu omitted=%llu unread=%llu errors=0x%X\n",
         unsigned(complete), (MeasurementEventStorage::Capacity + 2 * MeasurementEventStorage::BlockEvents) * sizeof(D3D9BridgeTelemetryEvent), MeasurementEventStorage::FileLimit,
         received, accepted, written, reported, omitted, written >= reported ? written - reported : 0, storage.errors.load());
@@ -1209,11 +1216,11 @@ DWORD WINAPI ReportWorker(void* opaque) {
     if (!reportWritten) storage.errors.fetch_or(MeasurementEventStorage::Report);
     storage.reportFinished.store(true, std::memory_order_release);
     storage.consumed.store(true, std::memory_order_release);
-    if (storage.errors.load()) {
+    if (storage.errors.load() || (job->snapshot.unavailableMask & RuntimeTelemetryUnavailable)) {
       std::lock_guard<std::mutex> lock(g_mutex);
       if (g_capture == job->snapshot.captureId) {
         g_unavailable |= RuntimeTelemetryUnavailable;
-        CopyText(g_error, sizeof(g_error), "event storage incomplete");
+        if (storage.errors.load()) CopyText(g_error, sizeof(g_error), "event storage incomplete");
       }
     }
   }

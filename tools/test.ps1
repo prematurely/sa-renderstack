@@ -613,6 +613,7 @@ function Add-MeasurementGates {
         @{ Name='measurement-hud-full'; Script='measurement-hud-full-test.ps1'; Args=(@('-Backend',$Backend,'-Python',$pythonPath) + $backendTools) },
         @{ Name='measurement-runtime-local'; Script='measurement-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-local') + $nativeTools) },
         @{ Name='measurement-runtime-native'; Script='measurement-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-native','-Backend',$Backend) + $nativeTools) },
+        @{ Name='measurement-telemetry-gap-status'; Script='measurement-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-telemetry-gap','-Backend',$Backend,'-TelemetryGapOnly') + $nativeTools) },
         @{ Name='measurement-runtime-event-cap'; Script='measurement-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-event-cap','-Backend',$Backend,'-EventStreamMode','cap') + $nativeTools) },
         @{ Name='journal-attribution-native'; Script='journal-attribution-test.ps1'; Args=(@('-EvidenceName','pipeline-native','-Device','-Backend',$Backend) + $nativeTools) }
         @{ Name='bridge-lifecycle-measurement'; Script='bridge-lifecycle-regression-test.ps1'; Args=@('-Backend',$Backend,'-Measurement') }

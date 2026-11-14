@@ -1,14 +1,17 @@
 param([string]$EvidenceName = 'green', [string]$Backend, [switch]$BuildOnly,
     [string]$MSBuild, [switch]$AllowNonV18MsBuild, [string]$RuntimeSource,
     [bool]$StorageTestSync = $true,
-    [switch]$PendingStopOnly, [switch]$DeviceOwnerOnly, [switch]$UnicodeModulesOnly,
+    [switch]$PendingStopOnly, [switch]$TelemetryGapOnly, [switch]$DeviceOwnerOnly, [switch]$UnicodeModulesOnly,
     [ValidateSet('sealed-empty','high','normal','inactive','open','write','read','queue','cap','handoff','cancelled','worker','allocation','start-fail','start-throw','stop-fail','stop-throw','report-open','report-write')]
     [string]$EventStreamMode)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = Split-Path -Parent $PSScriptRoot
-if ($EventStreamMode -and (-not $Backend -or $PendingStopOnly -or $DeviceOwnerOnly -or $UnicodeModulesOnly)) {
+if ($EventStreamMode -and (-not $Backend -or $PendingStopOnly -or $TelemetryGapOnly -or $DeviceOwnerOnly -or $UnicodeModulesOnly)) {
     throw 'EventStreamMode requires an explicit backend and cannot be combined with another focused mode.'
+}
+if ($TelemetryGapOnly -and (-not $Backend -or $PendingStopOnly -or $DeviceOwnerOnly -or $UnicodeModulesOnly)) {
+    throw 'TelemetryGapOnly requires an explicit backend and cannot be combined with another focused mode.'
 }
 $out = Join-Path $root 'out/perf/20261027-unified-measurement/runtime'
 New-Item -ItemType Directory -Path (Join-Path $out 'scripts') -Force | Out-Null
@@ -49,6 +52,7 @@ try {
     $testArguments = @()
     if ($EventStreamMode) { $testArguments += '--event-stream-test' }
     if ($PendingStopOnly) { $testArguments += '--pending-stop-only' }
+    if ($TelemetryGapOnly) { $testArguments += '--telemetry-gap-only' }
     if ($DeviceOwnerOnly) { $testArguments += '--device-owner-only' }
     if ($UnicodeModulesOnly) { $testArguments += '--unicode-modules-only' }
     if ($Backend) { $testArguments += $Backend }

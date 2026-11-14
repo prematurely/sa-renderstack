@@ -13,6 +13,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "lib/win32-import-hook.h"
 
 #if __has_include("../src/bridge/legacy/BridgeMeasurementRuntime.h")
 #include "../src/bridge/legacy/BridgeMeasurementRuntime.h"
@@ -1620,15 +1621,57 @@ using TelemetryStopFn = HRESULT (STDMETHODCALLTYPE*)(ID3D9BridgeTelemetry*, UINT
 TelemetryStartFn g_realTelemetryStart = nullptr;
 TelemetryStopFn g_realTelemetryStop = nullptr;
 unsigned g_telemetryBoundaryFault = 0;
+HANDLE g_backendUnmapEntered = nullptr, g_releaseBackendUnmap = nullptr, g_backendUnmapExited = nullptr;
+std::atomic<bool> g_pauseBackendUnmap{false};
+std::atomic<DWORD> g_backendUnmapThread{0};
+decltype(&UnmapViewOfFile) g_realBackendUnmap = nullptr;
+BOOL WINAPI PauseBackendUnmap(LPCVOID address) {
+    const bool pause = g_pauseBackendUnmap.exchange(false);
+    if (pause) {
+        g_backendUnmapThread = GetCurrentThreadId();
+        SetEvent(g_backendUnmapEntered);
+        WaitForSingleObject(g_releaseBackendUnmap, 5000);
+    }
+    const BOOL result = g_realBackendUnmap(address);
+    if (pause) SetEvent(g_backendUnmapExited);
+    return result;
+}
 HRESULT STDMETHODCALLTYPE TelemetryStartBoundary(ID3D9BridgeTelemetry* self, const D3D9BridgeTelemetryConfig* config) {
     if (g_telemetryBoundaryFault == 1) return E_FAIL;
     if (g_telemetryBoundaryFault == 2) { g_realTelemetryStart(self, config); throw std::runtime_error("fixture telemetry start failure after real StartCapture"); }
+    // Exercise a real backend ring overflow with a small test-only capacity.
+    if (g_telemetryBoundaryFault == 5) {
+        auto limited = *config; limited.MaxEvents = 1;
+        return g_realTelemetryStart(self, &limited);
+    }
     return g_realTelemetryStart(self, config);
 }
 HRESULT STDMETHODCALLTYPE TelemetryStopBoundary(ID3D9BridgeTelemetry* self, UINT64 id) {
     if (g_telemetryBoundaryFault == 3) return E_FAIL;
     if (g_telemetryBoundaryFault == 4) throw std::runtime_error("fixture telemetry stop failure");
-    return g_realTelemetryStop(self, id);
+    if (g_telemetryBoundaryFault == 5 || g_telemetryBoundaryFault == 6) {
+        // The control finishes any real in-flight backend spans before stop.
+        const auto deadline = GetTickCount64() + 4000;
+        D3D9BridgeTelemetryRead read{};
+        do {
+            read.StructSize = sizeof(read); read.Version = D3D9_BRIDGE_TELEMETRY_VERSION;
+            if (SUCCEEDED(self->ReadEvents(id, &read, nullptr, 0)) && !read.InFlight) break;
+            Sleep(1);
+        } while (GetTickCount64() < deadline);
+    }
+    const auto result = g_realTelemetryStop(self, id);
+    if (g_telemetryBoundaryFault == 7 && SUCCEEDED(result)) {
+        // Let the real blocked operation finish after stop but before the host's final read.
+        SetEvent(g_releaseBackendUnmap);
+        const auto deadline = GetTickCount64() + 4000;
+        D3D9BridgeTelemetryRead read{};
+        do {
+            read.StructSize = sizeof(read); read.Version = D3D9_BRIDGE_TELEMETRY_VERSION;
+            if (SUCCEEDED(self->ReadEvents(id, &read, nullptr, 0)) && read.LateDropped) break;
+            Sleep(1);
+        } while (GetTickCount64() < deadline);
+    }
+    return result;
 }
 struct TelemetryBoundaryImports {
     ID3D9BridgeTelemetry* telemetry = nullptr;
@@ -1682,6 +1725,174 @@ struct TelemetryVtableProbe {
     }
     ~TelemetryVtableProbe() { if (telemetry) telemetry->Release(); }
 };
+
+// Pause only a real backend UnmapViewOfFile call. The finite wait and destructor
+// release ensure a failed assertion cannot strand the retirement worker.
+struct HeldBackendUnmap {
+    ImportHook hook;
+    bool installed = false;
+    explicit HeldBackendUnmap(HMODULE module) {
+        g_backendUnmapEntered = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        g_releaseBackendUnmap = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        g_backendUnmapExited = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (g_backendUnmapEntered && g_releaseBackendUnmap && g_backendUnmapExited) {
+            installed = hook.install(module, "UnmapViewOfFile", reinterpret_cast<void*>(&PauseBackendUnmap));
+            if (installed) g_realBackendUnmap = reinterpret_cast<decltype(g_realBackendUnmap)>(hook.original);
+        }
+        Check(installed, "test installs bounded backend unmap timing hook");
+    }
+    void Release() { if (g_releaseBackendUnmap) SetEvent(g_releaseBackendUnmap); }
+    ~HeldBackendUnmap() {
+        g_pauseBackendUnmap = false;
+        Release();
+        if (g_backendUnmapEntered && WaitForSingleObject(g_backendUnmapEntered, 0) == WAIT_OBJECT_0)
+            Check(WaitForSingleObject(g_backendUnmapExited, 10000) == WAIT_OBJECT_0,
+                "blocked backend unmap leaves its test-only timing hook");
+        if (g_backendUnmapEntered) CloseHandle(g_backendUnmapEntered);
+        if (g_releaseBackendUnmap) CloseHandle(g_releaseBackendUnmap);
+        if (g_backendUnmapExited) CloseHandle(g_backendUnmapExited);
+        g_backendUnmapEntered = g_releaseBackendUnmap = g_backendUnmapExited = nullptr;
+    }
+};
+
+void TestTelemetryCaptureCompleteness(DeviceFixture& device, const char* mode)
+{
+    const bool overflow = std::strcmp(mode, "overflow") == 0;
+    const bool activeControl = std::strcmp(mode, "active-complete") == 0;
+    const bool late = std::strcmp(mode, "late-drop") == 0;
+    const unsigned boundaryMode = overflow ? 5 : activeControl ? 6 : late ? 7 : 0;
+    RuntimeFixture runtime(mode);
+    runtime.config.cpu = runtime.config.csCpu = runtime.config.context = runtime.config.journal = false;
+    runtime.config.timing = {500, 1, 20, 50};
+    runtime.Configure();
+    RuntimePrepareDevice(device.device);
+    TelemetryBoundaryImports boundary(device.device, boundaryMode);
+    ID3D9BridgeTelemetry* telemetry = nullptr;
+    const bool supported = SUCCEEDED(device.device->QueryInterface(IID_D3D9BridgeTelemetry,
+        reinterpret_cast<void**>(&telemetry))) && telemetry;
+    Check(supported && (!boundaryMode || boundary.patched), "real backend telemetry is available for completeness test");
+    if (!supported || (boundaryMode && !boundary.patched)) { if (telemetry) telemetry->Release(); return; }
+
+    std::unique_ptr<HeldBackendUnmap> held;
+    std::array<IDirect3DTexture9*, 3> textures{};
+    if (!overflow) {
+        held = std::make_unique<HeldBackendUnmap>(device.module);
+        if (!held->installed) { telemetry->Release(); return; }
+        for (auto& texture : textures) {
+            const auto hr = device.device->CreateTexture(1024, 1024, 1, 0, D3DFMT_A8R8G8B8,
+                D3DPOOL_SYSTEMMEM, &texture, nullptr);
+            Check(SUCCEEDED(hr) && texture, "mapped texture is created for real deferred retirement");
+        }
+        if (!textures[0] || !textures[1] || !textures[2]) {
+            for (auto* texture : textures) if (texture) texture->Release();
+            telemetry->Release(); return;
+        }
+    }
+
+    g_f8 = true; device.Present(); g_f8 = false;
+    const auto capture = Snapshot().captureId;
+    Check(capture != 0, "completeness fixture starts a real runtime capture");
+    if (overflow) {
+        for (unsigned i = 0; i < 8; ++i) {
+            IDirect3DTexture9* texture = nullptr;
+            const auto hr = device.device->CreateTexture(256, 256, 1, 0, D3DFMT_A8R8G8B8,
+                D3DPOOL_SYSTEMMEM, &texture, nullptr);
+            Check(SUCCEEDED(hr) && texture, "overflow fixture creates a real mapped texture");
+            if (texture) texture->Release();
+        }
+    } else {
+        g_backendUnmapThread = 0;
+        g_pauseBackendUnmap = true;
+        textures[0]->Release(); textures[0] = nullptr;
+        const bool entered = WaitForSingleObject(g_backendUnmapEntered, 4000) == WAIT_OBJECT_0;
+        Check(entered && g_backendUnmapThread.load() != GetCurrentThreadId(),
+            "real deferred retirement is paused on its background thread");
+        if (!entered) { held->Release(); RuntimeInterrupt(device.device, "unmap hook timeout");
+            for (auto* texture : textures) if (texture) texture->Release(); telemetry->Release(); return; }
+    }
+
+    auto readCounters = [&]() {
+        D3D9BridgeTelemetryRead read{};
+        read.StructSize = sizeof(read); read.Version = D3D9_BRIDGE_TELEMETRY_VERSION;
+        Check(SUCCEEDED(telemetry->ReadEvents(capture, &read, nullptr, 0)), "real backend counters are readable");
+        return read;
+    };
+    const auto active = readCounters();
+    if (overflow) Check(active.Active && active.Capacity == 1 && active.Dropped > 0,
+        "real backend ring overflows under the test-only one-event capacity");
+    else {
+        Check(active.Active && active.InFlight > 0, "real backend reports the held span while capture is active");
+        device.Present();
+        Check((Snapshot().unavailableMask & RuntimeTelemetryUnavailable) == 0,
+            "an active in-flight span alone does not mark telemetry unavailable");
+    }
+
+    if (activeControl) {
+        held->Release();
+        Check(WaitForSingleObject(g_backendUnmapExited, 5000) == WAIT_OBJECT_0,
+            "active backend span is released before capture stop");
+        const auto deadline = GetTickCount64() + 4000;
+        D3D9BridgeTelemetryRead read{};
+        do { read = readCounters(); if (!read.InFlight) break; Sleep(1); } while (GetTickCount64() < deadline);
+        Check(!read.InFlight && !read.Dropped && !read.LateDropped,
+            "active control actually drains backend spans without event loss");
+    }
+
+    if (overflow || activeControl) {
+        Check(WaitPhase(device, Phase::Complete), "completeness fixture reaches normal capture completion");
+    } else {
+        RuntimeInterrupt(device.device, "telemetry stop boundary fixture");
+    }
+    auto stopped = readCounters();
+    if (!overflow && !activeControl && !late) {
+        Check(!stopped.Active && stopped.InFlightAtStop > 0 && stopped.InFlight > 0,
+            "stop records the still-blocked real backend span before it can finish late");
+        held->Release();
+    } else if (late) {
+        Check(!stopped.Active && stopped.InFlightAtStop > 0 && stopped.LateDropped > 0,
+            "real backend counts the span finishing after StopCapture");
+    } else {
+        Check(!stopped.Active && !stopped.InFlightAtStop && !stopped.InFlight && !stopped.LateDropped,
+            "normal stop observes no unfinished or late backend spans");
+    }
+    if (held) held->Release();
+    for (auto* texture : textures) if (texture) texture->Release();
+
+    auto snapshot = Snapshot();
+    const auto deadline = GetTickCount64() + 15000;
+    while (snapshot.workerBusy && GetTickCount64() < deadline) { Sleep(1); snapshot = Snapshot(); }
+    Check(!snapshot.workerBusy && snapshot.telemetryReportFinished, "capture report and storage workers finish");
+    std::ifstream input(snapshot.reportPath);
+    std::string header, line, telemetryLine, storageLine;
+    while (std::getline(input, line)) {
+        if (line.rfind("# measurement ", 0) == 0) header = line;
+        if (line.rfind("telemetry available=", 0) == 0) telemetryLine = line;
+        if (line.rfind("telemetryStorage ", 0) == 0) storageLine = line;
+    }
+    const auto value = [](const std::string& row, const char* key) {
+        const auto p = row.find(key);
+        return p == std::string::npos ? 0ull : std::strtoull(row.c_str() + p + std::strlen(key), nullptr, 10);
+    };
+    const bool incomplete = !activeControl;
+    Check(((snapshot.unavailableMask & RuntimeTelemetryUnavailable) != 0) == incomplete,
+        "terminal runtime telemetry availability matches actual backend completeness");
+    Check(((value(header, "unavailableMask=") & RuntimeTelemetryUnavailable) != 0) == incomplete,
+        "final report header carries the same telemetry availability");
+    Check((value(storageLine, "complete=") == 0) == incomplete,
+        "final storage completeness matches the terminal telemetry status");
+    if (overflow) Check(value(telemetryLine, "backendDropped=") > 0 && header.find("status=complete-partial") != std::string::npos,
+        "real backend overflow produces a completed partial report");
+    if (!overflow && !activeControl && !late)
+        Check(value(telemetryLine, "inFlightAtStop=") > 0 && value(telemetryLine, "inFlight=") > 0,
+            "report preserves a real backend span still open at stop and final read");
+    if (late) Check(value(telemetryLine, "inFlightAtStop=") > 0 && value(telemetryLine, "lateDroppedAtRead=") > 0,
+        "report preserves actual stop-in-flight and late-drop counters");
+    if (activeControl) Check(value(telemetryLine, "backendDropped=") == 0 &&
+        value(telemetryLine, "inFlightAtStop=") == 0 && value(telemetryLine, "lateDroppedAtRead=") == 0,
+        "completed control has no backend telemetry gap");
+    runtime.Stop();
+    telemetry->Release();
+}
 
 void TestEventStream(DeviceFixture& device, const char* mode, bool correctness)
 {
@@ -2052,17 +2263,21 @@ int main(int argc, char** argv)
     const bool faultOnly = argc > 1 && std::strcmp(argv[1], "--fault-only") == 0;
     const bool csAllocOnly = argc > 1 && std::strcmp(argv[1], "--cs-alloc-only") == 0;
     const bool pendingOnly = argc > 1 && std::strcmp(argv[1], "--pending-stop-only") == 0;
+    const bool telemetryGapOnly = argc > 1 && std::strcmp(argv[1], "--telemetry-gap-only") == 0;
     const bool ownerOnly = argc > 1 && std::strcmp(argv[1], "--device-owner-only") == 0;
     const bool unicodeOnly = argc > 1 && std::strcmp(argv[1], "--unicode-modules-only") == 0;
     g_matchHostWorkerScheduling = (eventStream && !eventCorrectness) || benchmark || coverageBenchmark;
     g_hostWorkerSchedulingOptions = renderstack::scheduling::ReadOptions();
-    const char* backend = (eventStream || benchmark || coverageBenchmark || storageOnly || faultOnly || csAllocOnly || pendingOnly || ownerOnly || unicodeOnly) ? (argc > 2 ? argv[2] : nullptr) : (argc > 1 ? argv[1] : nullptr);
+    const char* backend = (eventStream || benchmark || coverageBenchmark || storageOnly || faultOnly || csAllocOnly || pendingOnly || telemetryGapOnly || ownerOnly || unicodeOnly) ? (argc > 2 ? argv[2] : nullptr) : (argc > 1 ? argv[1] : nullptr);
     DeviceFixture device(backend, (benchmark || coverageBenchmark) ? 640u : 64u,
         (benchmark || coverageBenchmark) ? 480u : 64u, benchmark || coverageBenchmark);
     Check(device.device != nullptr, "real D3D9 HAL device creates for production runtime fixture");
     if (!benchmark && !coverageBenchmark) TestFrameCorrelation();
     if (device.device && eventStream) {
         TestEventStream(device, argc > 3 ? argv[3] : "high", eventCorrectness);
+    } else if (device.device && telemetryGapOnly) {
+        for (const char* mode : {"overflow", "active-complete", "stop-inflight", "late-drop"})
+            TestTelemetryCaptureCompleteness(device, mode);
 #if defined(RENDERSTACK_MEASUREMENT_STORAGE_TEST_SYNC)
     } else if (device.device && storageOnly) {
         TestStorageTerminalAccounting();
