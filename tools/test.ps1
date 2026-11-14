@@ -560,8 +560,14 @@ function Add-MeasurementGates {
     if ($AllowNonV18MsBuild) { $nativeTools += '-AllowNonV18MsBuild' }
     $symbolTools = @('-Python', $pythonPath, '-LlvmMingwBin', $toolchain.LlvmMingw.BinPath)
     $backendTools = @('-LlvmMingwBin', $toolchain.LlvmMingw.BinPath)
+    [void](Invoke-Gate -Name 'tail-mapping-benchmark-evidence' -Category 'measurement-offline' `
+        -FilePath $pythonPath -Arguments @((Join-Path $root 'tests/tail-mapping-benchmark-test.py')) -Required $true)
+    [void](Invoke-Gate -Name 'cs-wait-analysis' -Category 'measurement-offline' `
+        -FilePath $pythonPath -Arguments @((Join-Path $root 'tests/cs-wait-analysis-test.py')) -Required $true)
     foreach ($entry in @(
         @{ Name='measurement-symbols'; Script='measurement-symbols-test.ps1'; Args=$symbolTools },
+        @{ Name='measurement-coverage-summary'; Script='measurement-coverage-summary-test.ps1'; Args=@() },
+        @{ Name='mapping-lru-exceptions'; Script='mapping-budget-test.ps1'; Args=(@('-Mode','lru','-OutputDirectory',(Join-Path $root 'out/perf/20261114-f8-tail-mapping/pipeline-lru')) + $backendTools) },
         @{ Name='measurement-symbols-msvc'; Script='measurement-symbols-msvc-test.ps1'; Args=($nativeTools + $symbolTools) },
         @{ Name='journal-attribution-offline'; Script='journal-attribution-test.ps1'; Args=(@('-EvidenceName','pipeline-offline') + $nativeTools) }
     )) {
@@ -570,6 +576,8 @@ function Add-MeasurementGates {
     }
     foreach ($entry in @(
         @{ Name='measurement-backend'; Script='measurement-backend-test.ps1'; Args=(@('-Backend',$Backend) + $backendTools) },
+        @{ Name='measurement-telemetry-native'; Script='measurement-telemetry-test.ps1'; Args=(@('-Backend',$Backend,'-OutputDirectory',(Join-Path $root 'out/perf/20261112-measurement-coverage/pipeline-telemetry')) + $backendTools) },
+        @{ Name='measurement-telemetry-no-compat'; Script='measurement-telemetry-test.ps1'; Args=(@('-Backend',$Backend,'-DisableCompat','-OutputDirectory',(Join-Path $root 'out/perf/20261112-measurement-coverage/pipeline-telemetry-no-compat')) + $backendTools) },
         @{ Name='thread-journal-native'; Script='thread-journal-test.ps1'; Args=(@('-Backend',$Backend,'-OutputDirectory',(Join-Path $root 'out/perf/20261031-thread-journal/pipeline-native')) + $backendTools) },
         @{ Name='thread-journal-mixed'; Script='thread-journal-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','check-software','-OutputDirectory',(Join-Path $root 'out/perf/20261031-binding-dirty-capture/pipeline-mixed')) + $backendTools) },
         @{ Name='thread-journal-no-compat'; Script='thread-journal-test.ps1'; Args=(@('-Backend',$Backend,'-DisableCompat','-OutputDirectory',(Join-Path $root 'out/perf/20261031-thread-journal/pipeline-no-compat')) + $backendTools) },
@@ -578,12 +586,33 @@ function Add-MeasurementGates {
         @{ Name='upload-mapping-pressure'; Script='upload-mapping-test.ps1'; Args=(@('-Backend',$Backend) + $backendTools) },
         @{ Name='upload-mapping-ordinary'; Script='upload-mapping-test.ps1'; Args=(@('-Backend',$Backend,'-BudgetMiB','100','-OutputDirectory',(Join-Path $root 'out/perf/20261108-upload-state/native-ordinary')) + $backendTools) },
         @{ Name='upload-mapping-single'; Script='upload-mapping-test.ps1'; Args=(@('-Backend',$Backend,'-Levels','1','-OutputDirectory',(Join-Path $root 'out/perf/20261108-upload-state/native-single')) + $backendTools) },
+        @{ Name='mapping-budget-100'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','regression','-BudgetMiB','100','-OutputDirectory',(Join-Path $root 'out/perf/20261114-f8-tail-mapping/pipeline-budget-100')) + $backendTools) },
+        @{ Name='mapping-budget-1'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','regression','-BudgetMiB','1','-OutputDirectory',(Join-Path $root 'out/perf/20261114-f8-tail-mapping/pipeline-budget-1')) + $backendTools) },
+        @{ Name='mapping-budget-disabled'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','regression','-BudgetMiB','0','-OutputDirectory',(Join-Path $root 'out/perf/20261114-f8-tail-mapping/pipeline-budget-0')) + $backendTools) },
+        @{ Name='mapping-initializer-100'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','initializer','-BudgetMiB','100','-OutputDirectory',(Join-Path $root 'out/perf/20261114-f8-tail-mapping/pipeline-initializer-100')) + $backendTools) },
+        @{ Name='mapping-initializer-1'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','initializer','-BudgetMiB','1','-OutputDirectory',(Join-Path $root 'out/perf/20261114-f8-tail-mapping/pipeline-initializer-1')) + $backendTools) },
+        @{ Name='mapping-initializer-disabled'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','initializer','-BudgetMiB','0','-OutputDirectory',(Join-Path $root 'out/perf/20261114-f8-tail-mapping/pipeline-initializer-0')) + $backendTools) },
+        @{ Name='mapping-fresh-zero'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','fresh-zero','-OutputDirectory',(Join-Path $root 'out/tests/texture-init/fresh-zero')) + $backendTools) },
+        @{ Name='mapping-retirement-lifetime'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','retirement','-OutputDirectory',(Join-Path $root 'out/tests/mapping-retirement/lifetime')) + $backendTools) },
+        @{ Name='mapping-retirement-fallback'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','retirement-failure','-OutputDirectory',(Join-Path $root 'out/tests/mapping-retirement/fallback')) + $backendTools) },
+        @{ Name='cs-wait-driver-correlation'; Script='lockrect-pool-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','correlation','-OutputDirectory',(Join-Path $root 'out/tests/mapping-retirement/cs-wait')) + $backendTools) },
+        @{ Name='cs-wait-allocation-correlation'; Script='lockrect-pool-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','correlation-allocate','-OutputDirectory',(Join-Path $root 'out/tests/mapping-retirement/cs-allocate')) + $backendTools) },
+        @{ Name='mapping-retirement-pressure'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','retirement-pressure','-BudgetMiB','10','-OutputDirectory',(Join-Path $root 'out/tests/mapping-retirement/pressure')) + $backendTools) },
+        @{ Name='mapping-retirement-map-retry'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','retirement-retry','-BudgetMiB','10','-OutputDirectory',(Join-Path $root 'out/tests/mapping-retirement/map-retry')) + $backendTools) },
+        @{ Name='mapping-retirement-teardown'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','retirement-teardown','-OutputDirectory',(Join-Path $root 'out/tests/mapping-retirement/teardown')) + $backendTools) },
+        @{ Name='mapping-retirement-capacity'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','retirement-cap','-BudgetMiB','200','-OutputDirectory',(Join-Path $root 'out/tests/mapping-retirement/capacity')) + $backendTools) },
+        @{ Name='mapping-retirement-cs-overlap'; Script='retirement-cs-test.ps1'; Args=(@('-Backend',$Backend,'-OutputDirectory',(Join-Path $root 'out/tests/mapping-retirement/cs-overlap')) + $backendTools) },
+        @{ Name='mapping-unused-admission'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','unused-admission','-OutputDirectory',(Join-Path $root 'out/tests/texture-init/unused-admission')) + $backendTools) },
+        @{ Name='mapping-allocation-retry'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','allocation-failure','-OutputDirectory',(Join-Path $root 'out/tests/texture-init/allocation-retry')) + $backendTools) },
+        @{ Name='mapping-view-retry'; Script='mapping-budget-test.ps1'; Args=(@('-Backend',$Backend,'-Mode','mapping-failure','-BudgetMiB','4','-OutputDirectory',(Join-Path $root 'out/tests/texture-init/view-retry')) + $backendTools) },
+        @{ Name='lockrect-pool-runtime'; Script='lockrect-pool-test.ps1'; Args=(@('-Backend',$Backend,'-OutputDirectory',(Join-Path $root 'out/tests/lockrect-pool')) + $backendTools) },
         @{ Name='patch-retry-native'; Script='patch-retry-test.ps1'; Args=(@('-Backend',$Backend) + $backendTools) },
         @{ Name='measurement-backend-unavailable'; Script='measurement-backend-test.ps1'; Args=(@('-Backend',$Backend,'-DisableCompat') + $backendTools) },
         @{ Name='measurement-hud-render'; Script='measurement-backend-test.ps1'; Args=(@('-Backend',$Backend,'-RenderHud') + $backendTools) },
         @{ Name='measurement-hud-full'; Script='measurement-hud-full-test.ps1'; Args=(@('-Backend',$Backend,'-Python',$pythonPath) + $backendTools) },
         @{ Name='measurement-runtime-local'; Script='measurement-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-local') + $nativeTools) },
         @{ Name='measurement-runtime-native'; Script='measurement-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-native','-Backend',$Backend) + $nativeTools) },
+        @{ Name='measurement-runtime-event-cap'; Script='measurement-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-event-cap','-Backend',$Backend,'-EventStreamMode','cap') + $nativeTools) },
         @{ Name='journal-attribution-native'; Script='journal-attribution-test.ps1'; Args=(@('-EvidenceName','pipeline-native','-Device','-Backend',$Backend) + $nativeTools) }
         @{ Name='bridge-lifecycle-measurement'; Script='bridge-lifecycle-regression-test.ps1'; Args=@('-Backend',$Backend,'-Measurement') }
         @{ Name='statering-system'; Script='statering-runtime-test.ps1'; Args=(@('-EvidenceName','pipeline-system') + $nativeTools) }

@@ -1,9 +1,15 @@
 param([string]$EvidenceName = 'green', [string]$Backend, [switch]$BuildOnly,
     [string]$MSBuild, [switch]$AllowNonV18MsBuild, [string]$RuntimeSource,
-    [switch]$PendingStopOnly, [switch]$DeviceOwnerOnly, [switch]$UnicodeModulesOnly)
+    [bool]$StorageTestSync = $true,
+    [switch]$PendingStopOnly, [switch]$DeviceOwnerOnly, [switch]$UnicodeModulesOnly,
+    [ValidateSet('sealed-empty','high','normal','inactive','open','write','read','queue','cap','handoff','cancelled','worker','allocation','start-fail','start-throw','stop-fail','stop-throw','report-open','report-write')]
+    [string]$EventStreamMode)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = Split-Path -Parent $PSScriptRoot
+if ($EventStreamMode -and (-not $Backend -or $PendingStopOnly -or $DeviceOwnerOnly -or $UnicodeModulesOnly)) {
+    throw 'EventStreamMode requires an explicit backend and cannot be combined with another focused mode.'
+}
 $out = Join-Path $root 'out/perf/20261027-unified-measurement/runtime'
 New-Item -ItemType Directory -Path (Join-Path $out 'scripts') -Force | Out-Null
 . (Join-Path $root 'tools/lib/process-runner.ps1')
@@ -11,7 +17,7 @@ New-Item -ItemType Directory -Path (Join-Path $out 'scripts') -Force | Out-Null
 $msBuildInfo = Find-RenderStackMSBuild -MsBuildPath $MSBuild -RepoRoot $root -AllowNonV18MsBuild:$AllowNonV18MsBuild
 $include = Join-Path $root 'out/deps/Microsoft.DXSDK.D3DX/9.29.952.8/package/build/native/include'
 $buildArguments = @((Join-Path $PSScriptRoot 'measurement-runtime-tests.vcxproj'), '/nologo', '/m:1', '/nr:false', '/t:Build',
-    '/p:Configuration=Release', '/p:Platform=Win32', '/p:PreferredToolArchitecture=x64', "/p:D3DX9IncludeDir=$include")
+    ('/p:StorageTestSync=' + $StorageTestSync.ToString().ToLowerInvariant()), '/p:Configuration=Release', '/p:Platform=Win32', '/p:PreferredToolArchitecture=x64', "/p:D3DX9IncludeDir=$include")
 if ($msBuildInfo.ProductMajor -lt 18) { $buildArguments += '/p:PlatformToolset=v143' }
 $testExe = Join-Path $out 'bin/MeasurementRuntimeTests.exe'
 if ($RuntimeSource) {
@@ -41,10 +47,12 @@ if ($BuildOnly) { return }
 Push-Location $out
 try {
     $testArguments = @()
+    if ($EventStreamMode) { $testArguments += '--event-stream-test' }
     if ($PendingStopOnly) { $testArguments += '--pending-stop-only' }
     if ($DeviceOwnerOnly) { $testArguments += '--device-owner-only' }
     if ($UnicodeModulesOnly) { $testArguments += '--unicode-modules-only' }
     if ($Backend) { $testArguments += $Backend }
+    if ($EventStreamMode) { $testArguments += $EventStreamMode }
     & $testExe @testArguments 2>&1 |
         Tee-Object -FilePath (Join-Path $out "$EvidenceName-test.log")
     $result = $LASTEXITCODE

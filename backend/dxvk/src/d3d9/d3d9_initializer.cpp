@@ -57,10 +57,14 @@ namespace dxvk {
 
     if (mapPtr != nullptr) {
       InitHostVisibleTexture(pTexture, pInitialData, mapPtr);
-      pTexture->UnmapData();
     }
 
     SyncSharedTexture(pTexture);
+
+    // Publish only once initialization and shared synchronization no longer
+    // access the mapped pointer. Creation does not hold the device lock.
+    if (mapPtr != nullptr)
+      m_parent->RetainInitializedTextureMapping(pTexture);
   }
 
 
@@ -135,7 +139,7 @@ namespace dxvk {
         pTexture->Desc()->ArraySize,
         formatInfo,
         VK_IMAGE_ASPECT_COLOR_BIT);
-    } else {
+    } else if (!pTexture->HasZeroInitializedMemory()) {
       // All subresources are allocated in one chunk of memory.
       // So we can just get the pointer for subresource 0 and memset all of them at once.
       std::memset(

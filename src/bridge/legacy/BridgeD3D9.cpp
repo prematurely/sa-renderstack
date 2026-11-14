@@ -5996,7 +5996,7 @@ static void STDMETHODCALLTYPE OnUnwrappedDeviceEvent(void* data,
         break;
     case D3D9BridgeEvent::PresentAfter:
         ++g_cpuHotspotPresents;
-        if (BridgeMeasurement::RuntimeEnabled()) BridgeMeasurement::RuntimePresent(device, result);
+        if (BridgeMeasurement::RuntimeEnabled()) BridgeMeasurement::RuntimePresent(device, result, present ? present->Window : nullptr);
         else PollProperShadersStateAttribution(g_unwrappedStateAttributionTriggerWasDown, true);
         for (auto& plugin : g_plugins)
             SafePluginCall("OnPresentAfter", plugin.onPresentAfter, device, result);
@@ -7557,15 +7557,16 @@ static void LoadBridgeConfig()
     measurement.timing.attributionMs = g_properShadersStateAttributionDurationMs;
     measurement.timing.slowFrameMs = std::clamp<UINT>(GetPrivateProfileIntA("Measurement", "SlowFrameMs", 50, iniPath), 1, 1000);
     measurement.intervalMs = g_cpuHotspotIntervalMs;
+    measurement.csIntervalMs = std::clamp<UINT>(GetPrivateProfileIntA("Measurement", "CsIntervalMs", 10, iniPath), 1, 100);
     measurement.gameDirectory = g_gameDir; measurement.stopEvent = g_bridgeStopEvent;
     measurement.startWorker = &StartMeasurementWorker;
     measurement.log = +[](const char* message) { Log("measurement: {}", message); };
     measurement.readFrame = &ReadGtasaFrameCounter;
     measurement.appendCpuReport = &AppendUnifiedCpuAdapterReport;
     BridgeMeasurement::ConfigureRuntime(measurement);
-    Log("measurement: enabled={} HUD={} F8/F7=combined baselineMs={} cpuMs={} stateMs={} samplingIntervalMs={}",
+    Log("measurement: enabled={} HUD={} F8/F7=combined baselineMs={} cpuMs={} stateMs={} samplingIntervalMs={} csIntervalMs={}",
         measurement.enabled, measurement.hud, measurement.timing.baselineMs, measurement.timing.cpuMs,
-        measurement.timing.attributionMs, measurement.intervalMs);
+        measurement.timing.attributionMs, measurement.intervalMs, measurement.csIntervalMs);
 
     int useDxvk = GetPrivateProfileIntA("Backend", "UseDxvkBackend", 0, iniPath);
     char backendRel[MAX_PATH]{};
@@ -8138,7 +8139,7 @@ public:
         OnCallsitePresent();
         OnProperShadersEffectProfilePresent();
         if (BridgeMeasurement::RuntimeEnabled()) {
-            BridgeDiagnostics::BestEffort([&] { BridgeMeasurement::RuntimePresent(m_inner, hr); });
+            BridgeDiagnostics::BestEffort([&] { BridgeMeasurement::RuntimePresent(m_inner, hr, hDestWindowOverride); });
         } else PollProperShadersStateAttribution(m_stateAttributionTriggerWasDown, true);
         ResetTrackedState();
         for (auto& plugin : g_plugins) {

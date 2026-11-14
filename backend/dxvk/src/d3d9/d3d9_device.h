@@ -57,6 +57,21 @@ namespace dxvk {
     D3D9DeviceEx* m_device;
   };
 
+  class D3D9BridgeTelemetry final : public ID3D9BridgeTelemetry {
+  public:
+    explicit D3D9BridgeTelemetry(D3D9DeviceEx* device) : m_device(device) { }
+    ULONG STDMETHODCALLTYPE AddRef() override;
+    ULONG STDMETHODCALLTYPE Release() override;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override;
+    HRESULT STDMETHODCALLTYPE StartCapture(const D3D9BridgeTelemetryConfig*) override;
+    HRESULT STDMETHODCALLTYPE StopCapture(UINT64) override;
+    HRESULT STDMETHODCALLTYPE ReadEvents(UINT64, D3D9BridgeTelemetryRead*, D3D9BridgeTelemetryEvent*, UINT) override;
+    HRESULT STDMETHODCALLTYPE GetMemorySnapshot(UINT64, D3D9BridgeMemorySnapshot*,
+      D3D9BridgeMemoryChunk*, UINT, UINT*, UINT) override;
+  private:
+    D3D9DeviceEx* m_device;
+  };
+
   // Delegating private interface: appending this helper preserves all existing
   // D3D9DeviceEx member offsets and never takes a self-reference.
   class D3D9BridgeDiagnostics final : public ID3D9BridgeDiagnostics {
@@ -1278,6 +1293,9 @@ namespace dxvk {
      */
     void* MapTexture(D3D9CommonTexture* pTexture, UINT Subresource);
 
+    /** Registers an already initialized mapping, then enforces its budget. */
+    void RetainInitializedTextureMapping(D3D9CommonTexture* pTexture);
+
     /**
      * \brief Moves the texture to the front of the LRU list of mapped textures
      */
@@ -1992,6 +2010,7 @@ namespace dxvk {
 
     D3D9BridgeDiagnostics m_bridgeDiagnostics;
     D3D9BridgeThreadStats m_threadStats { this };
+    D3D9BridgeTelemetry m_bridgeTelemetry { this };
   };
 
 }

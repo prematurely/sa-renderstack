@@ -135,7 +135,12 @@ namespace dxvk {
 
       VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 
-      if (vk->vkAllocateCommandBuffers(vk->device(), &allocInfo, &commandBuffer))
+      VkResult status;
+      { DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_COMMAND_ALLOCATE,uint64_t(m_commandPool));
+        status = vk->vkAllocateCommandBuffers(vk->device(), &allocInfo, &commandBuffer);
+        scope.outcome(status);
+      }
+      if (status)
         throw DxvkError("DxvkCommandPool: Failed to allocate command buffer");
 
       m_primaryBuffers.push_back(commandBuffer);
@@ -148,7 +153,12 @@ namespace dxvk {
     VkCommandBufferBeginInfo info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    if (vk->vkBeginCommandBuffer(commandBuffer, &info))
+    VkResult status;
+    { DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_COMMAND_BEGIN,uint64_t(commandBuffer));
+      status = vk->vkBeginCommandBuffer(commandBuffer, &info);
+      scope.outcome(status);
+    }
+    if (status)
       throw DxvkError("DxvkCommandPool: Failed to begin command buffer");
 
     if (m_device->debugFlags().test(DxvkDebugFlag::Capture)) {
@@ -186,7 +196,12 @@ namespace dxvk {
 
       VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 
-      if (vk->vkAllocateCommandBuffers(vk->device(), &allocInfo, &commandBuffer))
+      VkResult status;
+      { DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_COMMAND_ALLOCATE,uint64_t(m_commandPool),0,D3D9_BRIDGE_TELEMETRY_SECONDARY);
+        status = vk->vkAllocateCommandBuffers(vk->device(), &allocInfo, &commandBuffer);
+        scope.outcome(status);
+      }
+      if (status)
         throw DxvkError("DxvkCommandPool: Failed to allocate secondary command buffer");
 
       m_secondaryBuffers.push_back(commandBuffer);
@@ -200,7 +215,12 @@ namespace dxvk {
                | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
     info.pInheritanceInfo = &inheritanceInfo;
 
-    if (vk->vkBeginCommandBuffer(commandBuffer, &info))
+    VkResult status;
+    { DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_COMMAND_BEGIN,uint64_t(commandBuffer),0,D3D9_BRIDGE_TELEMETRY_SECONDARY);
+      status = vk->vkBeginCommandBuffer(commandBuffer, &info);
+      scope.outcome(status);
+    }
+    if (status)
       throw DxvkError("DxvkCommandPool: Failed to begin secondary command buffer");
 
     return commandBuffer;
@@ -211,7 +231,12 @@ namespace dxvk {
     auto vk = m_device->vkd();
 
     if (m_nextPrimary || m_nextSecondary) {
-      if (vk->vkResetCommandPool(vk->device(), m_commandPool, 0))
+      VkResult status;
+      { DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_COMMAND_RESET,uint64_t(m_commandPool));
+        status = vk->vkResetCommandPool(vk->device(), m_commandPool, 0);
+        scope.outcome(status);
+      }
+      if (status)
         throw DxvkError("DxvkCommandPool: Failed to reset command pool");
 
       m_nextPrimary = 0;

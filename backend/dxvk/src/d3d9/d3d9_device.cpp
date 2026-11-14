@@ -351,6 +351,38 @@ namespace dxvk {
   HRESULT STDMETHODCALLTYPE D3D9BridgeThreadStats::GetThreadStats(D3D9BridgeThreadSnapshot* output) {
     return m_device->GetBridgeThreadStats(output);
   }
+  ULONG STDMETHODCALLTYPE D3D9BridgeTelemetry::AddRef() { return m_device->AddRef(); }
+  ULONG STDMETHODCALLTYPE D3D9BridgeTelemetry::Release() { return m_device->Release(); }
+  HRESULT STDMETHODCALLTYPE D3D9BridgeTelemetry::QueryInterface(REFIID iid, void** output) {
+    return m_device->QueryInterface(iid, output);
+  }
+  HRESULT STDMETHODCALLTYPE D3D9BridgeTelemetry::StartCapture(const D3D9BridgeTelemetryConfig* c) {
+    return m_device->GetDXVKDevice()->telemetry().start(c);
+  }
+  HRESULT STDMETHODCALLTYPE D3D9BridgeTelemetry::StopCapture(UINT64 id) {
+    return m_device->GetDXVKDevice()->telemetry().stop(id);
+  }
+  HRESULT STDMETHODCALLTYPE D3D9BridgeTelemetry::ReadEvents(UINT64 id, D3D9BridgeTelemetryRead* out,
+      D3D9BridgeTelemetryEvent* events, UINT capacity) {
+    return m_device->GetDXVKDevice()->telemetry().read(id,out,events,capacity);
+  }
+  HRESULT STDMETHODCALLTYPE D3D9BridgeTelemetry::GetMemorySnapshot(UINT64 id, D3D9BridgeMemorySnapshot* out,
+      D3D9BridgeMemoryChunk* chunks, UINT chunkCapacity, UINT* masks, UINT maskCapacity) {
+    if (!out) return E_POINTER;
+    if (out->StructSize!=sizeof(*out) || out->Version!=D3D9_BRIDGE_TELEMETRY_VERSION ||
+        chunkCapacity>D3D9_BRIDGE_TELEMETRY_MAX_CHUNKS || maskCapacity>D3D9_BRIDGE_TELEMETRY_MAX_MASKS ||
+        (chunkCapacity && !chunks) || (maskCapacity && !masks)) return D3DERR_INVALIDCALL;
+    auto device=m_device->GetDXVKDevice(); auto& recorder=device->telemetry();
+    const auto generation=recorder.activeGeneration(id);
+    if (!generation) return D3DERR_INVALIDCALL;
+    D3D9BridgeMemorySnapshot snapshot{};
+    snapshot.StructSize=sizeof(snapshot); snapshot.Version=D3D9_BRIDGE_TELEMETRY_VERSION;
+    snapshot.CaptureId=id; const auto scanStart=DxvkTelemetry::nowNs();
+    device->getTelemetryMemorySnapshot(snapshot,chunks,chunkCapacity,masks,maskCapacity);
+    snapshot.ScanDurationNs=DxvkTelemetry::nowNs()-scanStart;
+    if (!recorder.isGenerationActive(id,generation)) return D3DERR_INVALIDCALL;
+    *out=snapshot; return S_OK;
+  }
   HRESULT D3D9DeviceEx::GetBridgeThreadStats(D3D9BridgeThreadSnapshot* output) {
     if (!output || output->StructSize != sizeof(*output) || output->Version != 1)
       return D3DERR_INVALIDCALL;
@@ -533,6 +565,12 @@ namespace dxvk {
     , m_d3d8Bridge         ( this )
     , m_bridgeDiagnostics ( this ) {
 
+    m_memoryAllocator.setTelemetry(&m_dxvkDevice->telemetry());
+#ifdef DXVK_USE_UNMAPPABLE_MEMORY
+    m_memoryAllocator.enableRetirement();
+#endif
+    m_shaderAllocator.setTelemetry(&m_dxvkDevice->telemetry());
+
     InitShaderOptions();
 
     // If we can SWVP, then we use an extended constant set
@@ -654,6 +692,11 @@ namespace dxvk {
 
     if (riid == IID_D3D9BridgeThreadStats) {
       *ppvObject = ref(&m_threadStats);
+      return S_OK;
+    }
+
+    if (riid == IID_D3D9BridgeTelemetry) {
+      *ppvObject = ref(&m_bridgeTelemetry);
       return S_OK;
     }
 
@@ -6267,6 +6310,8 @@ namespace dxvk {
         ExecuteFlush(false);
         SynchronizeCsThread(SequenceNumber);
 
+        DxvkTelemetryScope scope(&m_dxvkDevice->telemetry(),D3D9_BRIDGE_TELEMETRY_RESOURCE_WAIT,
+          reinterpret_cast<uintptr_t>(&Resource));
         m_dxvkDevice->waitForResource(Resource, access);
       }
     }
@@ -6418,6 +6463,14 @@ namespace dxvk {
 
     // Don't use MapTexture here to keep the mapped list small while the resource is still locked.
     void* mapPtr = pResource->GetData(Subresource);
+
+#ifdef DXVK_USE_UNMAPPABLE_MEMORY
+    if (pResource->GetMapMode() == D3D9_COMMON_TEXTURE_MAP_MODE_UNMAPPABLE
+        && !pResource->WasMappingUsed()) {
+      pResource->MarkMappingUsed();
+      m_mappedTextures.touch(pResource);
+    }
+#endif
 
     if (unlikely(needsReadback)) {
       // The texture was written to on the GPU.
@@ -9417,7 +9470,13 @@ namespace dxvk {
     uint64_t submissionId = m_submissionFence->value();
 
     while (++submissionId <= m_submissionId) {
-      m_submissionFence->wait(submissionId);
+      if (unlikely(m_dxvkDevice->telemetry().enabled() && m_submissionFence->value()<submissionId)) {
+        DxvkTelemetryScope scope(&m_dxvkDevice->telemetry(),D3D9_BRIDGE_TELEMETRY_SAMPLER_POOL_WAIT,
+          reinterpret_cast<uintptr_t>(m_submissionFence.ptr()));
+        m_submissionFence->wait(submissionId);
+      } else {
+        m_submissionFence->wait(submissionId);
+      }
 
       // Need to manually update sampler stats here since we
       // might otherwise hit this path again the next time
@@ -10867,11 +10926,53 @@ namespace dxvk {
 
 #ifdef DXVK_USE_UNMAPPABLE_MEMORY
     if (likely(pTexture->GetMapMode() == D3D9_COMMON_TEXTURE_MAP_MODE_UNMAPPABLE)) {
+      pTexture->MarkMappingUsed();
       m_mappedTextures.insert(pTexture);
     }
 #endif
 
     return ptr;
+  }
+
+
+  void D3D9DeviceEx::RetainInitializedTextureMapping(D3D9CommonTexture* pTexture) {
+#ifdef DXVK_USE_UNMAPPABLE_MEMORY
+    if (pTexture->GetMapMode() != D3D9_COMMON_TEXTURE_MAP_MODE_UNMAPPABLE)
+      return;
+
+    D3D9DeviceLock lock = LockDevice();
+    // Initial mappings form a cold prefix of the LRU until actually accessed.
+    // Replace only this prefix during admission, never the hot working set.
+    const uint64_t budget = uint64_t(m_d3d9Options.textureMemory);
+    if (m_memoryAllocator.getStats().memoryMapped > budget)
+      m_memoryAllocator.drainRetired();
+    auto iter = m_mappedTextures.leastRecentlyUsedIter();
+    while (m_memoryAllocator.getStats().memoryMapped > budget
+        && iter != m_mappedTextures.leastRecentlyUsedEndIter()
+        && !(*iter)->WasMappingUsed()) {
+      if ((*iter)->IsAnySubresourceLocked()
+          || (m_textureUploadMappingScope && m_textureUploadMappingScope->Contains(*iter))) {
+        ++iter;
+        continue;
+      }
+      (*iter)->UnmapData();
+      iter = m_mappedTextures.remove(iter);
+    }
+    if (m_memoryAllocator.getStats().memoryMapped > budget) {
+      pTexture->UnmapData();
+      UnmapTextures();
+      return;
+    }
+
+    try {
+      m_mappedTextures.insert(pTexture, false);
+    } catch (const std::bad_alloc&) {
+      // A cache admission failure must not turn successful initialization into
+      // resource creation failure, nor leave an untracked resident mapping.
+      pTexture->UnmapData();
+    }
+    UnmapTextures();
+#endif
   }
 
 
@@ -10881,6 +10982,7 @@ namespace dxvk {
       return;
 
     D3D9DeviceLock lock = LockDevice();
+    pTexture->MarkMappingUsed();
     m_mappedTextures.touch(pTexture);
 #endif
   }
@@ -10901,15 +11003,18 @@ namespace dxvk {
     // Will only be called inside the device lock
 
 #ifdef DXVK_USE_UNMAPPABLE_MEMORY
-    uint32_t mappedMemory = m_memoryAllocator.getStats().memoryMapped;
+    const uint64_t budget = uint64_t(m_d3d9Options.textureMemory);
+    const uint64_t mappedMemory = m_memoryAllocator.getStats().memoryMapped;
 
-    if (likely(mappedMemory < uint32_t(m_d3d9Options.textureMemory)))
+    if (likely(!budget || mappedMemory <= budget))
       return;
 
-    uint32_t threshold = (m_d3d9Options.textureMemory / 4) * 3;
+    // Pending final releases still count against this budget. Reclaim them
+    // before evicting a live, useful texture mapping.
+    m_memoryAllocator.drainRetired();
 
     auto iter = m_mappedTextures.leastRecentlyUsedIter();
-    while (m_memoryAllocator.getStats().memoryMapped >= threshold && iter != m_mappedTextures.leastRecentlyUsedEndIter()) {
+    while (m_memoryAllocator.getStats().memoryMapped > budget && iter != m_mappedTextures.leastRecentlyUsedEndIter()) {
       if (unlikely((*iter)->IsAnySubresourceLocked() != 0
         || (m_textureUploadMappingScope && m_textureUploadMappingScope->Contains(*iter)))) {
         iter++;

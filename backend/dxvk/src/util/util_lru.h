@@ -10,15 +10,21 @@ namespace dxvk {
   public:
     typedef typename std::list<T>::const_iterator const_iterator;
 
-    void insert(T value) {
+    void insert(T value, bool mostRecent = true) {
       auto cacheIter = m_cache.find(value);
-      if (cacheIter != m_cache.end())
-        m_list.erase(cacheIter->second);
+      if (cacheIter != m_cache.end()) {
+        if (mostRecent)
+          m_list.splice(m_list.end(), m_list, cacheIter->second);
+        return;
+      }
 
-      m_list.push_back(value);
-      auto iter = m_list.cend();
-      iter--;
-      m_cache[value] = iter;
+      auto iter = m_list.insert(mostRecent ? m_list.cend() : m_list.cbegin(), value);
+      try {
+        m_cache.emplace(value, iter);
+      } catch (...) {
+        m_list.erase(iter);
+        throw;
+      }
     }
 
     void remove(const T& value) {
@@ -41,11 +47,7 @@ namespace dxvk {
       if (cacheIter == m_cache.end())
         return;
 
-      m_list.erase(cacheIter->second);
-      m_list.push_back(value);
-      auto iter = m_list.cend();
-      --iter;
-      m_cache[value] = iter;
+      m_list.splice(m_list.end(), m_list, cacheIter->second);
     }
 
     const_iterator leastRecentlyUsedIter() const {
