@@ -304,6 +304,8 @@ namespace dxvk {
 
     if (unlikely(m_flags.test(DxvkAllocationFlag::OwnsMemory))) {
       auto vk = m_allocator->device()->vkd();
+      DxvkTelemetryScope scope(&m_allocator->device()->telemetry(),D3D9_BRIDGE_TELEMETRY_FREE,
+        vk::getObjectHandle(m_memory),m_size,D3D9_BRIDGE_TELEMETRY_DEVICE_MEMORY);
       vk->vkFreeMemory(vk->device(), m_memory, nullptr);
 
       if (unlikely(m_sparsePageTable))
@@ -443,6 +445,9 @@ namespace dxvk {
     if (!allocation)
       return nullptr;
 
+    DxvkTelemetryScope scope(&m_allocator->device()->telemetry(),D3D9_BRIDGE_TELEMETRY_ALLOC,
+      reinterpret_cast<uintptr_t>(allocation),size,
+      D3D9_BRIDGE_TELEMETRY_RESOURCE|D3D9_BRIDGE_TELEMETRY_CACHE_HIT);
     m_pools[poolIndex] = allocation->m_nextCached;
     allocation->m_nextCached = nullptr;
     return allocation;
@@ -811,6 +816,13 @@ namespace dxvk {
   Rc<DxvkResourceAllocation> DxvkMemoryAllocator::allocateMemory(
     const VkMemoryRequirements&             requirements,
     const DxvkAllocationInfo&               allocationInfo) {
+    DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_ALLOC,0,
+      requirements.size,D3D9_BRIDGE_TELEMETRY_RESOURCE);
+    auto done = [&scope] (DxvkResourceAllocation* allocation) -> Rc<DxvkResourceAllocation> {
+      scope.identity(reinterpret_cast<uintptr_t>(allocation));
+      if (!allocation) scope.fail(-1);
+      return allocation;
+    };
     std::lock_guard<dxvk::mutex> lock(m_mutex);
 
     // If we're allocating device-local memory, only consider memory types from
@@ -839,7 +851,7 @@ namespace dxvk {
       int64_t address = selectedPool.alloc(size, requirements.alignment);
 
       if (likely(address >= 0))
-        return createAllocation(type, selectedPool, address, size, allocationInfo);
+        return done(createAllocation(type, selectedPool, address, size, allocationInfo));
 
       // If we're not allowed to allocate additional device memory, move on.
       // Also do not try to revive any chunks marked for defragmentation since
@@ -853,7 +865,7 @@ namespace dxvk {
         address = selectedPool.alloc(size, requirements.alignment);
 
         if (address >= 0)
-          return createAllocation(type, selectedPool, address, size, allocationInfo);
+          return done(createAllocation(type, selectedPool, address, size, allocationInfo));
       }
 
       // If the allocation is very large, use a dedicated allocation instead
@@ -890,7 +902,7 @@ namespace dxvk {
           continue;
 
         mapDeviceMemory(memory, allocationInfo.properties);
-        return createAllocation(type, memory, allocationInfo);
+        return done(createAllocation(type, memory, allocationInfo));
       }
 
       // Try to allocate a new chunk that is large enough to hold
@@ -902,11 +914,11 @@ namespace dxvk {
 
       if (allocateChunkInPool(type, selectedPool, allocationInfo.properties, size, desiredSize)) {
         address = selectedPool.alloc(size, requirements.alignment);
-        return createAllocation(type, selectedPool, address, size, allocationInfo);
+        return done(createAllocation(type, selectedPool, address, size, allocationInfo));
       }
     }
 
-    return nullptr;
+    return done(nullptr);
   }
 
 
@@ -914,6 +926,8 @@ namespace dxvk {
     const VkMemoryRequirements&             requirements,
     const DxvkAllocationInfo&               allocationInfo,
     const void*                             next) {
+    DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_ALLOC,0,
+      requirements.size,D3D9_BRIDGE_TELEMETRY_RESOURCE);
     std::lock_guard<dxvk::mutex> lock(m_mutex);
 
     DxvkDeviceMemory memory = { };
@@ -924,10 +938,13 @@ namespace dxvk {
 
       if (likely(memory.memory != VK_NULL_HANDLE)) {
         mapDeviceMemory(memory, allocationInfo.properties);
-        return createAllocation(type, memory, allocationInfo);
+        auto* allocation=createAllocation(type, memory, allocationInfo);
+        scope.identity(reinterpret_cast<uintptr_t>(allocation));
+        return allocation;
       }
     }
 
+    scope.fail(-1);
     return nullptr;
   }
 
@@ -1390,10 +1407,18 @@ namespace dxvk {
     DxvkDeviceMemory result = { };
     result.size = size;
 
-    if (vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory)) {
+    auto allocate = [&] {
+      DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_ALLOC,0,size,
+        D3D9_BRIDGE_TELEMETRY_DEVICE_MEMORY);
+      VkResult status=vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory);
+      scope.identity(vk::getObjectHandle(result.memory));
+      if (status!=VK_SUCCESS) scope.fail(status);
+      return status;
+    };
+    if (allocate()) {
       freeEmptyChunksInHeap(*type.heap, VkDeviceSize(-1), high_resolution_clock::time_point());
 
-      if (vk->vkAllocateMemory(vk->device(), &memoryInfo, nullptr, &result.memory))
+      if (allocate())
         return DxvkDeviceMemory();
     }
 
@@ -1622,6 +1647,8 @@ namespace dxvk {
           DxvkDeviceMemory      memory) {
     auto vk = m_device->vkd();
     vk->vkDestroyBuffer(vk->device(), memory.buffer, nullptr);
+    DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_FREE,
+      vk::getObjectHandle(memory.memory),memory.size,D3D9_BRIDGE_TELEMETRY_DEVICE_MEMORY);
     vk->vkFreeMemory(vk->device(), memory.memory, nullptr);
 
     type.stats.memoryAllocated -= memory.size;
@@ -1630,6 +1657,10 @@ namespace dxvk {
 
   void DxvkMemoryAllocator::freeAllocation(
           DxvkResourceAllocation* allocation) {
+    DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_FREE,
+      reinterpret_cast<uintptr_t>(allocation),allocation->m_size,D3D9_BRIDGE_TELEMETRY_RESOURCE);
+    if (allocation->m_flags.test(DxvkAllocationFlag::CanCache))
+      scope.flags(D3D9_BRIDGE_TELEMETRY_CACHE_RETURN);
     if (allocation->m_flags.test(DxvkAllocationFlag::ClearOnFree)) {
       if (allocation->m_mapPtr)
         bit::bclear(allocation->m_mapPtr, allocation->m_size);
@@ -1700,6 +1731,9 @@ namespace dxvk {
   void DxvkMemoryAllocator::freeCachedAllocationsLocked(
           DxvkResourceAllocation* allocation) {
     while (allocation) {
+      DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_FREE,
+        reinterpret_cast<uintptr_t>(allocation),allocation->m_size,
+        D3D9_BRIDGE_TELEMETRY_RESOURCE|D3D9_BRIDGE_TELEMETRY_CACHE_EVICT);
       auto& pool = allocation->m_mapPtr
         ? allocation->m_type->mappedPool
         : allocation->m_type->devicePool;
@@ -1828,8 +1862,13 @@ namespace dxvk {
 
       auto vk = m_device->vkd();
 
-      VkResult vr = vk->vkMapMemory(vk->device(),
-        memory.memory, 0, memory.size, 0, &memory.mapPtr);
+      VkResult vr;
+      {
+        DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_MAP,
+          vk::getObjectHandle(memory.memory),memory.size,D3D9_BRIDGE_TELEMETRY_DEVICE_MEMORY);
+        vr = vk->vkMapMemory(vk->device(), memory.memory, 0, memory.size, 0, &memory.mapPtr);
+        if (vr!=VK_SUCCESS) scope.fail(vr);
+      }
 
       if (vr != VK_SUCCESS) {
         throw DxvkError(str::format("Failed to map Vulkan memory: ", vr,
@@ -1847,6 +1886,8 @@ namespace dxvk {
         return;
 
       auto vk = m_device->vkd();
+      DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_UNMAP,
+        vk::getObjectHandle(memory.memory),memory.size,D3D9_BRIDGE_TELEMETRY_DEVICE_MEMORY);
       vk->vkUnmapMemory(vk->device(), memory.memory);
 
       Logger::debug(str::format("Unmapped memory region 0x", std::hex,
@@ -1903,15 +1944,20 @@ namespace dxvk {
         // Try to suballocate from existing chunks, but do not create
         // any new chunks. Let the regular code path handle that case
         // as necessary.
+        DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_ALLOC,0,allocationSize,
+          D3D9_BRIDGE_TELEMETRY_RESOURCE|D3D9_BRIDGE_TELEMETRY_CACHE_FILL);
         int64_t address = memoryPool.alloc(allocationSize, requirements.alignment);
 
-        if (address < 0)
+        if (address < 0) {
+          scope.fail(-1);
           break;
+        }
 
         // Add allocation to the list and mark it as cacheable,
         // so it will get recycled as-is after use.
         allocation = createAllocation(memoryType, memoryPool,
           address, allocationSize, DxvkAllocationInfo());
+        scope.identity(reinterpret_cast<uintptr_t>(allocation));
         allocation->m_flags.set(DxvkAllocationFlag::CanCache);
 
         if (tail) {
@@ -2242,6 +2288,42 @@ namespace dxvk {
 
       getAllocationStatsForPool(typeInfo, typeInfo.devicePool, stats);
       getAllocationStatsForPool(typeInfo, typeInfo.mappedPool, stats);
+    }
+  }
+
+  void DxvkMemoryAllocator::getTelemetrySnapshot(D3D9BridgeMemorySnapshot& s,
+      D3D9BridgeMemoryChunk* chunks, uint32_t chunkCapacity, uint32_t* masks, uint32_t maskCapacity) {
+    std::lock_guard<dxvk::mutex> lock(m_mutex);
+    s.TimestampNs=DxvkTelemetry::nowNs();
+    for (uint32_t i=0; i<m_memTypeCount; i++) {
+      const auto& type=m_memTypes[i];
+      const DxvkMemoryPool* pools[]={&type.devicePool,&type.mappedPool};
+      for (auto* pool : pools) {
+        for (uint32_t j=0; j<pool->chunks.size(); j++) {
+          const auto& chunk=pool->chunks[j];
+          if (!chunk.memory.memory) continue;
+          const uint32_t pages=pool->pageAllocator.pageCount(j);
+          const uint32_t maskCount=(pages+31u)/32u;
+          const uint64_t used=pool->pageAllocator.pagesUsed(j)*DxvkPageAllocator::PageSize;
+          ++s.TotalChunks; s.TotalMasks+=maskCount;
+          s.TotalCapacity+=chunk.memory.size; s.TotalUsed+=used;
+          if (s.CopiedChunks>=chunkCapacity) {
+            s.Flags|=D3D9_BRIDGE_MEMORY_CHUNKS_TRUNCATED;
+            if (maskCount) s.Flags|=D3D9_BRIDGE_MEMORY_MASKS_TRUNCATED;
+            continue;
+          }
+          auto& out=chunks[s.CopiedChunks++]; out={};
+          out.Cookie=chunk.memory.cookie; out.Capacity=chunk.memory.size; out.Used=used;
+          out.Heap=type.properties.heapIndex; out.Type=i;
+          out.Mapped=pool==&type.mappedPool; out.Active=pool->pageAllocator.chunkIsAvailable(j);
+          out.PageCount=pages; out.MaskOffset=s.CopiedMasks;
+          if (maskCount <= maskCapacity-s.CopiedMasks) {
+            out.MaskCount=maskCount;
+            if (maskCount) pool->pageAllocator.getPageAllocationMask(j,masks+s.CopiedMasks);
+            s.CopiedMasks+=maskCount;
+          } else if (maskCount) s.Flags|=D3D9_BRIDGE_MEMORY_MASKS_TRUNCATED;
+        }
+      }
     }
   }
 

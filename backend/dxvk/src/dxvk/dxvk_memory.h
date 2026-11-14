@@ -1,5 +1,8 @@
 #pragma once
 
+struct D3D9BridgeMemorySnapshot;
+struct D3D9BridgeMemoryChunk;
+
 #include <map>
 #include <memory>
 
@@ -1277,6 +1280,8 @@ namespace dxvk {
      * \param [out] stats Memory statistics
      */
     void getAllocationStats(DxvkMemoryAllocationStats& stats);
+    void getTelemetrySnapshot(D3D9BridgeMemorySnapshot& snapshot,
+      D3D9BridgeMemoryChunk* chunks, uint32_t chunkCapacity, uint32_t* masks, uint32_t maskCapacity);
 
     /**
      * \brief Queries shared cache stats

@@ -33,9 +33,11 @@ struct FrameStats {
   std::uint64_t presents = 0, failedPresents = 0, invalidTimes = 0;
   std::uint64_t startNs = 0, endNs = 0, lastPresentNs = 0, lastObservedNs = 0;
   std::uint64_t totalIntervalNs = 0, maxIntervalNs = 0;
-  void Begin(std::uint64_t now) {
+  bool lastIsSuccessfulPresent = false;
+  void Begin(std::uint64_t now, bool startIsSuccessfulPresent = false) {
     *this = {};
     startNs = endNs = lastPresentNs = lastObservedNs = now;
+    lastIsSuccessfulPresent = startIsSuccessfulPresent;
   }
   bool Observe(std::uint64_t now, bool success) {
     if (now < lastObservedNs) { ++invalidTimes; return false; }
@@ -45,6 +47,7 @@ struct FrameStats {
     totalIntervalNs += interval;
     maxIntervalNs = std::max(maxIntervalNs, interval);
     lastPresentNs = now;
+    lastIsSuccessfulPresent = true;
     ++presents;
     return true;
   }
@@ -57,15 +60,16 @@ struct FrameStats {
 struct FrameRecord {
   std::uint64_t beginNs = 0, endNs = 0, frameId = 0;
   Phase phase = Phase::Ready;
+  bool beginIsSuccessfulPresent = false;
 };
 class FrameTrace {
 public:
   static constexpr std::size_t Capacity = 4096;
   void Clear() { m_count = m_dropped = 0; }
-  void Add(std::uint64_t begin, std::uint64_t end, std::uint64_t id, Phase phase) {
+  void Add(std::uint64_t begin, std::uint64_t end, std::uint64_t id, Phase phase, bool beginKnown = true) {
     if (end <= begin) return;
     if (m_count == Capacity) { ++m_dropped; return; }
-    m_rows[m_count++] = {begin, end, id, phase};
+    m_rows[m_count++] = {begin, end, id, phase, beginKnown};
   }
   const FrameRecord* Find(std::uint64_t time) const {
     const auto first = m_rows.begin(), last = first + m_count;
@@ -78,6 +82,21 @@ public:
   bool IsSlow(std::uint64_t time, std::uint64_t thresholdNs) const {
     const auto* row = Find(time);
     return row && row->endNs - row->beginNs > thresholdNs;
+  }
+  // Intersect half-open span [begin,end) against each retained interval.
+  // The returned duration omits phase gaps, out-of-range and dropped frames.
+  template<typename F>
+  std::uint64_t ForEachOverlap(std::uint64_t begin, std::uint64_t end, F callback) const {
+    if (end <= begin) return 0;
+    const auto first = m_rows.begin(), last = first + m_count;
+    auto it = std::lower_bound(first, last, begin,
+      [](const FrameRecord& row, std::uint64_t value) { return row.endNs <= value; });
+    std::uint64_t covered = 0;
+    for (; it != last && it->beginNs < end; ++it) {
+      const auto a = (std::max)(begin, it->beginNs), b = (std::min)(end, it->endNs);
+      if (b > a) { callback(*it, a, b); covered += b - a; }
+    }
+    return covered;
   }
   const FrameRecord* data() const { return m_rows.data(); }
   std::size_t size() const { return m_count; }
@@ -96,7 +115,7 @@ public:
   explicit Controller(Options options = {}) : m_options(options) { }
   void Configure(Options options) { if (!active()) m_options = options; }
   void SetAvailable(bool cpu, bool attribution) { m_cpuAvailable = cpu; m_attributionAvailable = attribution; }
-  bool Key(bool f7, bool f8, std::uint64_t now) {
+  bool Key(bool f7, bool f8, std::uint64_t now, bool startIsSuccessfulPresent = false) {
     const bool down = f7 || f8;
     const bool edge = down && !m_keyDown;
     m_keyDown = down;
@@ -108,7 +127,7 @@ public:
     m_frame = 0;
     m_cpuDone = m_cpuFailed = false;
     m_unavailable = (!m_cpuAvailable ? 2u : 0u) | (!m_attributionAvailable ? 4u : 0u);
-    Enter(Phase::Baseline, now);
+    Enter(Phase::Baseline, now, startIsSuccessfulPresent);
     return true;
   }
   void SuppressKeys(bool f7, bool f8) { m_keyDown = f7 || f8; }
@@ -120,23 +139,24 @@ public:
     }
     if (m_phase == Phase::CpuFinishing) {
       if (!m_cpuDone) return Action::None;
-      return BeginAttribution(now);
+      return BeginAttribution(now, success);
     }
     const unsigned index = phaseIndex();
     const auto before = m_stats[index].lastPresentNs;
+    const bool beforeKnown = m_stats[index].lastIsSuccessfulPresent;
     if (m_stats[index].Observe(now, success))
-      m_trace.Add(before, now, ++m_frame, m_phase);
+      m_trace.Add(before, now, ++m_frame, m_phase, beforeKnown);
     if (m_stats[index].elapsedNs() < std::uint64_t(durationMs()) * 1'000'000ull)
       return Action::None;
     m_stats[index].Finish(now);
     if (m_phase == Phase::Baseline) {
-      if (!m_cpuAvailable) return BeginAttribution(now);
-      Enter(Phase::Cpu, now);
+      if (!m_cpuAvailable) return BeginAttribution(now, success);
+      Enter(Phase::Cpu, now, success);
       return Action::StartCpu;
     }
     if (m_phase == Phase::Cpu) {
       m_phase = Phase::CpuFinishing;
-      if (m_cpuDone) return BeginAttribution(now);
+      if (m_cpuDone) return BeginAttribution(now, success);
       return Action::None;
     }
     m_phase = Phase::Complete;
@@ -163,13 +183,13 @@ public:
     return m_phase == Phase::Baseline ? 0u : (m_phase == Phase::Attribution ? 2u : 1u);
   }
 private:
-  void Enter(Phase phase, std::uint64_t now) {
+  void Enter(Phase phase, std::uint64_t now, bool startIsSuccessfulPresent) {
     m_phase = phase;
-    m_stats[phaseIndex()].Begin(now);
+    m_stats[phaseIndex()].Begin(now, startIsSuccessfulPresent);
   }
-  Action BeginAttribution(std::uint64_t now) {
+  Action BeginAttribution(std::uint64_t now, bool startIsSuccessfulPresent) {
     if (!m_attributionAvailable) { m_phase = Phase::Complete; return Action::FinishAttribution; }
-    Enter(Phase::Attribution, now);
+    Enter(Phase::Attribution, now, startIsSuccessfulPresent);
     return Action::StartAttribution;
   }
   Options m_options;

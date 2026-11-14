@@ -23,6 +23,7 @@
 #include "dxvk_shader.h"
 #include "dxvk_sparse.h"
 #include "dxvk_stats.h"
+#include "dxvk_telemetry.h"
 #include "dxvk_unbound.h"
 
 namespace dxvk {
@@ -83,6 +84,10 @@ namespace dxvk {
     friend class DxvkSubmissionQueue;
     friend class DxvkDescriptorPoolTracker;
   public:
+
+    DxvkTelemetry& telemetry() { return m_telemetry; }
+    void getTelemetryMemorySnapshot(D3D9BridgeMemorySnapshot& snapshot,
+      D3D9BridgeMemoryChunk* chunks, uint32_t chunkCapacity, uint32_t* masks, uint32_t maskCapacity);
     
     DxvkDevice(
       const Rc<DxvkInstance>&         instance,
@@ -753,6 +758,7 @@ namespace dxvk {
     DxvkShaderOptions           m_shaderOptions;
 
     DxvkDevicePerfHints         m_perfHints;
+    DxvkTelemetry               m_telemetry;
     DxvkObjects                 m_objects;
 
     sync::Spinlock              m_statLock;

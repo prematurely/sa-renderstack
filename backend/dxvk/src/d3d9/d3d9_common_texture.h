@@ -161,6 +161,14 @@ namespace dxvk {
      */
     void* GetData(UINT Subresource);
 
+    // Used only by initial texture creation, before any client can write it.
+    bool HasZeroInitializedMemory() const {
+      return !m_buffer && m_data.wasInitiallyZero();
+    }
+
+    bool WasMappingUsed() const { return m_mappingWasUsed; }
+    void MarkMappingUsed() { m_mappingWasUsed = true; }
+
     const Rc<DxvkBuffer>& GetBuffer();
 
     DxvkBufferSlice GetBufferSlice(UINT Subresource);
@@ -505,6 +513,7 @@ namespace dxvk {
     Rc<DxvkImage>                 m_resolveImage;
     Rc<DxvkBuffer>                m_buffer;
     MemoryFileRegion              m_data = { };
+    bool                          m_mappingWasUsed = false;
 
     D3D9SubresourceArray<
       uint64_t>                   m_seqs = { };

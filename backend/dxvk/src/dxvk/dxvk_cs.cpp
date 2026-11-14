@@ -179,6 +179,8 @@ namespace dxvk {
     }
 
     if (synchronize) {
+      DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_CS_WAIT,timeline,0,
+        queue==DxvkCsQueue::HighPriority ? D3D9_BRIDGE_TELEMETRY_HIGH_PRIORITY : 0);
       std::unique_lock<dxvk::mutex> lock(m_counterMutex);
 
       m_condOnSync.wait(lock, [this, queue, timeline] {
@@ -197,6 +199,8 @@ namespace dxvk {
       // an inherent race anyway
       if (seq == SynchronizeAll)
         seq = m_queueOrdered.seqDispatch;
+
+      DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_CS_WAIT,seq);
 
       auto t0 = dxvk::high_resolution_clock::now();
 
@@ -281,6 +285,10 @@ namespace dxvk {
 
           m_context->addStatCtr(DxvkStatCounter::CsChunkCount, 1);
 
+          // Sequence zero on unsynchronized high-priority chunks is intentional.
+          // Queue flags and time/thread overlap distinguish them from ordered work.
+          DxvkTelemetryScope chunkScope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_CS_CHUNK,entry.seq,0,
+            isHighPrio ? D3D9_BRIDGE_TELEMETRY_HIGH_PRIORITY : 0);
           entry.chunk->executeAll(m_context.ptr());
 
           if (entry.seq) {

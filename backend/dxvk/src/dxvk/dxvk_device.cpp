@@ -566,6 +566,11 @@ namespace dxvk {
     return m_objects.memoryManager().getAllocationCacheStats();
   }
 
+  void DxvkDevice::getTelemetryMemorySnapshot(D3D9BridgeMemorySnapshot& snapshot,
+      D3D9BridgeMemoryChunk* chunks, uint32_t chunkCapacity, uint32_t* masks, uint32_t maskCapacity) {
+    m_objects.memoryManager().getTelemetrySnapshot(snapshot,chunks,chunkCapacity,masks,maskCapacity);
+  }
+
 
   uint32_t DxvkDevice::getCurrentFrameId() const {
     return m_statCounters.getCtr(DxvkStatCounter::QueuePresentCount);
@@ -643,6 +648,7 @@ namespace dxvk {
     VkResult result = status->result.load();
 
     if (result == VK_NOT_READY) {
+      DxvkTelemetryScope scope(&m_telemetry,D3D9_BRIDGE_TELEMETRY_SUBMISSION_WAIT,reinterpret_cast<uintptr_t>(status));
       m_submissionQueue.synchronizeSubmission(status);
       result = status->result.load();
     }
@@ -654,6 +660,8 @@ namespace dxvk {
   void DxvkDevice::waitForFence(sync::Fence& fence, uint64_t value) {
     if (fence.value() >= value)
       return;
+
+    DxvkTelemetryScope scope(&m_telemetry,D3D9_BRIDGE_TELEMETRY_GPU_WAIT,reinterpret_cast<uintptr_t>(&fence));
 
     auto t0 = dxvk::high_resolution_clock::now();
 
@@ -669,6 +677,7 @@ namespace dxvk {
 
   void DxvkDevice::waitForResource(const DxvkPagedResource& resource, DxvkAccess access) {
     if (resource.isInUse(access)) {
+      DxvkTelemetryScope scope(&m_telemetry,D3D9_BRIDGE_TELEMETRY_GPU_WAIT,reinterpret_cast<uintptr_t>(&resource));
       auto t0 = dxvk::high_resolution_clock::now();
 
       m_submissionQueue.synchronizeUntil([&resource, access] {
@@ -686,6 +695,7 @@ namespace dxvk {
   
   
   void DxvkDevice::waitForIdle() {
+    DxvkTelemetryScope scope(&m_telemetry,D3D9_BRIDGE_TELEMETRY_GPU_WAIT,0,0,D3D9_BRIDGE_TELEMETRY_DEVICE_IDLE);
     m_submissionQueue.waitForIdle();
     m_submissionQueue.lockDeviceQueue();
 

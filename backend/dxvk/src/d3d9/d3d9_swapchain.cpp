@@ -853,7 +853,14 @@ namespace dxvk {
     PresenterSync sync = { };
     Rc<DxvkImage> backBuffer;
 
-    status = m_wctx->presenter->acquireNextImage(sync, backBuffer);
+    if (unlikely(m_device->telemetry().enabled())) {
+      DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_PRESENT_ACQUIRE,
+        reinterpret_cast<uintptr_t>(m_wctx->presenter.ptr()));
+      status = m_wctx->presenter->acquireNextImage(sync, backBuffer);
+      scope.outcome(status);
+    } else {
+      status = m_wctx->presenter->acquireNextImage(sync, backBuffer);
+    }
 
     if (status >= 0 && status != VK_NOT_READY) {
       VkRect2D srcRect = {
@@ -1165,7 +1172,15 @@ namespace dxvk {
 
   void D3D9SwapChainEx::SyncFrameLatency() {
     // Wait for the sync event so that we respect the maximum frame latency
-    m_wctx->frameLatencySignal->wait(m_wctx->frameId - GetActualFrameLatency());
+    const auto target=m_wctx->frameId - GetActualFrameLatency();
+    auto& signal=m_wctx->frameLatencySignal;
+    if (unlikely(m_device->telemetry().enabled() && signal->value()<target)) {
+      DxvkTelemetryScope scope(&m_device->telemetry(),D3D9_BRIDGE_TELEMETRY_FRAME_LATENCY_WAIT,
+        reinterpret_cast<uintptr_t>(signal.ptr()));
+      signal->wait(target);
+    } else {
+      signal->wait(target);
+    }
   }
 
   uint32_t D3D9SwapChainEx::GetActualFrameLatency() {
