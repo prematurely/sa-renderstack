@@ -1,4 +1,4 @@
-param([string]$Backend, [string]$OutputDirectory, [string]$LlvmMingwBin,
+param([string]$Backend, [string]$OutputDirectory, [string]$LlvmMingwBin, [string]$Ninja, [string]$Glslang,
   [ValidateSet('regression','initializer','bench','lru','allocation-failure','row-stride','fresh-zero','unused-admission','mapping-failure','retirement','retirement-failure','retirement-pressure','retirement-retry','retirement-teardown','retirement-cap')][string]$Mode='regression',
   [int]$BudgetMiB=100,
   [ValidateSet('below','hot','cold','over','create','unused','admission')][string]$Workload='hot',
@@ -12,7 +12,8 @@ $OutputDirectory=(Resolve-Path -LiteralPath $OutputDirectory).Path
 . (Join-Path $root 'tools/lib/process-runner.ps1')
 . (Join-Path $root 'tools/lib/toolchain-discovery.ps1')
 if(!$Probe){
-  $toolchain=Get-RenderStackToolchain -RepoRoot $root -Component Dxvk -LlvmMingwBin $LlvmMingwBin
+  $toolchain=Get-RenderStackToolchain -RepoRoot $root -Component Dxvk -LlvmMingwBin $LlvmMingwBin `
+    -NinjaPath $Ninja -GlslangPath $Glslang
   $source=if($Mode -eq 'lru'){'mapping-lru-tests.cpp'}else{'mapping-budget-probe.cpp'}
   $Probe=Join-Path $OutputDirectory ([IO.Path]::GetFileNameWithoutExtension($source)+'.exe')
   & $toolchain.LlvmMingw.CompilerPath '-std=c++17' '-O2' '-static' (Join-Path $PSScriptRoot $source) '-o' $Probe '-luuid' '-luser32'
